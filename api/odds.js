@@ -1,8 +1,12 @@
 // Vercel serverless proxy for Odds API (avoids CORS issues)
-export default async function handler(req, res) {
-  const KEY = process.env.ODDS_API_KEY || "";
-  const { path } = req.query;
+module.exports = async function handler(req, res) {
+  const KEY = process.env.ODDS_API_KEY;
 
+  if (!KEY) {
+    return res.status(500).json({ error: "ODDS_API_KEY env var not set" });
+  }
+
+  const { path } = req.query;
   if (!path) {
     return res.status(400).json({ error: "Missing path param" });
   }
@@ -25,4 +29,4 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
-}
+};
