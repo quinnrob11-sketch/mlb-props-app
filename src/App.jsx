@@ -171,11 +171,16 @@ function parseInto(data,tgt){
   }
 }
 
+const api=(path,params={})=>{
+  const qs=new URLSearchParams({path,...params}).toString();
+  return fetch(`/api/odds?${qs}`);
+};
+
 async function loadLines(setSt){
   const out={};for(const id of Object.keys(FRAGS))out[id]={};
   try{
     setSt("🔍 Fetching events...");
-    const r=await fetch(`https://api.the-odds-api.com/v4/sports/${SPORT}/events?apiKey=${KEY}&dateFormat=iso`);
+    const r=await api(`sports/${SPORT}/events`,{dateFormat:"iso"});
     if(!r.ok){const t=await r.text().catch(()=>"");throw new Error(`HTTP ${r.status}: ${t.slice(0,60)}`);}
     const evs=await r.json();
     if(!Array.isArray(evs)||!evs.length)throw new Error("No events returned");
@@ -190,8 +195,8 @@ async function loadLines(setSt){
     for(const{sid,ev}of matched){
       setSt(`⏳ ${ev.away_team} @ ${ev.home_team}...`);
       const[r1,r2]=await Promise.all([
-        fetch(`https://api.the-odds-api.com/v4/sports/${SPORT}/events/${ev.id}/odds?apiKey=${KEY}&regions=us&markets=${MKT1}&oddsFormat=american`).catch(()=>null),
-        fetch(`https://api.the-odds-api.com/v4/sports/${SPORT}/events/${ev.id}/odds?apiKey=${KEY}&regions=us&markets=${MKT2}&oddsFormat=american`).catch(()=>null),
+        api(`sports/${SPORT}/events/${ev.id}/odds`,{regions:"us",markets:MKT1,oddsFormat:"american"}).catch(()=>null),
+        api(`sports/${SPORT}/events/${ev.id}/odds`,{regions:"us",markets:MKT2,oddsFormat:"american"}).catch(()=>null),
       ]);
       if(r1?.ok)parseInto(await r1.json(),out[sid]);
       if(r2?.ok)parseInto(await r2.json(),out[sid]);
