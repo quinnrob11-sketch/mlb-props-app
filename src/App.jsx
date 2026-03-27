@@ -469,10 +469,22 @@ function GameCard({g,lines}){
   );
 }
 
-// ── Extra Game Card (discovered from API, no hardcoded projections) ──────
+// ── Implied projection from devigged odds ───────────────────────────────
+// EV = line + (fairOverProb - 0.5) × step
+// e.g. K line 5.5, over fair 58% → EV ≈ 5.5 + (0.58-0.5)×2 = 5.66
+function impliedProj(live){
+  if(!live||live.ov==null||live.uv==null)return null;
+  const fair=dvig(live.ov,live.uv);
+  if(fair==null)return null;
+  // Step size varies by stat type but ~2× the half-unit works
+  const ev=live.pt+(fair-0.5)*2;
+  return +ev.toFixed(2);
+}
+
+// ── Extra Game Card (discovered from API, market-implied projections) ────
 function ExtraGameCard({g,gl}){
   const[open,setOpen]=useState(false);
-  const[tab,setTab]=useState("all");
+  const[tab,setTab]=useState("p");
   const[visProps,setVP]=useState(["H","HR","TB","HRR"]);
   const propCount=Object.keys(gl).length;
   const hasL=propCount>0;
@@ -517,63 +529,36 @@ function ExtraGameCard({g,gl}){
       {open&&hasL&&(
         <div style={{background:C.card,padding:"10px 12px"}}>
           <div style={{display:"flex",gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:10}}>
-            {tabBtn("all","📋 ALL PROPS")}
             {pList.length>0&&tabBtn("p","⚾ PITCHERS")}
             {bList.length>0&&tabBtn("b","🏏 BATTERS")}
           </div>
-          {tab==="all"&&(
-            <div style={{overflowX:"auto",maxHeight:400,overflowY:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
-                <thead><tr style={{background:"#0a0f1a"}}>
-                  <th style={thSx}>PLAYER</th><th style={thSx}>PROP</th>
-                  <th style={{...thSx,color:C.blue}}>LINE</th>
-                  <th style={{...thSx,color:C.green}}>OVER</th>
-                  <th style={{...thSx,color:C.red}}>UNDER</th>
-                  <th style={{...thSx,color:C.yellow}}>FAIR</th>
-                  <th style={thSx}>VIG</th>
-                </tr></thead>
-                <tbody>
-                  {Object.entries(gl).sort((a,b)=>a[0].localeCompare(b[0])).map(([key,v])=>{
-                    const parts=key.split(/_(?=pitcher_|batter_)/);
-                    const name=(parts[0]||"").replace(/_/g," ");
-                    const prop=(parts[1]||key.split("_").slice(-2).join("_")).replace(/_/g," ");
-                    const fair=dvig(v.ov,v.uv);
-                    const vig=v.ov&&v.uv?+((mlP(v.ov)+mlP(v.uv)-1)*100).toFixed(1):null;
-                    return(
-                      <tr key={key} style={{borderBottom:`1px solid ${C.border}`}}>
-                        <td style={{padding:"4px 8px",color:C.white,fontWeight:600,textTransform:"capitalize"}}>{name}</td>
-                        <td style={{padding:"4px 8px",color:C.dim,fontSize:9,textTransform:"capitalize"}}>{prop}</td>
-                        <td style={{padding:"4px 8px",color:C.blue,fontFamily:"monospace",fontWeight:700}}>{v.pt}</td>
-                        <td style={{padding:"4px 8px",color:v.ov>0?C.green:C.yellow,fontFamily:"monospace",fontWeight:700}}>{fmt(v.ov)}</td>
-                        <td style={{padding:"4px 8px",color:v.uv>0?C.green:C.yellow,fontFamily:"monospace",fontWeight:700}}>{fmt(v.uv)}</td>
-                        <td style={{padding:"4px 8px",color:C.green,fontFamily:"monospace"}}>{fair!=null?(fair*100).toFixed(0)+"%":"—"}</td>
-                        <td style={{padding:"4px 8px",color:vig!=null?(vig<=4?C.green:vig<=7?C.yellow:C.red):C.muted,fontFamily:"monospace",fontSize:9}}>{vig!=null?vig+"%":"—"}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+
           {tab==="p"&&(
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse"}}>
                 <thead><tr style={{background:"#0a0f1a"}}>
                   <th style={thSx}>PITCHER</th>
-                  <th style={{...thSx,color:C.green,minWidth:140}}>STRIKEOUTS</th>
-                  <th style={{...thSx,color:C.blue,minWidth:140}}>OUTS</th>
+                  <th style={{...thSx,color:C.green,minWidth:180}}>STRIKEOUTS · proj/line/edge</th>
+                  <th style={{...thSx,color:C.blue,minWidth:180}}>OUTS · proj/line/edge</th>
                 </tr></thead>
                 <tbody>
                   {pList.map(name=>{
                     const kL=getL(gl,name,"pitcher_strikeouts"),oL=getL(gl,name,"pitcher_outs");
+                    const kProj=impliedProj(kL),oProj=impliedProj(oL);
                     return(
                       <tr key={name} style={{borderBottom:`1px solid ${C.border}`}}>
-                        <td style={{padding:"8px 10px"}}><b style={{color:C.white,fontSize:13,textTransform:"capitalize"}}>{name}</b></td>
-                        <td style={{padding:"8px",borderLeft:`1px solid ${C.border}`}}>
-                          <OCell pv={null} live={kL} strong={1.0} lean={0.4}/>
+                        <td style={{padding:"8px 10px",verticalAlign:"top"}}>
+                          <b style={{color:C.white,fontSize:13,textTransform:"capitalize"}}>{name}</b>
                         </td>
-                        <td style={{padding:"8px",borderLeft:`1px solid ${C.border}`}}>
-                          <OCell pv={null} live={oL} strong={1.0} lean={0.4}/>
+                        <td style={{padding:"8px",borderLeft:`1px solid ${C.border}`,verticalAlign:"top"}}>
+                          {kProj!=null&&<div style={{color:C.green,fontFamily:"monospace",fontWeight:900,fontSize:18,marginBottom:1}}>{kProj}</div>}
+                          {kProj!=null&&<div style={{color:C.muted,fontSize:8,marginBottom:4}}>mkt implied K</div>}
+                          <OCell pv={kProj} live={kL} strong={1.0} lean={0.4}/>
+                        </td>
+                        <td style={{padding:"8px",borderLeft:`1px solid ${C.border}`,verticalAlign:"top"}}>
+                          {oProj!=null&&<div style={{color:C.blue,fontFamily:"monospace",fontWeight:900,fontSize:18,marginBottom:1}}>{oProj}</div>}
+                          {oProj!=null&&<div style={{color:C.muted,fontSize:8,marginBottom:4}}>mkt implied outs</div>}
+                          <OCell pv={oProj} live={oL} strong={1.0} lean={0.4}/>
                         </td>
                       </tr>
                     );
@@ -582,6 +567,7 @@ function ExtraGameCard({g,gl}){
               </table>
             </div>
           )}
+
           {tab==="b"&&(
             <div>
               <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:8}}>
@@ -600,8 +586,8 @@ function ExtraGameCard({g,gl}){
                   <thead><tr>
                     <th style={thSx}>BATTER</th>
                     {visProps.map(k=>(
-                      <th key={k} style={{...thSx,color:BC[k],borderLeft:`2px solid ${C.border}`,minWidth:120}}>
-                        {k}<span style={{color:C.muted,fontWeight:400,fontSize:7}}> line·O/U·devig</span>
+                      <th key={k} style={{...thSx,color:BC[k],borderLeft:`2px solid ${C.border}`,minWidth:130}}>
+                        {k}<span style={{color:C.muted,fontWeight:400,fontSize:7}}> proj·line·edge</span>
                       </th>
                     ))}
                   </tr></thead>
@@ -611,9 +597,13 @@ function ExtraGameCard({g,gl}){
                         <td style={{padding:"5px 8px",whiteSpace:"nowrap"}}><b style={{color:C.white,fontSize:11,textTransform:"capitalize"}}>{name}</b></td>
                         {visProps.map(k=>{
                           const lv=getL(gl,name,BMKTS[k]);
+                          const pv=impliedProj(lv);
+                          const s=k==="HR"?0.10:k==="SB"||k==="2B"?0.08:0.25;
+                          const l=k==="HR"?0.05:0.10;
                           return(
                             <td key={k} style={{padding:"5px 7px",borderLeft:`2px solid ${C.border}`,verticalAlign:"top"}}>
-                              <OCell pv={null} live={lv} strong={k==="HR"?0.10:0.25} lean={k==="HR"?0.05:0.10}/>
+                              {pv!=null&&<div style={{color:BC[k],fontFamily:"monospace",fontWeight:700,fontSize:12,marginBottom:2}}>{pv}</div>}
+                              <OCell pv={pv} live={lv} strong={s} lean={l}/>
                             </td>
                           );
                         })}
@@ -704,7 +694,7 @@ export default function App(){
       {(lines._extraGames||[]).length>0&&(
         <div style={{marginTop:14}}>
           <div style={{color:C.muted,fontSize:10,fontWeight:700,marginBottom:8,padding:"6px 12px",background:C.panel,borderRadius:6,border:`1px solid ${C.border}`}}>
-            OTHER MLB GAMES — live props only (no projections)
+            OTHER MLB GAMES — market-implied projections from devigged odds
           </div>
           {(lines._extraGames||[]).map(eg=>(
             <ExtraGameCard key={eg.sid} g={eg} gl={lines[eg.sid]||{}}/>
