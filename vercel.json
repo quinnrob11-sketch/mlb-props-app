@@ -1,6 +1,5 @@
 {
   "rewrites": [
-    { "source": "/api/odds", "destination": "/api/odds" },
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
-}
+    {"source": "/api/odds", "destination": "/api/odds"},
+    {"source": "/api/mlb", "destination": "/api/mlb"},
+    {"sou
