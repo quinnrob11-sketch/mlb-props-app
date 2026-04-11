@@ -2,4 +2,6 @@
   "rewrites": [
     {"source": "/api/odds", "destination": "/api/odds"},
     {"source": "/api/mlb", "destination": "/api/mlb"},
-    {"sou
+    {"source": "/(.*)", "destination": "/index.html"}
+  ]
+}

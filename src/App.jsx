@@ -613,4 +613,497 @@ async function loadAll(setSt) {
   return results;
 }
 
-// ══════════════════════════════════════════════════════════════════════�
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHARED STYLES
+// ═══════════════════════════════════════════════════════════════════════════════
+const sty = {
+  th: { padding: "6px 8px", color: C.muted, fontSize: 8, fontWeight: 700, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: "#0a0f1a", textAlign: "left", letterSpacing: 0.3 },
+  td: { padding: "5px 8px", verticalAlign: "middle" },
+  inp: { background: C.bg, border: `1px solid ${C.border}`, color: C.white, borderRadius: 4, padding: "3px 5px", fontSize: 10, width: 52, outline: "none", fontFamily: "monospace", textAlign: "center" },
+  badge: (bg, fg) => ({ background: bg + "22", color: fg, fontSize: 9, padding: "2px 8px", borderRadius: 4, fontWeight: 700 }),
+  mono: { fontFamily: "monospace" },
+  tag: (c) => ({ background: C.panel, borderRadius: 4, padding: "2px 6px", color: c, fontFamily: "monospace", fontSize: 9, fontWeight: 700 }),
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMPONENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Edge Badge ──
+function EdgeBadge({ e }) {
+  if (!e) return <span style={{ color: C.muted, fontSize: 9 }}>no model</span>;
+  const color = e.edge > 5 ? C.green : e.edge > 2 ? C.yellow : e.edge < -2 ? C.red : C.dim;
+  return (
+    <div style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ color, fontWeight: 900, fontSize: 11, ...sty.mono }}>
+          {e.side === "OVER" ? "O" : "U"} {e.edge > 0 ? "+" : ""}{e.edge}%
+        </span>
+        {e.edge > 5 && <span style={sty.badge(C.green, C.green)}>STRONG</span>}
+        {e.edge > 2 && e.edge <= 5 && <span style={sty.badge(C.yellow, C.yellow)}>LEAN</span>}
+      </div>
+      {e.ev > 0 && (
+        <div style={{ fontSize: 8, color: C.dim }}>
+          EV +${e.ev} · {e.kelly > 0 ? `${e.kelly}% Kelly` : ""} · {e.modelP}%m/{e.mktP}%bk
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Prop Cell (for both pitcher and batter) ──
+function PropCell({ propData, color }) {
+  const { proj, live, edge } = propData || {};
+  const [ovr, setOvr] = useState("");
+  const line = parseFloat(ovr) || live?.pt || null;
+  const projEdge = line != null && proj != null ? +(proj - line).toFixed(2) : null;
+  const fair = dvg(live?.ov, live?.uv);
+  const vig = live?.ov && live?.uv ? +((mlP(live.ov) + mlP(live.uv) - 1) * 100).toFixed(1) : null;
+
+  return (
+    <div style={{ minWidth: 100 }}>
+      {/* Model projection */}
+      {proj != null && (
+        <div style={{ color: color || C.white, fontFamily: "monospace", fontWeight: 900, fontSize: 15, marginBottom: 2 }}>
+          {proj}
+        </div>
+      )}
+      {/* Live line + odds */}
+      {live && (
+        <div style={{ marginBottom: 3 }}>
+          <span style={{ color: C.blue, ...sty.mono, fontWeight: 700, fontSize: 11 }}>{live.pt} </span>
+          <span style={{ color: live.ov > 0 ? C.green : C.yellow, fontSize: 9, fontWeight: 600 }}>{fmtO(live.ov)}</span>
+          <span style={{ color: C.muted, fontSize: 8 }}>/</span>
+          <span style={{ color: live.uv > 0 ? C.green : C.yellow, fontSize: 9, fontWeight: 600 }}>{fmtO(live.uv)}</span>
+        </div>
+      )}
+      {/* Edge badge */}
+      {edge && <EdgeBadge e={edge} />}
+      {/* Override input */}
+      <input type="number" step="0.5" value={ovr} onChange={e => setOvr(e.target.value)}
+        placeholder={live ? "ovr" : "line"} style={{ ...sty.inp, marginTop: 3 }} />
+      {/* Raw edge from projection */}
+      {projEdge != null && !edge && (
+        <div style={{ marginTop: 2, color: projEdge > 0 ? C.green : projEdge < 0 ? C.red : C.dim, ...sty.mono, fontWeight: 700, fontSize: 10 }}>
+          {projEdge > 0 ? "+" : ""}{projEdge}
+        </div>
+      )}
+      {fair != null && !edge && (
+        <div style={{ fontSize: 7, color: C.dim }}>
+          FV {(fair * 100).toFixed(0)}% ({toML(fair)}) <span style={{ color: vig <= 4 ? C.green : vig <= 7 ? C.yellow : C.red }}>{vig}%v</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Top Picks (Best +EV Plays) ──
+function TopPicks({ games }) {
+  const picks = [];
+  for (const g of games) {
+    const matchup = `${g.away.split(" ").pop()} @ ${g.home.split(" ").pop()}`;
+    // Pitcher picks
+    for (const p of g.pitchers) {
+      for (const [pk, data] of Object.entries(p.edges || {})) {
+        if (data.edge && data.edge.edge > 2 && data.edge.ev > 0) {
+          picks.push({
+            player: p.name, matchup, prop: `${pk} ${data.edge.side}`,
+            line: data.edge.line, edge: data.edge.edge, ev: data.edge.ev,
+            kelly: data.edge.kelly, odds: data.edge.odds, type: "pitcher",
+            modelP: data.edge.modelP, mktP: data.edge.mktP, proj: data.proj,
+          });
+        }
+      }
+    }
+    // Batter picks
+    for (const b of g.batters) {
+      for (const [pk, data] of Object.entries(b.edges || {})) {
+        if (data.edge && data.edge.edge > 2 && data.edge.ev > 0) {
+          picks.push({
+            player: b.name, matchup, prop: `${pk} ${data.edge.side}`,
+            line: data.edge.line, edge: data.edge.edge, ev: data.edge.ev,
+            kelly: data.edge.kelly, odds: data.edge.odds, type: "batter",
+            modelP: data.edge.modelP, mktP: data.edge.mktP, proj: data.proj,
+          });
+        }
+      }
+    }
+  }
+  picks.sort((a, b) => b.edge - a.edge);
+
+  if (picks.length === 0) return null;
+
+  return (
+    <div style={{ background: C.panel, borderRadius: 10, padding: 14, marginBottom: 14, border: `1px solid ${C.green}44` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <span style={{ color: C.green, fontWeight: 900, fontSize: 13 }}>+EV PLAYS</span>
+        <span style={sty.badge(C.green, C.green)}>{picks.length} edges</span>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              {["PLAYER", "MATCHUP", "PROP", "LINE", "PROJ", "EDGE", "EV/$100", "KELLY%", "MODEL", "MARKET", "ODDS"].map(h => (
+                <th key={h} style={{ ...sty.th, textAlign: h === "PLAYER" ? "left" : "center" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {picks.slice(0, 30).map((p, i) => {
+              const ec = p.edge > 5 ? C.green : p.edge > 3 ? C.yellow : C.blue;
+              return (
+                <tr key={i} style={{ borderBottom: `1px solid ${C.border}`, background: i % 2 ? "transparent" : C.card + "44" }}>
+                  <td style={{ ...sty.td, whiteSpace: "nowrap" }}>
+                    <b style={{ color: C.white, fontSize: 11, textTransform: "capitalize" }}>{p.player}</b>
+                    <span style={{ color: C.muted, fontSize: 8, marginLeft: 4 }}>{p.type === "pitcher" ? "SP" : "BAT"}</span>
+                  </td>
+                  <td style={{ ...sty.td, color: C.dim, fontSize: 10, textAlign: "center" }}>{p.matchup}</td>
+                  <td style={{ ...sty.td, textAlign: "center" }}>
+                    <span style={{ color: ec, fontWeight: 700, fontSize: 11, ...sty.mono }}>{p.prop}</span>
+                  </td>
+                  <td style={{ ...sty.td, color: C.blue, textAlign: "center", ...sty.mono, fontWeight: 700 }}>{p.line}</td>
+                  <td style={{ ...sty.td, color: C.white, textAlign: "center", ...sty.mono, fontWeight: 700 }}>{p.proj}</td>
+                  <td style={{ ...sty.td, textAlign: "center" }}>
+                    <span style={{ color: ec, fontWeight: 900, fontSize: 12, ...sty.mono }}>+{p.edge}%</span>
+                  </td>
+                  <td style={{ ...sty.td, color: p.ev > 0 ? C.green : C.red, textAlign: "center", ...sty.mono, fontWeight: 700 }}>
+                    {p.ev > 0 ? "+" : ""}{p.ev}
+                  </td>
+                  <td style={{ ...sty.td, color: p.kelly > 1 ? C.green : C.dim, textAlign: "center", ...sty.mono }}>{p.kelly}%</td>
+                  <td style={{ ...sty.td, color: C.dim, textAlign: "center", fontSize: 10 }}>{p.modelP}%</td>
+                  <td style={{ ...sty.td, color: C.dim, textAlign: "center", fontSize: 10 }}>{p.mktP}%</td>
+                  <td style={{ ...sty.td, color: p.odds > 0 ? C.green : C.yellow, textAlign: "center", ...sty.mono, fontWeight: 700, fontSize: 10 }}>
+                    {fmtO(p.odds)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Pitcher Card ──
+function PitcherCard({ p }) {
+  const projIP = p.projOuts != null ? (p.projOuts / 3).toFixed(1) : p.projIP;
+  const projERA = p.projER != null && projIP ? (p.projER / parseFloat(projIP) * 9).toFixed(2) : null;
+
+  return (
+    <div style={{ background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, padding: 14, flex: 1, minWidth: 320 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        {p.hand !== "?" && <span style={{ background: p.hand === "L" ? C.purple : C.blue, color: C.bg, fontSize: 8, fontWeight: 900, padding: "1px 4px", borderRadius: 3 }}>{p.hand}HP</span>}
+        <b style={{ color: C.white, fontSize: 15, textTransform: "capitalize" }}>{p.name}</b>
+        {p._noStats && <span style={sty.badge(C.yellow, C.yellow)}>ODDS ONLY</span>}
+        {!p._noStats && <span style={sty.badge(C.green, C.green)}>MODEL</span>}
+      </div>
+
+      {/* Stats tags */}
+      {!p._noStats && (
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 8 }}>
+          {[
+            [p.era + " ERA", parseFloat(p.era) <= 2.8 ? C.green : parseFloat(p.era) <= 3.5 ? C.yellow : C.red],
+            [p.whip + " WHIP", parseFloat(p.whip) <= 1.05 ? C.green : parseFloat(p.whip) <= 1.2 ? C.yellow : C.red],
+            [p.kPct + "% K", p.kPct >= 28 ? C.green : p.kPct >= 24 ? C.yellow : C.dim],
+            [p.kPer9 + " K/9", p.kPer9 >= 10 ? C.green : p.kPer9 >= 8 ? C.yellow : C.dim],
+          ].map(([l, c]) => <span key={l} style={sty.tag(c)}>{l}</span>)}
+        </div>
+      )}
+
+      {/* Quick projections */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {[
+          ["PROJ K", p.projK, C.green],
+          ["PROJ IP", projIP, C.blue],
+          ["PROJ ER", p.projER, C.orange],
+          ["PROJ ERA", projERA, projERA && parseFloat(projERA) <= 3.0 ? C.green : projERA && parseFloat(projERA) <= 4.0 ? C.yellow : C.red],
+          ["PROJ BB", p.projBB, C.purple],
+          ["PROJ H", p.projH, C.yellow],
+        ].map(([label, val, color]) => val != null ? (
+          <div key={label} style={{ background: C.panel, borderRadius: 5, padding: "5px 9px", textAlign: "center" }}>
+            <div style={{ color: C.muted, fontSize: 7, letterSpacing: 0.3 }}>{label}</div>
+            <div style={{ color, fontSize: 14, fontWeight: 900, ...sty.mono }}>{val}</div>
+          </div>
+        ) : null)}
+      </div>
+
+      {/* Prop rows */}
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+        <tbody>
+          {[
+            ["STRIKEOUTS", "K", C.green],
+            ["OUTS REC", "OUTS", C.blue],
+            ["HITS ALLOW", "H", C.yellow],
+            ["EARNED RUNS", "ER", C.orange],
+            ["WALKS", "BB", C.purple],
+          ].map(([label, pk, color]) => {
+            const data = p.edges?.[pk];
+            return (
+              <tr key={pk} style={{ borderBottom: `1px solid ${C.border}` }}>
+                <td style={{ padding: "7px 8px", color: C.dim, fontSize: 10, width: 100 }}>{label}</td>
+                <td style={{ padding: "7px 8px" }}>
+                  <PropCell propData={data} color={color} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Batter Table ──
+function BatterTable({ batters, visProps, setVP }) {
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10 }}>
+        <span style={{ color: C.muted, fontSize: 9, alignSelf: "center", marginRight: 4 }}>SHOW:</span>
+        {BPROPS.map(k => (
+          <button key={k} onClick={() => setVP(p => p.includes(k) ? p.filter(x => x !== k) : [...p, k])}
+            style={{
+              background: visProps.includes(k) ? BC[k] + "22" : C.bg,
+              color: visProps.includes(k) ? BC[k] : C.muted,
+              border: `1px solid ${visProps.includes(k) ? BC[k] + "55" : C.border}`,
+              borderRadius: 4, padding: "3px 10px", fontSize: 10, fontWeight: 700,
+              cursor: "pointer", fontFamily: "monospace",
+            }}>
+            {k}
+          </button>
+        ))}
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ ...sty.th, minWidth: 140, color: C.white }}>BATTER</th>
+              {visProps.map(k => (
+                <th key={k} style={{ ...sty.th, color: BC[k], borderLeft: `2px solid ${C.border}`, minWidth: 130, textAlign: "center" }}>{k}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {batters.map((b, idx) => (
+              <tr key={b.name + idx} style={{ borderBottom: `1px solid ${C.border}`, background: b.hasEdge ? C.green + "08" : "transparent" }}>
+                <td style={{ ...sty.td, whiteSpace: "nowrap" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <b style={{ color: C.white, fontSize: 11, textTransform: "capitalize" }}>{b.name}</b>
+                    {b._noStats && <span style={{ color: C.yellow, fontSize: 7 }}>MKT</span>}
+                    {!b._noStats && b.bat && <span style={{ color: C.dim, fontSize: 7 }}>{b.bat}/{b.pos}</span>}
+                  </div>
+                  {!b._noStats && b.pa > 0 && (
+                    <div style={{ color: C.muted, fontSize: 8 }}>{b.pa}PA · {b.g}G · ~{b.pPA}PA/gm</div>
+                  )}
+                </td>
+                {visProps.map(k => (
+                  <td key={k} style={{ ...sty.td, borderLeft: `2px solid ${C.border}`, textAlign: "center" }}>
+                    <PropCell propData={b.edges?.[k]} color={BC[k]} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Game Card ──
+function GameCard({ game }) {
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState("p");
+  const [visProps, setVP] = useState(["H", "HR", "R", "RBI", "TB"]);
+  const { away, home, time, propCount, pitchers, batters, park } = game;
+  const hasL = propCount > 0;
+  const t = new Date(time);
+  const timeStr = t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+
+  // Count edges in this game
+  const gameEdges = [];
+  for (const p of pitchers) {
+    for (const [pk, d] of Object.entries(p.edges || {})) {
+      if (d.edge && d.edge.edge > 2 && d.edge.ev > 0) gameEdges.push({ name: p.name, pk, ...d.edge });
+    }
+  }
+  for (const b of batters) {
+    for (const [pk, d] of Object.entries(b.edges || {})) {
+      if (d.edge && d.edge.edge > 2 && d.edge.ev > 0) gameEdges.push({ name: b.name, pk, ...d.edge });
+    }
+  }
+
+  const tabBtn = (k, label) => (
+    <button onClick={e => { e.stopPropagation(); setTab(k); }} style={{
+      padding: "5px 14px", border: "none", cursor: "pointer", fontWeight: 700, fontSize: 10, fontFamily: "monospace",
+      borderRadius: "5px 5px 0 0", background: tab === k ? C.green : "transparent", color: tab === k ? C.bg : C.muted,
+      borderBottom: tab === k ? `2px solid ${C.green}` : "2px solid transparent",
+    }}>{label}</button>
+  );
+
+  return (
+    <div style={{ borderRadius: 12, border: `1px solid ${gameEdges.length > 0 ? C.green + "66" : hasL ? C.blue + "33" : C.border}`, overflow: "hidden", marginBottom: 12 }}>
+      <div onClick={() => setOpen(o => !o)} style={{ background: C.panel, padding: "12px 16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ color: C.white, fontWeight: 800, fontSize: 15 }}>
+              {away} <span style={{ color: C.muted, fontWeight: 400 }}>@</span> {home}
+            </span>
+            {hasL && <span style={sty.badge(C.blue, C.blue)}>{propCount} props</span>}
+            {gameEdges.length > 0 && <span style={sty.badge(C.green, C.green)}>{gameEdges.length} edges</span>}
+            {!hasL && <span style={sty.badge(C.yellow, C.yellow)}>no props yet</span>}
+          </div>
+          <div style={{ color: C.muted, fontSize: 10, marginTop: 3 }}>
+            {timeStr}
+            {pitchers.length > 0 && <span style={{ color: C.dim, marginLeft: 10 }}>SP: {pitchers.map(p => p.name.split(" ").pop()).join(" vs ")}</span>}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          {pitchers.filter(p => p.projK != null).slice(0, 2).map(p => (
+            <div key={p.name} style={{ textAlign: "center", background: C.card, borderRadius: 6, padding: "4px 10px" }}>
+              <div style={{ color: C.dim, fontSize: 8 }}>{p.name.split(" ").pop()}</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <span style={{ color: C.green, ...sty.mono, fontWeight: 700, fontSize: 12 }}>{p.projK}K</span>
+                {p.projER != null && <span style={{ color: C.orange, ...sty.mono, fontWeight: 700, fontSize: 12 }}>{p.projER}ER</span>}
+              </div>
+              {!p._noStats && <div style={{ color: C.green, fontSize: 7 }}>MODEL</div>}
+            </div>
+          ))}
+          <span style={{ color: C.muted, fontSize: 18, fontWeight: 300 }}>{open ? "−" : "+"}</span>
+        </div>
+      </div>
+
+      {open && hasL && (
+        <div style={{ background: C.card, padding: "12px 14px" }}>
+          <div style={{ display: "flex", gap: 3, borderBottom: `1px solid ${C.border}`, marginBottom: 14, paddingBottom: 2 }}>
+            {pitchers.length > 0 && tabBtn("p", "PITCHERS")}
+            {batters.length > 0 && tabBtn("b", "ALL BATTERS")}
+          </div>
+          {tab === "p" && (
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              {pitchers.map(p => <PitcherCard key={p.name} p={p} />)}
+            </div>
+          )}
+          {tab === "b" && <BatterTable batters={batters} visProps={visProps} setVP={setVP} />}
+        </div>
+      )}
+
+      {open && !hasL && (
+        <div style={{ background: C.card, padding: 24, textAlign: "center", color: C.muted, fontSize: 11 }}>
+          Props not posted yet — typically available ~2-3 hrs before first pitch
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════════════════════
+export default function App() {
+  const [games, setGames] = useState([]);
+  const [status, setStatus] = useState("Hit LOAD to pull MLB stats + live odds → model projections + edge detection");
+  const [loading, setLoading] = useState(false);
+  const [updated, setUpdated] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const g = await loadAll(setStatus);
+    setGames(g);
+    setUpdated(new Date().toLocaleTimeString());
+    setLoading(false);
+  }, []);
+
+  const withProps = games.filter(g => g.propCount > 0).length;
+  const totalProps = games.reduce((s, g) => s + g.propCount, 0);
+  const totalEdges = games.reduce((s, g) => {
+    let e = 0;
+    for (const p of g.pitchers) for (const d of Object.values(p.edges || {})) if (d.edge?.edge > 2 && d.edge?.ev > 0) e++;
+    for (const b of g.batters) for (const d of Object.values(b.edges || {})) if (d.edge?.edge > 2 && d.edge?.ev > 0) e++;
+    return s + e;
+  }, 0);
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", fontFamily: "'Inter', 'Segoe UI', sans-serif", color: C.white, padding: 16, maxWidth: 1400, margin: "0 auto" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+            <div style={{ background: C.green, color: C.bg, fontWeight: 900, fontSize: 11, padding: "3px 10px", borderRadius: 4 }}>MLB</div>
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900, letterSpacing: -0.5 }}>PROP ENGINE</h1>
+            <span style={{ color: C.dim, fontSize: 9, fontWeight: 600 }}>v2 — MODEL + MARKET</span>
+          </div>
+          <div style={{ color: C.muted, fontSize: 10 }}>
+            Independent projections (MLB Stats + park factors + pitcher matchup + platoon) vs. live market odds
+            {updated && <span style={{ color: C.green }}> · Updated {updated}</span>}
+          </div>
+          <div style={{ color: status.includes("Error") ? C.red : status.includes("Done") ? C.green : C.dim, fontSize: 9, marginTop: 2 }}>{status}</div>
+        </div>
+        <button onClick={load} disabled={loading} style={{
+          background: loading ? C.muted : `linear-gradient(135deg, ${C.green}, ${C.teal})`,
+          color: C.bg, border: "none", borderRadius: 8, padding: "12px 28px",
+          fontWeight: 900, fontSize: 13, cursor: loading ? "not-allowed" : "pointer", fontFamily: "monospace",
+        }}>
+          {loading ? "LOADING..." : "LOAD GAMES"}
+        </button>
+      </div>
+
+      {/* Summary bar */}
+      {games.length > 0 && (
+        <div style={{ background: C.panel, borderRadius: 8, padding: "10px 14px", marginBottom: 12, border: `1px solid ${C.green}33`, display: "flex", gap: 20, flexWrap: "wrap", fontSize: 11 }}>
+          <div><span style={{ color: C.muted }}>Games </span><span style={{ color: C.white, fontWeight: 700 }}>{games.length}</span></div>
+          <div><span style={{ color: C.muted }}>With props </span><span style={{ color: C.blue, fontWeight: 700 }}>{withProps}</span></div>
+          <div><span style={{ color: C.muted }}>Props </span><span style={{ color: C.blue, fontWeight: 700 }}>{totalProps}</span></div>
+          <div><span style={{ color: C.muted }}>Model edges </span><span style={{ color: C.green, fontWeight: 700 }}>{totalEdges}</span></div>
+        </div>
+      )}
+
+      {/* Top Picks */}
+      {games.length > 0 && <TopPicks games={games} />}
+
+      {/* High-K Pitchers */}
+      {games.length > 0 && (() => {
+        const pWatch = games.flatMap(g => g.pitchers)
+          .filter(p => p.projK != null && p.projK >= 5.0)
+          .sort((a, b) => b.projK - a.projK);
+        return pWatch.length > 0 ? (
+          <div style={{ background: C.panel, borderRadius: 8, padding: "10px 14px", marginBottom: 12, border: `1px solid ${C.green}33` }}>
+            <div style={{ color: C.green, fontSize: 10, fontWeight: 700, marginBottom: 8 }}>HIGH-K PITCHERS (proj 5.0+)</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {pWatch.slice(0, 14).map(p => (
+                <div key={p.name} style={{ background: C.card, borderRadius: 8, padding: "8px 12px", border: `1px solid ${C.green}44`, minWidth: 130 }}>
+                  <div style={{ color: C.green, fontWeight: 700, fontSize: 11, textTransform: "capitalize" }}>{p.name}</div>
+                  <div style={{ color: C.muted, fontSize: 8 }}>{p.hand}HP · {p.era} ERA</div>
+                  <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                    <div><div style={{ color: C.muted, fontSize: 7 }}>PROJ K</div><div style={{ color: C.green, ...sty.mono, fontWeight: 700, fontSize: 13 }}>{p.projK}</div></div>
+                    <div><div style={{ color: C.muted, fontSize: 7 }}>K/9</div><div style={{ color: C.blue, ...sty.mono, fontWeight: 700, fontSize: 13 }}>{p.kPer9}</div></div>
+                    {p.edges?.K?.live && <div><div style={{ color: C.muted, fontSize: 7 }}>LINE</div><div style={{ color: C.blue, ...sty.mono, fontWeight: 700, fontSize: 13 }}>{p.edges.K.live.pt}</div></div>}
+                  </div>
+                  {!p._noStats && <div style={{ color: C.green, fontSize: 7, marginTop: 3 }}>MODEL PROJECTION</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null;
+      })()}
+
+      {/* Game Cards */}
+      {games.map(g => <GameCard key={g.id} game={g} />)}
+
+      {games.length === 0 && !loading && (
+        <div style={{ textAlign: "center", padding: 80, color: C.muted }}>
+          <div style={{ fontSize: 52, marginBottom: 16 }}>&#9918;</div>
+          <div style={{ fontSize: 15, color: C.dim, marginBottom: 8 }}>Hit LOAD to pull every MLB game</div>
+          <div style={{ fontSize: 11, color: C.muted, maxWidth: 500, margin: "0 auto" }}>
+            Fetches real player stats from MLB, live odds from 6+ books, then runs independent projections
+            with pitcher matchup analysis, park factors, and platoon adjustments to find +EV plays.
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 14, color: C.muted, fontSize: 8, textAlign: "center" }}>
+        MLB Prop Engine v2 — Model: pitcher suppression + park factors + platoon + binomial/Poisson probability vs. devigged market odds — Kelly criterion sizing
+      </div>
+    </div>
+  );
+}
