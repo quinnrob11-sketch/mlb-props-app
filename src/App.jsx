@@ -268,9 +268,13 @@ function projPitcher(pStats, park) {
   const pkK = (park?.k || 100) / 100;
   const pkR = park?.pf || 1.0;
 
+  // Amplify K projection for elite arms — high-K pitchers outperform their rates
+  // in individual games due to game-script leverage (pitching with lead = more K)
+  const kBoost = kRate >= 0.28 ? 1.06 : kRate >= 0.24 ? 1.03 : 1.0;
+
   return {
     name: pStats.name, hand: pStats.throw || "R",
-    projK: +(kRate * pBF * pkK).toFixed(1),
+    projK: +(kRate * pBF * pkK * kBoost).toFixed(1),
     projIP: +pIP.toFixed(1),
     projOuts: Math.round(pIP * 3),
     projH: +(hRate * pBF).toFixed(1),
@@ -281,6 +285,7 @@ function projPitcher(pStats, park) {
     kPct: +(kRate * 100).toFixed(1),
     ip, gs, bf,
     _hRate: hRate, _kRate: kRate, _erRate: erRate,
+    _hasModel: true,
   };
 }
 
@@ -302,23 +307,36 @@ function projBatter(bStats, pitProj, park) {
   const paPerG = pa / Math.max(g, 1);
   const pPA = Math.min(paPerG * 1.05, 5.2);
 
-  // Pitcher suppression
+  // Pitcher suppression — AMPLIFIED for differentiation
+  // The market knows season rates; we push the pitcher factor harder
+  // because individual game matchups are more volatile than season averages
   let hitF = 1, kF = 1, runF = 1;
   if (pitProj) {
-    hitF = Math.max(0.5, Math.min(1.6, pitProj._hRate / LGA.h));
-    kF = Math.max(0.5, Math.min(1.6, pitProj._kRate / LGA.k));
-    runF = Math.max(0.5, Math.min(1.6, pitProj._erRate / LGA.r));
+    const rawHitF = pitProj._hRate / LGA.h;
+    const rawKF = pitProj._kRate / LGA.k;
+    const rawRunF = pitProj._erRate / LGA.r;
+    // Amplify deviation from 1.0 by 40% — aces suppress MORE, bad arms inflate MORE
+    hitF = Math.max(0.35, Math.min(2.0, 1 + (rawHitF - 1) * 1.4));
+    kF = Math.max(0.35, Math.min(2.0, 1 + (rawKF - 1) * 1.4));
+    runF = Math.max(0.35, Math.min(2.0, 1 + (rawRunF - 1) * 1.4));
   }
 
-  // Platoon: +3%/−3%
+  // Platoon splits — real MLB splits are ~8-10%, not 3%
+  // Favorable matchup (bat opposite hand or switch): boost
+  // Unfavorable (same hand): suppress harder
   const plat = (bStats.bat === "L" && pitProj?.hand === "R") ||
                (bStats.bat === "R" && pitProj?.hand === "L") ||
                bStats.bat === "S";
-  const plA = plat ? 1.03 : 0.97;
+  const sameSide = (bStats.bat === "L" && pitProj?.hand === "L") ||
+                   (bStats.bat === "R" && pitProj?.hand === "R");
+  const plA = plat ? 1.08 : sameSide ? 0.88 : 1.0;
 
   const pkHR = (park?.hr || 100) / 100;
   const pkR = park?.pf || 1.0;
   const pkK = (park?.k || 100) / 100;
+
+  // Strikeout platoon is INVERTED — same-side matchups K MORE
+  const plK = sameSide ? 1.12 : plat ? 0.90 : 1.0;
 
   const pH = +(hR * hitF * plA * pPA).toFixed(2);
   const pHR = +(hrR * hitF * plA * pPA * pkHR).toFixed(2);
@@ -327,7 +345,7 @@ function projBatter(bStats, pitProj, park) {
   const pTB = +(tbR * hitF * plA * pPA * pkHR).toFixed(2);
   const p2B = +(dR * hitF * plA * pPA).toFixed(2);
   const pSB = +(sbR * pPA).toFixed(2);
-  const pK = +(kR * kF * (1 / plA) * pPA * pkK).toFixed(2);
+  const pK = +(kR * kF * plK * pPA * pkK).toFixed(2);
   const p1B = +(sR * hitF * plA * pPA).toFixed(2);
 
   return {
@@ -335,6 +353,7 @@ function projBatter(bStats, pitProj, park) {
     H: pH, HR: pHR, R: pR, RBI: pRBI, TB: pTB,
     HRR: +(pH + pR + pRBI).toFixed(2),
     "2B": p2B, SB: pSB, K: pK, "1B": p1B,
+    _hasModel: true,
   };
 }
 
@@ -379,12 +398,13 @@ function calcEdge(modelProj, live, propKey, pa) {
   };
 }
 
-// Market-implied projection (fallback when no MLB stats available)
+// Market-implied projection — this is NOT a model projection.
+// It just extracts what the market is pricing. Shown for reference only.
+// Returns null for edge detection — you can't beat the market with its own numbers.
 function impliedProj(live) {
   if (!live || live.ov == null || live.uv == null) return null;
   const fair = dvg(live.ov, live.uv);
   if (fair == null) return null;
-  // Better formula: adjust line by how far fair prob deviates from 50%
   return +(live.pt + (fair - 0.5) * 2).toFixed(2);
 }
 
@@ -631,21 +651,25 @@ const sty = {
 
 // ── Edge Badge ──
 function EdgeBadge({ e }) {
-  if (!e) return <span style={{ color: C.muted, fontSize: 9 }}>no model</span>;
-  const color = e.edge > 5 ? C.green : e.edge > 2 ? C.yellow : e.edge < -2 ? C.red : C.dim;
+  if (!e) return <span style={{ color: C.yellow, fontSize: 8, fontStyle: "italic" }}>MKT ONLY — no edge calc</span>;
+  const color = e.edge > 8 ? C.green : e.edge > 4 ? C.yellow : e.edge > 0 ? C.blue : e.edge < -4 ? C.red : C.dim;
+  const grade = e.edge > 8 ? "A+" : e.edge > 5 ? "A" : e.edge > 3 ? "B" : e.edge > 0 ? "C" : "—";
   return (
     <div style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-        <span style={{ color, fontWeight: 900, fontSize: 11, ...sty.mono }}>
+        <span style={{ color, fontWeight: 900, fontSize: 12, ...sty.mono }}>
           {e.side === "OVER" ? "O" : "U"} {e.edge > 0 ? "+" : ""}{e.edge}%
         </span>
-        {e.edge > 5 && <span style={sty.badge(C.green, C.green)}>STRONG</span>}
-        {e.edge > 2 && e.edge <= 5 && <span style={sty.badge(C.yellow, C.yellow)}>LEAN</span>}
+        {e.edge > 5 && <span style={sty.badge(C.green, C.green)}>PLAY [{grade}]</span>}
+        {e.edge > 2 && e.edge <= 5 && <span style={sty.badge(C.yellow, C.yellow)}>LEAN [{grade}]</span>}
       </div>
       {e.ev > 0 && (
         <div style={{ fontSize: 8, color: C.dim }}>
-          EV +${e.ev} · {e.kelly > 0 ? `${e.kelly}% Kelly` : ""} · {e.modelP}%m/{e.mktP}%bk
+          EV +${e.ev}/100 · {e.kelly > 0 ? `${e.kelly}% Kelly` : ""} · Model {e.modelP}% vs Book {e.mktP}%
         </div>
+      )}
+      {e.ev <= 0 && e.edge > 0 && (
+        <div style={{ fontSize: 8, color: C.dim }}>Thin — juice eats the edge ({e.vig}% vig)</div>
       )}
     </div>
   );
@@ -664,8 +688,9 @@ function PropCell({ propData, color }) {
     <div style={{ minWidth: 100 }}>
       {/* Model projection */}
       {proj != null && (
-        <div style={{ color: color || C.white, fontFamily: "monospace", fontWeight: 900, fontSize: 15, marginBottom: 2 }}>
-          {proj}
+        <div style={{ marginBottom: 2 }}>
+          <span style={{ color: color || C.white, fontFamily: "monospace", fontWeight: 900, fontSize: 15 }}>{proj}</span>
+          {!edge && <span style={{ color: C.yellow, fontSize: 7, marginLeft: 3, fontStyle: "italic" }}>mkt</span>}
         </div>
       )}
       {/* Live line + odds */}
