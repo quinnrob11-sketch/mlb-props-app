@@ -27,11 +27,8 @@ const PMKTS = {
   K:"pitcher_strikeouts", OUTS:"pitcher_outs", H:"pitcher_hits_allowed",
   ER:"pitcher_earned_runs", BB:"pitcher_walks",
 };
-const PROP_COLORS = {
-  K:C.green, OUTS:C.blue, H:C.yellow, ER:C.orange, BB:C.purple,
-  HR:C.red, R:C.green, RBI:C.orange, TB:C.purple, HRR:C.teal,
-  "2B":C.blue, SB:C.green, "1B":C.yellow,
-};
+const PROP_LABELS = { K:"Strikeouts", OUTS:"Outs Recorded", H:"Hits Allowed", ER:"Earned Runs", BB:"Walks" };
+const BPROP_LABELS = { H:"Hits", HR:"Home Runs", R:"Runs", RBI:"RBIs", TB:"Total Bases", HRR:"H+R+RBI", "2B":"Doubles", SB:"Stolen Bases", K:"Strikeouts", "1B":"Singles" };
 
 // Park factors — Statcast 3-yr rolling (100 = neutral)
 const PARKS = {
@@ -67,8 +64,15 @@ const PARKS = {
   "Washington Nationals":  {r:99, hr:98, k:101,pf:0.99},
 };
 
-// League-average per-PA rates (2025 MLB)
-const LGA = {h:0.243,hr:0.030,r:0.115,rbi:0.110,tb:0.380,d:0.042,s:0.170,sb:0.022,k:0.225};
+// League-average rates (2025 MLB season norms)
+const LGA = {
+  // per-PA batter rates
+  h:0.243, hr:0.030, r:0.115, rbi:0.110, tb:0.380, d:0.042, s:0.170, sb:0.022, k:0.225,
+  // per-BF pitcher rates
+  pk:0.220, ph:0.240, per:0.040, pbb:0.080,
+  // team per-PA rates (league average)
+  tk:0.225, th:0.243, tbb:0.082,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // API HELPERS
@@ -138,6 +142,30 @@ async function fetchStats(ids) {
   return map;
 }
 
+// Fetch team-level hitting stats for opponent quality adjustments
+async function fetchTeamHitting() {
+  const season = new Date().getFullYear();
+  const map = {};
+  try {
+    const r = await mlbApi("api/v1/teams/stats",{stats:"season",group:"hitting",season:String(season),sportId:"1"});
+    if (!r.ok) return map;
+    const d = await r.json();
+    for (const split of d.stats?.[0]?.splits||[]) {
+      const s = split.stat;
+      const pa = s.plateAppearances||1;
+      map[split.team.id] = {
+        name: split.team.name,
+        kRate: (s.strikeOuts||0)/pa,       // team K rate per PA
+        hRate: (s.hits||0)/(s.atBats||1),  // team batting average
+        bbRate:(s.baseOnBalls||0)/pa,       // team walk rate
+        hrRate:(s.homeRuns||0)/pa,          // team HR rate
+        avg: s.avg ? parseFloat(s.avg) : 0.243,
+      };
+    }
+  } catch {/* */}
+  return map;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ODDS PARSING
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -186,18 +214,24 @@ const dvg = (o,u) => o&&u ? mlP(o)/(mlP(o)+mlP(u)) : null;
 const fmtO = ml => ml==null ? "—" : (ml>0?"+":"")+ml;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PROJECTION ENGINE — PURE MODEL, NO MARKET BLENDING
+// PROJECTION ENGINE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function projPitcher(pStats, park) {
+/*
+ * Pitcher projection — uses OPPOSING TEAM batting stats as a major lever.
+ * A pitcher facing a high-K team gets boosted K projection; facing a
+ * low-K contact team gets suppressed. This is the #1 factor books use
+ * that a flat per-BF rate misses.
+ */
+function projPitcher(pStats, park, oppTeam) {
   if (!pStats?.pitching) return null;
   const s = pStats.pitching;
   const ip = parseFloat(s.inningsPitched)||0;
   const bf = s.battersFaced || Math.round(ip*3+(s.hits||0)+(s.baseOnBalls||0));
   if (ip<3||bf<10) return null;
 
-  const kRate = (s.strikeOuts||0)/bf;
-  const hRate = (s.hits||0)/bf;
+  const kRate  = (s.strikeOuts||0)/bf;
+  const hRate  = (s.hits||0)/bf;
   const erRate = (s.earnedRuns||0)/bf;
   const bbRate = (s.baseOnBalls||0)/bf;
 
@@ -206,24 +240,52 @@ function projPitcher(pStats, park) {
   const pIP = Math.min(Math.max(avgIP,4.5),7.0);
   const pBF = Math.round(pIP*3 + (hRate+bbRate)*pIP*3);
 
+  // Park factors
   const pkK = (park?.k||100)/100;
   const pkR = park?.pf||1.0;
 
-  // K boost for elite arms — they outperform rate in single games
-  const kBoost = kRate>=0.28 ? 1.06 : kRate>=0.24 ? 1.03 : 1.0;
+  // ─── OPPONENT QUALITY (the big lever) ───
+  // Compare opposing team's rates to league average, amplify 1.6x
+  let oppK=1.0, oppH=1.0, oppBB=1.0;
+  if (oppTeam) {
+    oppK  = 1 + (oppTeam.kRate/LGA.tk - 1) * 1.6;   // high-K team → more Ks
+    oppH  = 1 + (oppTeam.hRate/LGA.th - 1) * 1.6;   // high-AVG team → more hits allowed
+    oppBB = 1 + (oppTeam.bbRate/LGA.tbb - 1) * 1.4;  // high-BB team → more walks
+    oppK  = Math.max(0.65, Math.min(1.45, oppK));
+    oppH  = Math.max(0.65, Math.min(1.45, oppH));
+    oppBB = Math.max(0.65, Math.min(1.45, oppBB));
+  }
+
+  // K boost for elite arms
+  const kBoost = kRate>=0.30 ? 1.08 : kRate>=0.26 ? 1.05 : kRate>=0.22 ? 1.02 : 1.0;
+
+  const projK  = +(kRate * pBF * pkK * oppK * kBoost).toFixed(1);
+  const projH  = +(hRate * pBF * oppH).toFixed(1);
+  const projER = +(erRate * pBF * pkR * oppH).toFixed(1);
+  const projBB = +(bbRate * pBF * oppBB).toFixed(1);
 
   return {
     name:pStats.name, hand:pStats.throw||"R",
-    K:  +(kRate*pBF*pkK*kBoost).toFixed(1),
+    K: projK,
     OUTS: Math.round(pIP*3),
-    H:  +(hRate*pBF).toFixed(1),
-    ER: +(erRate*pBF*pkR).toFixed(1),
-    BB: +(bbRate*pBF).toFixed(1),
-    era:s.era??"—", kPer9: ip>0?+((s.strikeOuts||0)/ip*9).toFixed(1):0,
-    _hRate:hRate, _kRate:kRate, _erRate:erRate,
+    H: projH,
+    ER: projER,
+    BB: projBB,
+    era: s.era??"—",
+    kPer9: ip>0?+((s.strikeOuts||0)/ip*9).toFixed(1):0,
+    whip: ip>0?+(((s.hits||0)+(s.baseOnBalls||0))/ip).toFixed(2):"—",
+    avgIP: +avgIP.toFixed(1),
+    _hRate:hRate, _kRate:kRate, _erRate:erRate, _bbRate:bbRate,
+    oppTeamName: oppTeam?.name||"?",
+    oppK: oppTeam ? +(oppTeam.kRate*100).toFixed(1) : null,
+    oppAVG: oppTeam ? oppTeam.avg.toFixed(3) : null,
   };
 }
 
+/*
+ * Batter projection — non-linear pitcher suppression.
+ * Elite pitchers suppress more aggressively, bad pitchers inflate more.
+ */
 function projBatter(bStats, pitProj, park) {
   if (!bStats?.hitting) return null;
   const s = bStats.hitting;
@@ -235,20 +297,29 @@ function projBatter(bStats, pitProj, park) {
   const paPerG = pa/Math.max(g,1);
   const pPA = Math.min(paPerG*1.05, 5.2);
 
-  // Pitcher suppression — AMPLIFIED 40% from raw
+  // Non-linear pitcher suppression — amplified 1.8x, squared deviation for extremes
   let hitF=1, kF=1, runF=1;
   if (pitProj) {
-    hitF = Math.max(0.35, Math.min(2.0, 1+(pitProj._hRate/LGA.h - 1)*1.4));
-    kF   = Math.max(0.35, Math.min(2.0, 1+(pitProj._kRate/LGA.k - 1)*1.4));
-    runF = Math.max(0.35, Math.min(2.0, 1+(pitProj._erRate/LGA.r - 1)*1.4));
+    const hDev = pitProj._hRate/LGA.ph - 1;    // negative = tough pitcher
+    const kDev = pitProj._kRate/LGA.pk - 1;    // positive = high-K pitcher
+    const rDev = pitProj._erRate/LGA.per - 1;
+
+    // Amplify + add non-linear component for extremes
+    hitF = 1 + hDev*1.8 + Math.sign(hDev)*hDev*hDev*3;
+    kF   = 1 + kDev*1.8 + Math.sign(kDev)*kDev*kDev*3;
+    runF = 1 + rDev*1.6;
+
+    hitF = Math.max(0.45, Math.min(1.65, hitF));
+    kF   = Math.max(0.45, Math.min(1.65, kF));
+    runF = Math.max(0.45, Math.min(1.65, runF));
   }
 
   // Platoon — real MLB splits are 8-12%
   const batH = bStats.bat, pitH = pitProj?.hand;
   const favorable = (batH==="L"&&pitH==="R")||(batH==="R"&&pitH==="L")||batH==="S";
   const sameSide  = (batH==="L"&&pitH==="L")||(batH==="R"&&pitH==="R");
-  const plH = favorable?1.08 : sameSide?0.88 : 1.0; // for hits/power
-  const plK = sameSide?1.12 : favorable?0.90 : 1.0;  // K goes UP same-side
+  const plH = favorable?1.10 : sameSide?0.86 : 1.0;
+  const plK = sameSide?1.14 : favorable?0.88 : 1.0;
 
   const pkHR = (park?.hr||100)/100;
   const pkR  = park?.pf||1.0;
@@ -271,16 +342,17 @@ function projBatter(bStats, pitProj, park) {
     H:pH, HR:pHR, R:pR, RBI:pRBI, TB:pTB,
     HRR:+(pH+pR+pRBI).toFixed(2),
     "2B":p2B, SB:pSB, K:pK, "1B":p1B,
-    pPA,
+    pPA, oppPitcher: pitProj?.name||null,
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MASTER LOAD — builds flat list of all plays
+// MASTER LOAD
 // ═══════════════════════════════════════════════════════════════════════════════
 async function loadAll(setSt) {
-  const plays = []; // flat list: every prop with a projection
-  const log = { games:0, mlbGames:0, statsLoaded:0, matched:0, unmatched:0, propsFound:0 };
+  const pitcherPlays = [];
+  const batterPlays = [];
+  const log = { games:0, mlbGames:0, statsLoaded:0, pitcherProps:0, batterProps:0 };
 
   // 1. MLB schedule
   setSt("Fetching MLB schedule...");
@@ -288,10 +360,13 @@ async function loadAll(setSt) {
   try {
     mlbGames = await fetchSchedule();
     log.mlbGames = mlbGames.length;
-    setSt(`${mlbGames.length} MLB games — loading rosters + stats...`);
-  } catch(e) { setSt(`MLB API error: ${e.message} — continuing with odds only`); }
+  } catch(e) { setSt(`MLB API error: ${e.message}`); }
 
-  // 2. Rosters + Stats
+  // 2. Team hitting stats (for opponent quality)
+  setSt("Fetching team batting stats...");
+  const teamHitting = await fetchTeamHitting();
+
+  // 3. Rosters + Stats
   const statsMap = {};
   const rostersByTeam = {};
   if (mlbGames.length>0) {
@@ -319,7 +394,7 @@ async function loadAll(setSt) {
     }
   }
 
-  // 3. Odds events
+  // 4. Odds events
   setSt("Fetching odds...");
   let evs = [];
   try {
@@ -337,7 +412,7 @@ async function loadAll(setSt) {
   unique.sort((a,b)=>new Date(a.commence_time)-new Date(b.commence_time));
   log.games = unique.length;
 
-  // 4. For each game: fetch odds, match stats, build plays
+  // 5. For each game: fetch odds, match stats, build plays
   for (let i=0; i<unique.length; i++) {
     const ev = unique[i];
     setSt(`Props: ${ev.away_team.split(" ").pop()} @ ${ev.home_team.split(" ").pop()} (${i+1}/${unique.length})`);
@@ -345,9 +420,8 @@ async function loadAll(setSt) {
     const lines = {};
     const rs = await Promise.all(ODDS_MKTS.map(m=>oddsApi(`sports/${SPORT}/events/${ev.id}/odds`,{regions:"us",markets:m,oddsFormat:"american"}).catch(()=>null)));
     for (const r of rs) { if (r?.ok) parseOdds(await r.json(), lines); }
-    log.propsFound += Object.keys(lines).length;
 
-    // Match to MLB game for park + pitchers
+    // Match to MLB game
     const mlbGame = mlbGames.find(g=>
       ev.home_team.includes(g.home.name.split(" ").pop())||g.home.name.includes(ev.home_team.split(" ").pop())
     );
@@ -355,15 +429,17 @@ async function loadAll(setSt) {
     const matchup = `${ev.away_team.split(" ").pop()} @ ${ev.home_team.split(" ").pop()}`;
     const gameTime = new Date(ev.commence_time).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});
 
-    // Build pitcher projections
+    // Build pitcher projections — now with opponent team quality
     const pitProjs = {};
     for (const side of ["away","home"]) {
       const pp = mlbGame?.pp?.[side];
       if (pp && statsMap[pp.id]) {
-        const proj = projPitcher(statsMap[pp.id], park);
+        // Opposing team is the OTHER side
+        const oppTeamId = side==="away" ? mlbGame.home.id : mlbGame.away.id;
+        const oppTeam = teamHitting[oppTeamId] || null;
+        const proj = projPitcher(statsMap[pp.id], park, oppTeam);
         if (proj) {
           pitProjs[side] = proj;
-          // Add pitcher plays
           for (const [pk, mkt] of Object.entries(PMKTS)) {
             const lv = getLine(lines, proj.name, mkt);
             if (!lv) continue;
@@ -371,20 +447,22 @@ async function loadAll(setSt) {
             if (modelVal==null) continue;
             const diff = +(modelVal - lv.pt).toFixed(2);
             const fair = dvg(lv.ov, lv.uv);
-            plays.push({
-              player:proj.name, type:"SP", matchup, gameTime,
-              prop:pk, line:lv.pt, proj:modelVal, diff,
+            pitcherPlays.push({
+              player:proj.name, matchup, gameTime,
+              prop:pk, propLabel: PROP_LABELS[pk]||pk,
+              line:lv.pt, proj:modelVal, diff,
               direction: diff>0?"OVER":"UNDER",
-              odds:lv, fair, hasModel:true,
-              info:`${proj.hand}HP · ${proj.era} ERA · ${proj.kPer9} K/9`,
+              odds:lv, fair, hand:proj.hand,
+              era:proj.era, kPer9:proj.kPer9, whip:proj.whip, avgIP:proj.avgIP,
+              oppTeamName:proj.oppTeamName, oppK:proj.oppK, oppAVG:proj.oppAVG,
             });
-            log.matched++;
+            log.pitcherProps++;
           }
         }
       }
     }
 
-    // Discover batters from odds + match to stats
+    // Batter plays — only include if edge is meaningful (|diff| >= 0.25)
     const batterNames = new Set();
     for (const k of Object.keys(lines)) {
       if (!k.includes("pitcher_")) {
@@ -394,7 +472,6 @@ async function loadAll(setSt) {
     }
 
     for (const bName of batterNames) {
-      // Match to MLB stats
       let bStat = null;
       const bN = norm(bName);
       for (const s of Object.values(statsMap)) {
@@ -409,7 +486,6 @@ async function loadAll(setSt) {
         }
       }
 
-      // Determine opposing pitcher
       let oppProj = null;
       if (mlbGame) {
         const awayNames = (mlbGame.awayRoster||[]).map(p=>norm(p.name));
@@ -417,58 +493,42 @@ async function loadAll(setSt) {
         oppProj = isAway ? pitProjs.home : pitProjs.away;
       }
 
-      if (bStat) {
-        const bp = projBatter(bStat, oppProj, park);
-        if (bp) {
-          for (const pk of BPROPS) {
-            const lv = getLine(lines, bStat.name, BMKTS[pk]);
-            if (!lv) continue;
-            const modelVal = bp[pk];
-            if (modelVal==null) continue;
-            const diff = +(modelVal - lv.pt).toFixed(2);
-            const fair = dvg(lv.ov, lv.uv);
-            const oppName = oppProj?.name?.split(" ").pop()||"?";
-            plays.push({
-              player:bp.name, type:bp.pos, matchup, gameTime,
-              prop:pk, line:lv.pt, proj:modelVal, diff,
-              direction: diff>0?"OVER":"UNDER",
-              odds:lv, fair, hasModel:true,
-              info:`${bp.bat}HB · vs ${oppName} · ~${bp.pPA.toFixed(1)} PA`,
-            });
-            log.matched++;
-          }
-          continue;
-        }
-      }
+      if (!bStat) continue;
+      const bp = projBatter(bStat, oppProj, park);
+      if (!bp) continue;
 
-      // No stats — still show the line but mark as no model
       for (const pk of BPROPS) {
-        const lv = getLine(lines, bName, BMKTS[pk]);
+        const lv = getLine(lines, bStat.name, BMKTS[pk]);
         if (!lv) continue;
-        plays.push({
-          player:bName, type:"?", matchup, gameTime,
-          prop:pk, line:lv.pt, proj:null, diff:null,
-          direction:null, odds:lv, fair:dvg(lv.ov,lv.uv),
-          hasModel:false, info:"no stats matched",
+        const modelVal = bp[pk];
+        if (modelVal==null) continue;
+        const diff = +(modelVal - lv.pt).toFixed(2);
+        // Only keep meaningful edges
+        if (Math.abs(diff) < 0.20) continue;
+        const fair = dvg(lv.ov, lv.uv);
+        batterPlays.push({
+          player:bp.name, pos:bp.pos, matchup, gameTime,
+          prop:pk, propLabel: BPROP_LABELS[pk]||pk,
+          line:lv.pt, proj:modelVal, diff,
+          direction: diff>0?"OVER":"UNDER",
+          odds:lv, fair, bat:bp.bat,
+          oppPitcher:oppProj?.name||"?",
         });
-        log.unmatched++;
+        log.batterProps++;
       }
     }
   }
 
-  // Sort: biggest absolute diff first (model plays only on top)
-  plays.sort((a,b) => {
-    if (a.hasModel && !b.hasModel) return -1;
-    if (!a.hasModel && b.hasModel) return 1;
-    return Math.abs(b.diff||0) - Math.abs(a.diff||0);
-  });
+  // Sort by biggest edge
+  pitcherPlays.sort((a,b) => Math.abs(b.diff) - Math.abs(a.diff));
+  batterPlays.sort((a,b) => Math.abs(b.diff) - Math.abs(a.diff));
 
-  setSt(`Done — ${log.matched} model projections, ${log.unmatched} unmatched, ${log.propsFound} total props across ${log.games} games (${log.statsLoaded} player stats loaded)`);
-  return { plays, log };
+  setSt(`Done — ${log.pitcherProps} pitcher props, ${log.batterProps} batter edges across ${log.games} games`);
+  return { pitcherPlays, batterPlays, log };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// UI
+// UI COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════════
 const sty = {
   th: {padding:"8px 10px",color:C.muted,fontSize:9,fontWeight:700,borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap",background:"#0a0f1a",textAlign:"left",letterSpacing:0.5,textTransform:"uppercase"},
@@ -476,83 +536,137 @@ const sty = {
   mono: {fontFamily:"'Courier New',monospace"},
 };
 
-function PlaysTable({ plays, filter }) {
-  const filtered = filter==="all" ? plays :
-    filter==="model" ? plays.filter(p=>p.hasModel) :
-    filter==="over" ? plays.filter(p=>p.diff>0) :
-    filter==="under" ? plays.filter(p=>p.diff<0) :
-    plays.filter(p=>p.hasModel && Math.abs(p.diff)>=0.3);
+function diffColor(diff) {
+  const abs = Math.abs(diff||0);
+  if (abs>=1.0) return diff>0 ? C.green : C.red;
+  if (abs>=0.5) return diff>0 ? "#66ff99" : "#ff8a65";
+  if (abs>=0.3) return diff>0 ? C.yellow : "#ffab91";
+  return C.dim;
+}
 
+function callLabel(diff) {
+  const abs = Math.abs(diff||0);
+  const dir = diff>0 ? "OVER" : "UNDER";
+  if (abs>=1.0) return dir+" !!";
+  if (abs>=0.5) return dir;
+  if (abs>=0.3) return "lean "+dir;
+  return "—";
+}
+
+function PitcherTable({ plays }) {
+  if (!plays.length) return <div style={{color:C.muted,padding:20,textAlign:"center"}}>No pitcher props found</div>;
   return (
     <div style={{overflowX:"auto"}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
         <thead>
           <tr>
-            {["Player","Type","Matchup","Prop","Line","Proj","Diff","Call","Odds","Fair%","Info"].map(h=>(
-              <th key={h} style={{...sty.th,textAlign:h==="Diff"||h==="Line"||h==="Proj"||h==="Fair%"?"center":h==="Odds"?"center":"left"}}>{h}</th>
+            {["Pitcher","Matchup","vs Team","Prop","Line","Proj","Diff","Call","Odds","K/9","ERA","WHIP","Opp K%","Opp AVG"].map(h=>(
+              <th key={h} style={{...sty.th,textAlign:["Line","Proj","Diff","K/9","ERA","WHIP","Opp K%","Opp AVG"].includes(h)?"center":"left"}}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {filtered.map((p,i) => {
-            const absDiff = Math.abs(p.diff||0);
-            const diffColor = !p.hasModel ? C.muted :
-              absDiff>=1.0 ? (p.diff>0?C.green:C.red) :
-              absDiff>=0.5 ? (p.diff>0?"#66ff99":"#ff8a65") :
-              absDiff>=0.2 ? (p.diff>0?C.yellow:"#ffab91") : C.dim;
-            const rowBg = !p.hasModel ? "transparent" :
-              absDiff>=1.0 ? (p.diff>0?C.green+"0D":C.red+"0D") :
-              absDiff>=0.5 ? (p.diff>0?C.green+"08":C.red+"08") : "transparent";
-
+          {plays.map((p,i) => {
+            const abs = Math.abs(p.diff);
+            const rowBg = abs>=1.0 ? (p.diff>0?C.green+"0D":C.red+"0D") : abs>=0.5 ? (p.diff>0?C.green+"08":C.red+"08") : "transparent";
             return (
               <tr key={i} style={{background:rowBg}}>
                 <td style={{...sty.td,whiteSpace:"nowrap"}}>
-                  <b style={{color:C.white,fontSize:12,textTransform:"capitalize"}}>{p.player}</b>
+                  <b style={{color:C.white,fontSize:12}}>{p.player}</b>
+                  <span style={{color:C.muted,fontSize:9,marginLeft:4}}>{p.hand}HP</span>
                 </td>
-                <td style={{...sty.td,color:C.dim,fontSize:10}}>{p.type}</td>
                 <td style={{...sty.td,color:C.dim,fontSize:10,whiteSpace:"nowrap"}}>{p.matchup} <span style={{color:C.muted,fontSize:8}}>{p.gameTime}</span></td>
+                <td style={{...sty.td,color:C.dim,fontSize:10}}>{p.oppTeamName}</td>
                 <td style={{...sty.td}}>
-                  <span style={{color:PROP_COLORS[p.prop]||C.white,fontWeight:700,...sty.mono}}>{p.prop}</span>
+                  <span style={{color:C.blue,fontWeight:700,fontSize:11}}>{p.propLabel}</span>
                 </td>
-                <td style={{...sty.td,textAlign:"center",...sty.mono,color:C.blue,fontWeight:700,fontSize:13}}>{p.line}</td>
-                <td style={{...sty.td,textAlign:"center",...sty.mono,fontWeight:900,fontSize:14,color:p.hasModel?C.white:C.muted}}>
-                  {p.proj!=null ? p.proj : "—"}
-                </td>
-                <td style={{...sty.td,textAlign:"center",...sty.mono,fontWeight:900,fontSize:14,color:diffColor}}>
-                  {p.diff!=null ? (p.diff>0?"+":"")+p.diff : "—"}
+                <td style={{...sty.td,textAlign:"center",...sty.mono,color:C.blue,fontWeight:700,fontSize:14}}>{p.line}</td>
+                <td style={{...sty.td,textAlign:"center",...sty.mono,fontWeight:900,fontSize:15,color:C.white}}>{p.proj}</td>
+                <td style={{...sty.td,textAlign:"center",...sty.mono,fontWeight:900,fontSize:15,color:diffColor(p.diff)}}>
+                  {p.diff>0?"+":""}{p.diff}
                 </td>
                 <td style={{...sty.td,textAlign:"center"}}>
-                  {p.hasModel && p.diff!=null ? (
-                    <span style={{
-                      background: (absDiff>=0.5?(p.diff>0?C.green:C.red):C.dim)+"22",
-                      color: absDiff>=0.5?(p.diff>0?C.green:C.red):C.dim,
-                      padding:"2px 8px",borderRadius:4,fontWeight:700,fontSize:10,...sty.mono,
-                    }}>
-                      {absDiff>=1.0 ? (p.direction+" !!") : absDiff>=0.5 ? p.direction : absDiff>=0.2 ? "lean "+p.direction : "—"}
-                    </span>
-                  ) : <span style={{color:C.muted,fontSize:9}}>no model</span>}
+                  <span style={{
+                    background: diffColor(p.diff)+"22",
+                    color: diffColor(p.diff),
+                    padding:"3px 10px",borderRadius:4,fontWeight:700,fontSize:10,...sty.mono,
+                  }}>
+                    {callLabel(p.diff)}
+                  </span>
                 </td>
                 <td style={{...sty.td,textAlign:"center",fontSize:10,...sty.mono}}>
-                  {p.odds && (
-                    <span>
-                      <span style={{color:p.odds.ov>0?C.green:C.yellow}}>{fmtO(p.odds.ov)}</span>
-                      <span style={{color:C.muted}}>/</span>
-                      <span style={{color:p.odds.uv>0?C.green:C.yellow}}>{fmtO(p.odds.uv)}</span>
-                    </span>
-                  )}
+                  <span style={{color:p.odds?.ov>0?C.green:C.yellow}}>{fmtO(p.odds?.ov)}</span>
+                  <span style={{color:C.muted}}>/</span>
+                  <span style={{color:p.odds?.uv>0?C.green:C.yellow}}>{fmtO(p.odds?.uv)}</span>
                 </td>
-                <td style={{...sty.td,textAlign:"center",color:C.dim,fontSize:10,...sty.mono}}>
-                  {p.fair!=null ? (p.fair*100).toFixed(0)+"%" : "—"}
+                <td style={{...sty.td,textAlign:"center",color:C.green,fontSize:11,...sty.mono,fontWeight:700}}>{p.kPer9}</td>
+                <td style={{...sty.td,textAlign:"center",color:C.dim,fontSize:11,...sty.mono}}>{p.era}</td>
+                <td style={{...sty.td,textAlign:"center",color:C.dim,fontSize:11,...sty.mono}}>{p.whip}</td>
+                <td style={{...sty.td,textAlign:"center",color:p.oppK>23?C.green:p.oppK<20?C.red:C.dim,fontSize:11,...sty.mono,fontWeight:700}}>
+                  {p.oppK!=null ? p.oppK+"%" : "—"}
                 </td>
-                <td style={{...sty.td,color:C.muted,fontSize:9,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                  {p.info}
+                <td style={{...sty.td,textAlign:"center",color:C.dim,fontSize:11,...sty.mono}}>
+                  {p.oppAVG||"—"}
                 </td>
               </tr>
             );
           })}
-          {filtered.length===0 && (
-            <tr><td colSpan={11} style={{...sty.td,textAlign:"center",color:C.muted,padding:40}}>No plays match this filter</td></tr>
-          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function BatterTable({ plays }) {
+  if (!plays.length) return <div style={{color:C.muted,padding:20,textAlign:"center"}}>No batter edges above threshold</div>;
+  return (
+    <div style={{overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+        <thead>
+          <tr>
+            {["Player","Pos","Matchup","vs Pitcher","Prop","Line","Proj","Diff","Call","Odds"].map(h=>(
+              <th key={h} style={{...sty.th,textAlign:["Line","Proj","Diff"].includes(h)?"center":"left"}}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {plays.map((p,i) => {
+            const abs = Math.abs(p.diff);
+            const rowBg = abs>=1.0 ? (p.diff>0?C.green+"0D":C.red+"0D") : abs>=0.5 ? (p.diff>0?C.green+"08":C.red+"08") : "transparent";
+            return (
+              <tr key={i} style={{background:rowBg}}>
+                <td style={{...sty.td,whiteSpace:"nowrap"}}>
+                  <b style={{color:C.white,fontSize:12}}>{p.player}</b>
+                  <span style={{color:C.muted,fontSize:9,marginLeft:4}}>{p.bat}HB</span>
+                </td>
+                <td style={{...sty.td,color:C.dim,fontSize:10}}>{p.pos}</td>
+                <td style={{...sty.td,color:C.dim,fontSize:10,whiteSpace:"nowrap"}}>{p.matchup} <span style={{color:C.muted,fontSize:8}}>{p.gameTime}</span></td>
+                <td style={{...sty.td,color:C.dim,fontSize:10}}>{p.oppPitcher?.split(" ").pop()||"?"}</td>
+                <td style={{...sty.td}}>
+                  <span style={{color:C.orange,fontWeight:700,fontSize:11}}>{p.propLabel}</span>
+                </td>
+                <td style={{...sty.td,textAlign:"center",...sty.mono,color:C.blue,fontWeight:700,fontSize:14}}>{p.line}</td>
+                <td style={{...sty.td,textAlign:"center",...sty.mono,fontWeight:900,fontSize:15,color:C.white}}>{p.proj}</td>
+                <td style={{...sty.td,textAlign:"center",...sty.mono,fontWeight:900,fontSize:15,color:diffColor(p.diff)}}>
+                  {p.diff>0?"+":""}{p.diff}
+                </td>
+                <td style={{...sty.td,textAlign:"center"}}>
+                  <span style={{
+                    background: diffColor(p.diff)+"22",
+                    color: diffColor(p.diff),
+                    padding:"3px 10px",borderRadius:4,fontWeight:700,fontSize:10,...sty.mono,
+                  }}>
+                    {callLabel(p.diff)}
+                  </span>
+                </td>
+                <td style={{...sty.td,textAlign:"center",fontSize:10,...sty.mono}}>
+                  <span style={{color:p.odds?.ov>0?C.green:C.yellow}}>{fmtO(p.odds?.ov)}</span>
+                  <span style={{color:C.muted}}>/</span>
+                  <span style={{color:p.odds?.uv>0?C.green:C.yellow}}>{fmtO(p.odds?.uv)}</span>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -563,36 +677,36 @@ function PlaysTable({ plays, filter }) {
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const [plays, setPlays] = useState([]);
+  const [pitcherPlays, setPitcherPlays] = useState([]);
+  const [batterPlays, setBatterPlays] = useState([]);
   const [log, setLog] = useState(null);
   const [status, setStatus] = useState("Hit LOAD to pull MLB stats + live odds");
   const [loading, setLoading] = useState(false);
-  const [filter, setFilter] = useState("strong");
+  const [tab, setTab] = useState("pitchers");
   const [updated, setUpdated] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     const result = await loadAll(setStatus);
-    setPlays(result.plays);
+    setPitcherPlays(result.pitcherPlays);
+    setBatterPlays(result.batterPlays);
     setLog(result.log);
     setUpdated(new Date().toLocaleTimeString());
     setLoading(false);
   }, []);
 
-  const modelPlays = plays.filter(p=>p.hasModel);
-  const strongPlays = plays.filter(p=>p.hasModel && Math.abs(p.diff)>=0.5);
-  const overPlays = plays.filter(p=>p.hasModel && p.diff>0.2);
-  const underPlays = plays.filter(p=>p.hasModel && p.diff<-0.2);
+  const strongSP = pitcherPlays.filter(p=>Math.abs(p.diff)>=0.5);
+  const strongBat = batterPlays.filter(p=>Math.abs(p.diff)>=0.5);
 
-  const filterBtn = (key, label, count) => (
-    <button key={key} onClick={()=>setFilter(key)} style={{
-      background: filter===key ? C.green : C.panel,
-      color: filter===key ? C.bg : C.dim,
-      border:`1px solid ${filter===key?C.green:C.border}`,
-      borderRadius:6, padding:"6px 14px", fontSize:11, fontWeight:700,
+  const tabBtn = (key, label, count) => (
+    <button key={key} onClick={()=>setTab(key)} style={{
+      background: tab===key ? C.green : C.panel,
+      color: tab===key ? C.bg : C.dim,
+      border:`1px solid ${tab===key?C.green:C.border}`,
+      borderRadius:6, padding:"8px 18px", fontSize:12, fontWeight:700,
       cursor:"pointer", fontFamily:"monospace",
     }}>
-      {label} {count!=null && <span style={{opacity:0.7}}>({count})</span>}
+      {label} <span style={{opacity:0.7}}>({count})</span>
     </button>
   );
 
@@ -606,7 +720,7 @@ export default function App() {
             <h1 style={{margin:0,fontSize:22,fontWeight:900,letterSpacing:-0.5}}>PROP ENGINE</h1>
           </div>
           <div style={{color:C.muted,fontSize:10}}>
-            Pure model projections vs. sportsbook lines — sorted by biggest edge
+            Model projections vs. sportsbook lines — opponent quality + park + platoon
             {updated && <span style={{color:C.green}}> · Updated {updated}</span>}
           </div>
           <div style={{color:status.includes("Error")?C.red:status.includes("Done")?C.green:C.dim,fontSize:9,marginTop:2,...sty.mono}}>{status}</div>
@@ -624,43 +738,44 @@ export default function App() {
       {log && (
         <div style={{background:C.panel,borderRadius:8,padding:"10px 14px",marginBottom:12,border:`1px solid ${C.border}`,display:"flex",gap:20,flexWrap:"wrap",fontSize:11}}>
           <div><span style={{color:C.muted}}>Games </span><span style={{color:C.white,fontWeight:700}}>{log.games}</span></div>
-          <div><span style={{color:C.muted}}>Props found </span><span style={{color:C.blue,fontWeight:700}}>{log.propsFound}</span></div>
-          <div><span style={{color:C.muted}}>Player stats loaded </span><span style={{color:C.green,fontWeight:700}}>{log.statsLoaded}</span></div>
-          <div><span style={{color:C.muted}}>Model projections </span><span style={{color:C.green,fontWeight:700}}>{log.matched}</span></div>
-          <div><span style={{color:C.muted}}>Unmatched (no stats) </span><span style={{color:log.unmatched>log.matched?C.red:C.yellow,fontWeight:700}}>{log.unmatched}</span></div>
-          <div><span style={{color:C.muted}}>Strong plays (0.5+) </span><span style={{color:C.green,fontWeight:700}}>{strongPlays.length}</span></div>
+          <div><span style={{color:C.muted}}>Players loaded </span><span style={{color:C.blue,fontWeight:700}}>{log.statsLoaded}</span></div>
+          <div><span style={{color:C.muted}}>Pitcher props </span><span style={{color:C.green,fontWeight:700}}>{pitcherPlays.length}</span></div>
+          <div><span style={{color:C.muted}}>Strong SP (0.5+) </span><span style={{color:strongSP.length>0?C.green:C.muted,fontWeight:700}}>{strongSP.length}</span></div>
+          <div><span style={{color:C.muted}}>Batter edges </span><span style={{color:C.orange,fontWeight:700}}>{batterPlays.length}</span></div>
+          <div><span style={{color:C.muted}}>Strong BAT (0.5+) </span><span style={{color:strongBat.length>0?C.orange:C.muted,fontWeight:700}}>{strongBat.length}</span></div>
         </div>
       )}
 
-      {/* Filter tabs */}
-      {plays.length>0 && (
+      {/* Tabs */}
+      {(pitcherPlays.length>0||batterPlays.length>0) && (
         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14}}>
-          {filterBtn("strong","STRONG PLAYS",strongPlays.length)}
-          {filterBtn("model","ALL MODEL",modelPlays.length)}
-          {filterBtn("over","OVERS",overPlays.length)}
-          {filterBtn("under","UNDERS",underPlays.length)}
-          {filterBtn("all","ALL PROPS",plays.length)}
+          {tabBtn("pitchers","PITCHERS",pitcherPlays.length)}
+          {tabBtn("strong-sp","STRONG SP",strongSP.length)}
+          {tabBtn("batters","BATTERS",batterPlays.length)}
+          {tabBtn("strong-bat","STRONG BAT",strongBat.length)}
         </div>
       )}
 
-      {/* Main table */}
-      {plays.length > 0 && <PlaysTable plays={plays} filter={filter} />}
+      {/* Content */}
+      {tab==="pitchers" && <PitcherTable plays={pitcherPlays} />}
+      {tab==="strong-sp" && <PitcherTable plays={strongSP} />}
+      {tab==="batters" && <BatterTable plays={batterPlays} />}
+      {tab==="strong-bat" && <BatterTable plays={strongBat} />}
 
       {/* Empty state */}
-      {plays.length===0 && !loading && (
+      {pitcherPlays.length===0 && batterPlays.length===0 && !loading && (
         <div style={{textAlign:"center",padding:80,color:C.muted}}>
           <div style={{fontSize:52,marginBottom:16}}>&#9918;</div>
           <div style={{fontSize:15,color:C.dim,marginBottom:8}}>Hit LOAD to pull every MLB game</div>
           <div style={{fontSize:11,color:C.muted,maxWidth:500,margin:"0 auto"}}>
-            Fetches real player stats from MLB Stats API, live odds from 6+ books,
-            then runs independent projections with pitcher matchup, park factors,
-            and platoon splits. Sorted by who will over/under perform their line the most.
+            Fetches real player stats + team batting stats from MLB API, live odds from 6+ books,
+            then runs projections with opponent quality, park factors, and platoon splits.
           </div>
         </div>
       )}
 
       <div style={{marginTop:14,color:C.muted,fontSize:8,textAlign:"center",...sty.mono}}>
-        MLB Prop Engine — pure model: pitcher suppression (1.4x amplified) + park factors (30 stadiums) + platoon splits (8-12%) — NO market blending
+        MLB Prop Engine — opponent team quality (1.6x) + non-linear pitcher suppression (1.8x) + park factors (30 stadiums) + platoon splits (10-14%)
       </div>
     </div>
   );
