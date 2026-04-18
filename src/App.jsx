@@ -261,15 +261,16 @@ function projPitcher(pStats, park, oppTeam) {
   const pkK = (park?.k || 100) / 100;
   const pkR = park?.pf || 1.0;
 
-  // Opponent team quality adjustment (the big lever)
+  // Opponent team quality — realistic 5-12% swing, not 30%
+  // Early-season team rates are noisy so we regress toward 1.0
   let oppK = 1.0, oppH = 1.0, oppBB = 1.0;
   if (oppTeam) {
-    oppK = 1 + (oppTeam.kRate / LGA.tk - 1) * 1.6;
-    oppH = 1 + (oppTeam.hRate / LGA.th - 1) * 1.6;
-    oppBB = 1 + (oppTeam.bbRate / LGA.tbb - 1) * 1.4;
-    oppK = Math.max(0.65, Math.min(1.45, oppK));
-    oppH = Math.max(0.65, Math.min(1.45, oppH));
-    oppBB = Math.max(0.65, Math.min(1.45, oppBB));
+    oppK = 1 + (oppTeam.kRate / LGA.tk - 1) * 0.7;
+    oppH = 1 + (oppTeam.hRate / LGA.th - 1) * 0.7;
+    oppBB = 1 + (oppTeam.bbRate / LGA.tbb - 1) * 0.5;
+    oppK = Math.max(0.88, Math.min(1.15, oppK));
+    oppH = Math.max(0.88, Math.min(1.15, oppH));
+    oppBB = Math.max(0.88, Math.min(1.15, oppBB));
   }
 
   const kBoost = kRate >= 0.30 ? 1.08 : kRate >= 0.26 ? 1.05 : kRate >= 0.22 ? 1.02 : 1.0;
@@ -302,23 +303,23 @@ function projBatter(bStats, pitProj, park) {
   const paPerG = pa / Math.max(g, 1);
   const pPA = Math.min(paPerG * 1.05, 5.2);
 
-  // Pitcher suppression — amplified with mild non-linearity
+  // Pitcher suppression — moderate amplification, realistic range
   let hitF = 1, kF = 1, runF = 1;
   if (pitProj) {
     const hDev = pitProj._hRate / LGA.ph - 1;
     const kDev = pitProj._kRate / LGA.pk - 1;
     const rDev = pitProj._erRate / LGA.per - 1;
-    hitF = Math.max(0.55, Math.min(1.50, 1 + hDev * 1.6 + Math.sign(hDev) * hDev * hDev * 2));
-    kF   = Math.max(0.55, Math.min(1.50, 1 + kDev * 1.6 + Math.sign(kDev) * kDev * kDev * 2));
-    runF = Math.max(0.55, Math.min(1.50, 1 + rDev * 1.4));
+    hitF = Math.max(0.75, Math.min(1.30, 1 + hDev * 1.2));
+    kF   = Math.max(0.75, Math.min(1.30, 1 + kDev * 1.2));
+    runF = Math.max(0.75, Math.min(1.30, 1 + rDev * 1.0));
   }
 
-  // Platoon splits
+  // Platoon splits — 6-8% swing (realistic MLB range)
   const batH = bStats.bat, pitH = pitProj?.hand;
   const favorable = (batH === "L" && pitH === "R") || (batH === "R" && pitH === "L") || batH === "S";
   const sameSide = (batH === "L" && pitH === "L") || (batH === "R" && pitH === "R");
-  const plH = favorable ? 1.10 : sameSide ? 0.86 : 1.0;
-  const plK = sameSide ? 1.14 : favorable ? 0.88 : 1.0;
+  const plH = favorable ? 1.07 : sameSide ? 0.92 : 1.0;
+  const plK = sameSide ? 1.08 : favorable ? 0.92 : 1.0;
 
   const pkHR = (park?.hr || 100) / 100;
   const pkR = park?.pf || 1.0;
@@ -826,7 +827,7 @@ export default function App() {
       )}
 
       <div style={{ marginTop: 14, color: C.muted, fontSize: 8, textAlign: "center", ...sty.mono }}>
-        MLB Prop Engine — opponent quality + pitcher suppression + park factors + platoon splits
+toon splits
       </div>
     </div>
   );
