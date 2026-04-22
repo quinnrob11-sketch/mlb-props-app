@@ -275,6 +275,14 @@ function projPitcher(pStats, park, oppTeam) {
 
   const kBoost = kRate >= 0.30 ? 1.08 : kRate >= 0.26 ? 1.05 : kRate >= 0.22 ? 1.02 : 1.0;
 
+  // Projected pitch count: high-K pitchers average ~4.1 pitches/BF, others ~3.85
+  const pitchesPerBF = kRate >= 0.26 ? 4.15 : kRate >= 0.20 ? 3.95 : 3.80;
+  const projPitches = Math.round(pBF * pitchesPerBF);
+
+  // Actual pitches per start from stats if available
+  const totalPitches = s.numberOfPitches || s.pitchesThrown || 0;
+  const avgPitches = totalPitches > 0 ? Math.round(totalPitches / gs) : null;
+
   return {
     name: pStats.name, hand: pStats.throw || "R",
     K: +(kRate * pBF * pkK * oppK * kBoost).toFixed(1),
@@ -285,6 +293,7 @@ function projPitcher(pStats, park, oppTeam) {
     kPer9: ip > 0 ? +((s.strikeOuts || 0) / ip * 9).toFixed(1) : 0,
     whip: ip > 0 ? +(((s.hits || 0) + (s.baseOnBalls || 0)) / ip).toFixed(2) : "\u2014",
     avgIP: +avgIP.toFixed(1),
+    projPitches, avgPitches, pBF,
     _hRate: hRate, _kRate: kRate, _erRate: erRate, _bbRate: bbRate,
     oppTeamName: oppTeam?.name || "?",
     oppK: oppTeam ? +(oppTeam.kRate * 100).toFixed(1) : null,
@@ -462,6 +471,7 @@ async function loadAll(setSt) {
           direction: diff > 0 ? "OVER" : "UNDER",
           odds: lv, fair: dvg(lv.ov, lv.uv), hand: proj.hand,
           era: proj.era, kPer9: proj.kPer9, whip: proj.whip, avgIP: proj.avgIP,
+          projPitches: proj.projPitches, avgPitches: proj.avgPitches, pBF: proj.pBF,
           oppTeamName: proj.oppTeamName, oppK: proj.oppK, oppAVG: proj.oppAVG,
         });
         log.pitcherProps++;
@@ -517,6 +527,7 @@ async function loadAll(setSt) {
           direction: diff > 0 ? "OVER" : "UNDER",
           odds: lv, fair: dvg(lv.ov, lv.uv), hand: proj.hand,
           era: proj.era, kPer9: proj.kPer9, whip: proj.whip, avgIP: proj.avgIP,
+          projPitches: proj.projPitches, avgPitches: proj.avgPitches, pBF: proj.pBF,
           oppTeamName: proj.oppTeamName, oppK: proj.oppK, oppAVG: proj.oppAVG,
         });
         log.pitcherProps++;
@@ -631,8 +642,8 @@ function PitcherTable({ plays }) {
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
         <thead>
           <tr>
-            {["Pitcher", "Matchup", "vs Team", "Prop", "Line", "Proj", "Diff", "Call", "Odds", "K/9", "ERA", "WHIP", "Opp K%", "Opp AVG"].map(h => (
-              <th key={h} style={{ ...sty.th, textAlign: ["Line", "Proj", "Diff", "K/9", "ERA", "WHIP", "Opp K%", "Opp AVG"].includes(h) ? "center" : "left" }}>{h}</th>
+            {["Pitcher", "Matchup", "vs Team", "Prop", "Line", "Proj", "Diff", "Call", "Odds", "Pitches", "K/9", "ERA", "WHIP", "Opp K%", "Opp AVG"].map(h => (
+              <th key={h} style={{ ...sty.th, textAlign: ["Line", "Proj", "Diff", "Pitches", "K/9", "ERA", "WHIP", "Opp K%", "Opp AVG"].includes(h) ? "center" : "left" }}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -663,6 +674,10 @@ function PitcherTable({ plays }) {
                   <span style={{ color: p.odds?.ov > 0 ? C.green : C.yellow }}>{fmtO(p.odds?.ov)}</span>
                   <span style={{ color: C.muted }}>/</span>
                   <span style={{ color: p.odds?.uv > 0 ? C.green : C.yellow }}>{fmtO(p.odds?.uv)}</span>
+                </td>
+                <td style={{ ...sty.td, textAlign: "center", ...sty.mono, fontSize: 11 }}>
+                  <span style={{ color: C.white, fontWeight: 700 }}>{p.projPitches || "\u2014"}</span>
+                  {p.avgPitches && <span style={{ color: C.muted, fontSize: 8 }}>{" (" + p.avgPitches + " avg)"}</span>}
                 </td>
                 <td style={{ ...sty.td, textAlign: "center", color: C.green, fontSize: 11, ...sty.mono, fontWeight: 700 }}>{p.kPer9}</td>
                 <td style={{ ...sty.td, textAlign: "center", color: C.dim, fontSize: 11, ...sty.mono }}>{p.era}</td>
@@ -827,7 +842,7 @@ export default function App() {
       )}
 
       <div style={{ marginTop: 14, color: C.muted, fontSize: 8, textAlign: "center", ...sty.mono }}>
-toon splits
+        MLB Prop Engine — opponent quality + pitcher suppression + park factors + platoon splits
       </div>
     </div>
   );
