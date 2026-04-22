@@ -755,6 +755,7 @@ export default function App() {
   const [status, setStatus] = useState("Hit LOAD to pull MLB stats + live odds");
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("pitchers");
+  const [propFilter, setPropFilter] = useState("ALL");
   const [updated, setUpdated] = useState(null);
 
   const load = useCallback(async () => {
@@ -817,16 +818,34 @@ export default function App() {
       )}
 
       {(pitcherPlays.length > 0 || batterPlays.length > 0) && (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
           {tabBtn("pitchers", "PITCHERS", pitcherPlays.length)}
-          {tabBtn("strong-sp", "STRONG SP", strongSP.length)}
           {tabBtn("batters", "BATTERS", batterPlays.length)}
           {tabBtn("strong-bat", "STRONG BAT", strongBat.length)}
         </div>
       )}
 
-      {tab === "pitchers" && <PitcherTable plays={pitcherPlays} />}
-      {tab === "strong-sp" && <PitcherTable plays={strongSP} />}
+      {tab === "pitchers" && pitcherPlays.length > 0 && (
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 12 }}>
+          {["ALL", "K", "H", "ER", "BB"].map(f => {
+            const ct = f === "ALL" ? pitcherPlays.length : pitcherPlays.filter(p => p.prop === f).length;
+            const active = propFilter === f;
+            return (
+              <button key={f} onClick={() => setPropFilter(f)} style={{
+                background: active ? C.blue : C.card,
+                color: active ? C.bg : C.dim,
+                border: "1px solid " + (active ? C.blue : C.border),
+                borderRadius: 4, padding: "4px 12px", fontSize: 11, fontWeight: 700,
+                cursor: "pointer", fontFamily: "monospace",
+              }}>
+                {f === "ALL" ? "ALL PROPS" : f === "K" ? "STRIKEOUTS" : f === "H" ? "HITS ALLOWED" : f === "ER" ? "EARNED RUNS" : "WALKS"} ({ct})
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {tab === "pitchers" && <PitcherTable plays={propFilter === "ALL" ? pitcherPlays : pitcherPlays.filter(p => p.prop === propFilter)} />}
       {tab === "batters" && <BatterTable plays={batterPlays} />}
       {tab === "strong-bat" && <BatterTable plays={strongBat} />}
 
