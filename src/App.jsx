@@ -104,16 +104,20 @@ function getLine(lines, name, mkt) {
   // Try exact match first
   const exactKey = n + "_" + mkt;
   if (lines[exactKey]) return lines[exactKey];
-  // Fuzzy: last name + first name
+  // Strict fuzzy: exact last-name match + 3-char first-name prefix
   const parts = n.split("_").filter(p => p.length > 1 && !["jr","sr","ii","iii","iv"].includes(p));
   if (!parts.length) return null;
-  // Use actual last part (surname) not longest
   const last = parts[parts.length - 1];
   const first = parts[0];
+  if (last.length < 3) return null;
   for (const [k, v] of Object.entries(lines)) {
     if (!k.endsWith("_" + mkt)) continue;
     const playerPart = extractPlayerName(k) || "";
-    if (playerPart.includes(last) && (parts.length < 2 || playerPart.includes(first))) return v;
+    const ppParts = playerPart.split("_").filter(p => p.length > 1 && !["jr","sr","ii","iii","iv"].includes(p));
+    if (!ppParts.length) continue;
+    const ppLast = ppParts[ppParts.length - 1];
+    const ppFirst = ppParts[0];
+    if (ppLast === last && (first.length < 2 || ppFirst.startsWith(first.slice(0, 3)))) return v;
   }
   return null;
 }
@@ -306,48 +310,50 @@ function projBatter(bStats, pitProj, park) {
   const s = bStats.hitting;
   const pa = s.plateAppearances || 0;
   const g = s.gamesPlayed || 0;
-  if (pa < 10) return null;
+  if (pa < 15) return null;
 
   const rate = k => (k || 0) / pa;
   const paPerG = pa / Math.max(g, 1);
-  const pPA = Math.min(paPerG * 1.05, 5.2);
+  const pPA = Math.min(Math.max(paPerG, 3.5), 5.0);
 
-  // Pitcher suppression — moderate amplification, realistic range
-  let hitF = 1, kF = 1, runF = 1;
+  // Pitcher quality — only affects contact stats (H, K, TB)
+  // HR, R, RBI are more lineup/context dependent, not pitcher-suppressed
+  let hitF = 1, kF = 1;
   if (pitProj) {
-    const hDev = pitProj._hRate / LGA.ph - 1;
-    const kDev = pitProj._kRate / LGA.pk - 1;
-    const rDev = pitProj._erRate / LGA.per - 1;
-    hitF = Math.max(0.75, Math.min(1.30, 1 + hDev * 1.2));
-    kF   = Math.max(0.75, Math.min(1.30, 1 + kDev * 1.2));
-    runF = Math.max(0.75, Math.min(1.30, 1 + rDev * 1.0));
+    const hDev = pitProj._hRate / LGA.ph - 1;  // negative = tough pitcher
+    const kDev = pitProj._kRate / LGA.pk - 1;   // positive = high-K pitcher
+    hitF = Math.max(0.85, Math.min(1.18, 1 + hDev * 0.8));
+    kF   = Math.max(0.85, Math.min(1.18, 1 + kDev * 0.8));
   }
 
-  // Platoon splits — 6-8% swing (realistic MLB range)
+  // Platoon — 5-7%
   const batH = bStats.bat, pitH = pitProj?.hand;
   const favorable = (batH === "L" && pitH === "R") || (batH === "R" && pitH === "L") || batH === "S";
   const sameSide = (batH === "L" && pitH === "L") || (batH === "R" && pitH === "R");
-  const plH = favorable ? 1.07 : sameSide ? 0.92 : 1.0;
-  const plK = sameSide ? 1.08 : favorable ? 0.92 : 1.0;
+  const plH = favorable ? 1.06 : sameSide ? 0.94 : 1.0;
+  const plK = sameSide ? 1.06 : favorable ? 0.94 : 1.0;
 
   const pkHR = (park?.hr || 100) / 100;
   const pkR = park?.pf || 1.0;
   const pkK = (park?.k || 100) / 100;
 
-  const singles = (s.hits || 0) - (s.doubles || 0) - (s.triples || 0) - (s.homeRuns || 0);
+  const singles = Math.max(0, (s.hits || 0) - (s.doubles || 0) - (s.triples || 0) - (s.homeRuns || 0));
+
+  const pH   = +(rate(s.hits) * hitF * plH * pPA).toFixed(2);
+  const pHR  = +(rate(s.homeRuns) * plH * pPA * pkHR).toFixed(2);
+  const pR   = +(rate(s.runs) * pPA * pkR).toFixed(2);
+  const pRBI = +(rate(s.rbi) * pPA * pkR).toFixed(2);
+  const pTB  = +(rate(s.totalBases) * hitF * plH * pPA * pkHR).toFixed(2);
+  const p2B  = +(rate(s.doubles) * hitF * plH * pPA).toFixed(2);
+  const pSB  = +(rate(s.stolenBases) * pPA).toFixed(2);
+  const pK   = +(rate(s.strikeOuts) * kF * plK * pPA * pkK).toFixed(2);
+  const p1B  = +((singles / pa) * hitF * plH * pPA).toFixed(2);
+  const pHRR = +(pH + pR + pRBI).toFixed(2);
 
   return {
     name: bStats.name, bat: batH, pos: bStats.pos,
-    H:   +(rate(s.hits) * hitF * plH * pPA).toFixed(2),
-    HR:  +(rate(s.homeRuns) * hitF * plH * pPA * pkHR).toFixed(2),
-    R:   +(rate(s.runs) * runF * plH * pPA * pkR).toFixed(2),
-    RBI: +(rate(s.rbi) * runF * plH * pPA * pkR).toFixed(2),
-    TB:  +(rate(s.totalBases) * hitF * plH * pPA * pkHR).toFixed(2),
-    "2B":+(rate(s.doubles) * hitF * plH * pPA).toFixed(2),
-    SB:  +(rate(s.stolenBases) * pPA).toFixed(2),
-    K:   +(rate(s.strikeOuts) * kF * plK * pPA * pkK).toFixed(2),
-    "1B":+((singles / pa) * hitF * plH * pPA).toFixed(2),
-    get HRR() { return +(this.H + this.R + this.RBI).toFixed(2); },
+    H: pH, HR: pHR, R: pR, RBI: pRBI, TB: pTB,
+    "2B": p2B, SB: pSB, K: pK, "1B": p1B, HRR: pHRR,
     pPA, oppPitcher: pitProj?.name || null,
   };
 }
@@ -497,11 +503,17 @@ async function loadAll(setSt) {
         if (s.pitching && norm(s.name) === pN) { pStat = s; break; }
       }
       if (!pStat) {
-        const parts = pN.split("_").filter(p => p.length > 1);
+        const parts = pN.split("_").filter(p => p.length > 1 && !["jr","sr","ii","iii","iv"].includes(p));
         const last = parts[parts.length - 1] || "";
         const first = parts[0] || "";
-        for (const s of Object.values(statsMap)) {
-          if (s.pitching && norm(s.name).includes(last) && (first.length < 2 || norm(s.name).includes(first))) { pStat = s; break; }
+        if (last.length >= 3) {
+          for (const s of Object.values(statsMap)) {
+            if (!s.pitching) continue;
+            const sn = norm(s.name);
+            const snParts = sn.split("_");
+            const snLast = snParts[snParts.length - 1] || "";
+            if (snLast === last && (first.length < 2 || sn.startsWith(first.slice(0, 3)))) { pStat = s; break; }
+          }
         }
       }
       if (!pStat) continue;
@@ -550,7 +562,7 @@ async function loadAll(setSt) {
     }
 
     for (const [bN, bReadable] of batterNames) {
-      // Match to stats
+      // Match to stats — exact first, then strict fuzzy (last name must match end)
       let bStat = null;
       for (const s of Object.values(statsMap)) {
         if (s.hitting && norm(s.name) === bN) { bStat = s; break; }
@@ -559,8 +571,15 @@ async function loadAll(setSt) {
         const parts = bN.split("_").filter(p => p.length > 1);
         const last = parts[parts.length - 1] || "";
         const first = parts[0] || "";
-        for (const s of Object.values(statsMap)) {
-          if (s.hitting && norm(s.name).includes(last) && (first.length < 2 || norm(s.name).includes(first))) { bStat = s; break; }
+        if (last.length >= 3) {
+          for (const s of Object.values(statsMap)) {
+            if (!s.hitting) continue;
+            const sn = norm(s.name);
+            const snParts = sn.split("_");
+            const snLast = snParts[snParts.length - 1] || "";
+            // Last names must match exactly, first name must start the same
+            if (snLast === last && (first.length < 2 || sn.startsWith(first.slice(0, 3)))) { bStat = s; break; }
+          }
         }
       }
       if (!bStat) continue;
@@ -569,8 +588,14 @@ async function loadAll(setSt) {
       let oppProj = null;
       if (mlbGame) {
         const awayNames = (mlbGame.awayRoster || []).map(p => norm(p.name));
-        const isAway = awayNames.some(n => n.includes(bN.split("_").pop()));
-        oppProj = isAway ? pitProjs.home : pitProjs.away;
+        const isAway = awayNames.some(n => n === norm(bStat.name));
+        if (!isAway) {
+          const homeNames = (mlbGame.homeRoster || []).map(p => norm(p.name));
+          const isHome = homeNames.some(n => n === norm(bStat.name));
+          oppProj = isHome ? pitProjs.away : pitProjs.home;
+        } else {
+          oppProj = pitProjs.home;
+        }
       }
 
       const bp = projBatter(bStat, oppProj, park);
@@ -579,10 +604,10 @@ async function loadAll(setSt) {
       for (const pk of BPROPS) {
         const lv = getLine(lines, bStat.name, BMKTS[pk]);
         if (!lv) continue;
-        const modelVal = pk === "HRR" ? bp.HRR : bp[pk];
+        const modelVal = bp[pk];
         if (modelVal == null) continue;
         const diff = +(modelVal - lv.pt).toFixed(2);
-        if (Math.abs(diff) < 0.30) continue; // only meaningful edges
+        if (Math.abs(diff) < 0.35) continue; // meaningful edges only
         batterPlays.push({
           player: bp.name, pos: bp.pos, matchup, gameTime,
           prop: pk, propLabel: BPROP_LABELS[pk] || pk,
