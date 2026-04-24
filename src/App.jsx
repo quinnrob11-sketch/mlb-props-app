@@ -252,23 +252,55 @@ function projPitcher(pStats, park, oppTeam) {
   const bf = s.battersFaced || Math.round(ip * 3 + (s.hits || 0) + (s.baseOnBalls || 0));
   if (ip < 3 || bf < 10) return null;
 
+  // Per-BF rates from season stats
   const kRate = (s.strikeOuts || 0) / bf;
   const hRate = (s.hits || 0) / bf;
   const erRate = (s.earnedRuns || 0) / bf;
   const bbRate = (s.baseOnBalls || 0) / bf;
+  const outRate = Math.max(1 - hRate - bbRate, 0.55);
 
   const gs = s.gamesStarted || s.gamesPlayed || 1;
   const avgIP = ip / gs;
-  const pIP = Math.min(Math.max(avgIP, 4.5), 7.0);
-  // Correct BF calc: outs / out-rate-per-BF
-  const outRate = 1 - hRate - bbRate; // fraction of BFs that result in an out
-  const pBF = Math.round((pIP * 3) / Math.max(outRate, 0.55));
+
+  // Pitches per BF — high-K arms work deeper counts
+  const pPerBF = kRate >= 0.26 ? 4.05 : kRate >= 0.20 ? 3.90 : 3.75;
+
+  // ─── CONVERGENCE LOOP ───
+  // Start with actual avg pitch count, derive BF, project stats,
+  // check if stats imply the same pitch count. Iterate until stable.
+  const totalPitches = s.numberOfPitches || s.pitchesThrown || 0;
+  const rawAvgPC = totalPitches > 0 ? Math.round(totalPitches / gs) : null;
+  // Seed: use actual avg PC if available, else estimate from avg IP
+  let pc = rawAvgPC && rawAvgPC > 40 && rawAvgPC < 130 ? rawAvgPC : Math.round(avgIP * 15.5);
+  // Cap seed to realistic starter range
+  pc = Math.min(Math.max(pc, 60), 110);
+
+  let convergedBF, convergedIP;
+  for (let i = 0; i < 15; i++) {
+    // From pitch count → how many batters faced
+    const estBF = pc / pPerBF;
+    // From BF → how many outs → IP
+    const estOuts = estBF * outRate;
+    const estIP = Math.min(Math.max(estOuts / 3, 3.0), 8.0);
+    // From IP → how many BF (accounting for baserunners)
+    const impliedBF = (estIP * 3) / outRate;
+    // From BF → new pitch count
+    const newPC = Math.round(impliedBF * pPerBF);
+    // Cap to realistic range
+    const cappedPC = Math.min(Math.max(newPC, 55), 110);
+    convergedBF = Math.round(impliedBF);
+    convergedIP = estIP;
+    if (Math.abs(cappedPC - pc) < 1) { pc = cappedPC; break; }
+    pc = cappedPC;
+  }
+
+  const pBF = convergedBF;
+  const pIP = convergedIP;
 
   const pkK = (park?.k || 100) / 100;
   const pkR = park?.pf || 1.0;
 
-  // Opponent team quality — realistic 5-12% swing, not 30%
-  // Early-season team rates are noisy so we regress toward 1.0
+  // Opponent team quality — realistic 5-12% swing
   let oppK = 1.0, oppH = 1.0, oppBB = 1.0;
   if (oppTeam) {
     oppK = 1 + (oppTeam.kRate / LGA.tk - 1) * 0.7;
@@ -281,20 +313,6 @@ function projPitcher(pStats, park, oppTeam) {
 
   const kBoost = kRate >= 0.30 ? 1.08 : kRate >= 0.26 ? 1.05 : kRate >= 0.22 ? 1.02 : 1.0;
 
-  // Pitch count: use actual avg if API provides it, otherwise estimate
-  // MLB avg ~3.95 pitches/BF, high-K arms ~4.1 (more deep counts)
-  const totalPitches = s.numberOfPitches || s.pitchesThrown || 0;
-  const avgPitches = totalPitches > 0 ? Math.round(totalPitches / gs) : null;
-  let projPitches;
-  if (avgPitches && avgPitches > 50) {
-    // Use their actual average pitch count, scaled by projected IP vs avg IP
-    projPitches = Math.round(avgPitches * (pIP / Math.max(avgIP, 3)));
-  } else {
-    // Estimate: pitches/BF varies by pitcher type
-    const pitchesPerBF = kRate >= 0.26 ? 4.10 : kRate >= 0.20 ? 3.95 : 3.85;
-    projPitches = Math.round(pBF * pitchesPerBF);
-  }
-
   return {
     name: pStats.name, hand: pStats.throw || "R",
     K: +(kRate * pBF * pkK * oppK * kBoost).toFixed(1),
@@ -305,7 +323,7 @@ function projPitcher(pStats, park, oppTeam) {
     kPer9: ip > 0 ? +((s.strikeOuts || 0) / ip * 9).toFixed(1) : 0,
     whip: ip > 0 ? +(((s.hits || 0) + (s.baseOnBalls || 0)) / ip).toFixed(2) : "\u2014",
     avgIP: +avgIP.toFixed(1),
-    projPitches, avgPitches, pBF,
+    projPitches: pc, projIP: +pIP.toFixed(1), pBF,
     _hRate: hRate, _kRate: kRate, _erRate: erRate, _bbRate: bbRate,
     oppTeamName: oppTeam?.name || "?",
     oppK: oppTeam ? +(oppTeam.kRate * 100).toFixed(1) : null,
@@ -485,7 +503,7 @@ async function loadAll(setSt) {
           direction: diff > 0 ? "OVER" : "UNDER",
           odds: lv, fair: dvg(lv.ov, lv.uv), hand: proj.hand,
           era: proj.era, kPer9: proj.kPer9, whip: proj.whip, avgIP: proj.avgIP,
-          projPitches: proj.projPitches, avgPitches: proj.avgPitches, pBF: proj.pBF,
+          projPitches: proj.projPitches, projIP: proj.projIP,
           oppTeamName: proj.oppTeamName, oppK: proj.oppK, oppAVG: proj.oppAVG,
         });
         log.pitcherProps++;
@@ -547,7 +565,7 @@ async function loadAll(setSt) {
           direction: diff > 0 ? "OVER" : "UNDER",
           odds: lv, fair: dvg(lv.ov, lv.uv), hand: proj.hand,
           era: proj.era, kPer9: proj.kPer9, whip: proj.whip, avgIP: proj.avgIP,
-          projPitches: proj.projPitches, avgPitches: proj.avgPitches, pBF: proj.pBF,
+          projPitches: proj.projPitches, projIP: proj.projIP,
           oppTeamName: proj.oppTeamName, oppK: proj.oppK, oppAVG: proj.oppAVG,
         });
         log.pitcherProps++;
@@ -710,7 +728,7 @@ function PitcherTable({ plays }) {
                 </td>
                 <td style={{ ...sty.td, textAlign: "center", ...sty.mono, fontSize: 11 }}>
                   <span style={{ color: C.white, fontWeight: 700 }}>{p.projPitches || "\u2014"}</span>
-                  {p.avgPitches && <span style={{ color: C.muted, fontSize: 8 }}>{" (" + p.avgPitches + " avg)"}</span>}
+                  {p.projIP && <span style={{ color: C.muted, fontSize: 8 }}>{" / " + p.projIP + " IP"}</span>}
                 </td>
                 <td style={{ ...sty.td, textAlign: "center", color: C.green, fontSize: 11, ...sty.mono, fontWeight: 700 }}>{p.kPer9}</td>
                 <td style={{ ...sty.td, textAlign: "center", color: C.dim, fontSize: 11, ...sty.mono }}>{p.era}</td>
@@ -868,31 +886,25 @@ export default function App() {
                 background: active ? C.blue : C.card,
                 color: active ? C.bg : C.dim,
                 border: "1px solid " + (active ? C.blue : C.border),
-                borderRadius: 4, padding: "4px 12px", fontSize: 11, fontWeight: 700,
-                cursor: "pointer", fontFamily: "monospace",
-              }}>
-                {f === "ALL" ? "ALL PROPS" : f === "K" ? "STRIKEOUTS" : f === "H" ? "HITS ALLOWED" : f === "ER" ? "EARNED RUNS" : "WALKS"} ({ct})
-              </button>
+                borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 600,
+              }}>{f} ({ct})</button>
             );
           })}
         </div>
       )}
 
+      {tab === "pitchers" && (
+        <PitcherTable plays={propFilter === "ALL" ? pitcherPlays : pitcherPlays.filter(p => p.prop === propFilter)} />
+      )}
 
-      {tab === "pitchers" && <PitcherTable plays={propFilter === "ALL" ? pitcherPlays : pitcherPlays.filter(p => p.prop === propFilter)} />}
       {tab === "batters" && <BatterTable plays={batterPlays} />}
       {tab === "strong-bat" && <BatterTable plays={strongBat} />}
 
       {pitcherPlays.length === 0 && batterPlays.length === 0 && !loading && (
-        <div style={{ textAlign: "center", padding: 80, color: C.muted }}>
-          <div style={{ fontSize: 52, marginBottom: 16 }}>{"\u26be"}</div>
-          <div style={{ fontSize: 15, color: C.dim, marginBottom: 8 }}>Hit LOAD to pull every MLB game</div>
+        <div style={{ textAlign: "center", padding: 40, color: C.dim }}>
+          No edges found. Try refreshing or wait for more odds to load.
         </div>
       )}
-
-      <div style={{ marginTop: 14, color: C.muted, fontSize: 8, textAlign: "center", fontFamily: "'Courier New',monospace" }}>
-        MLB Prop Engine
-      </div>
     </div>
   );
 }
