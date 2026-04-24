@@ -245,7 +245,43 @@ const fmtO = ml => ml == null ? "\u2014" : (ml > 0 ? "+" : "") + ml;
 // ═══════════════════════════════════════════════════════════════════════════════
 // PROJECTION ENGINE
 // ═══════════════════════════════════════════════════════════════════════════════
-function projPitcher(pStats, park, oppTeam) {
+
+// Pitches-per-PA for one hitter (prefer API field, else estimate from K/BB rates)
+function hitterPPerPA(stat) {
+  const pa = stat.plateAppearances || 0;
+  if (pa < 20) return null;
+  if (stat.pitchesPerPlateAppearance) {
+    const v = parseFloat(stat.pitchesPerPlateAppearance);
+    if (v > 2 && v < 5) return v;
+  }
+  if (stat.numberOfPitches > 0) return stat.numberOfPitches / pa;
+  // Calibrated so league avg (K=0.225, BB=0.082) ≈ 3.90
+  const k = (stat.strikeOuts || 0) / pa;
+  const bb = (stat.baseOnBalls || 0) / pa;
+  return 3.33 + 1.5 * k + 3.0 * bb;
+}
+
+// Lineup pitches-per-PA: PA-weighted average across top 9 non-pitchers
+function lineupPPerPA(roster, statsMap) {
+  if (!roster?.length) return null;
+  const cands = [];
+  for (const p of roster) {
+    if (p.pos === "P") continue;
+    const st = statsMap[p.id];
+    if (!st?.hitting) continue;
+    const r = hitterPPerPA(st.hitting);
+    if (r == null) continue;
+    cands.push({ pa: st.hitting.plateAppearances || 0, r });
+  }
+  if (!cands.length) return null;
+  cands.sort((a, b) => b.pa - a.pa);
+  const top = cands.slice(0, 9);
+  let sum = 0, w = 0;
+  for (const c of top) { sum += c.r * c.pa; w += c.pa; }
+  return w > 0 ? sum / w : null;
+}
+
+function projPitcher(pStats, park, oppTeam, oppLineupRate) {
   if (!pStats?.pitching) return null;
   const s = pStats.pitching;
   const ip = parseFloat(s.inningsPitched) || 0;
@@ -262,40 +298,42 @@ function projPitcher(pStats, park, oppTeam) {
   const gs = s.gamesStarted || s.gamesPlayed || 1;
   const avgIP = ip / gs;
 
-  // Pitches per BF — high-K arms work deeper counts
-  const pPerBF = kRate >= 0.26 ? 4.05 : kRate >= 0.20 ? 3.90 : 3.75;
+  // Pitcher's ACTUAL rate from the season (total pitches / BF)
+  const totalPitches = s.numberOfPitches || s.pitchesThrown || 0;
+  const pPerBFPitcher = totalPitches > 0
+    ? totalPitches / bf
+    : (kRate >= 0.26 ? 4.05 : kRate >= 0.20 ? 3.90 : 3.75);
+
+  // Pitcher's avg PC per start — the stamina anchor
+  const avgPC = totalPitches > 0
+    ? totalPitches / gs
+    : avgIP * pPerBFPitcher * 3 / outRate;
+
+  // Lineup's pitches-per-PA (tonight's opponent). Fallback to league ~3.90.
+  const pPerPALineup = oppLineupRate && oppLineupRate > 2.5 && oppLineupRate < 4.8
+    ? oppLineupRate
+    : 3.90;
 
   // ─── CONVERGENCE LOOP ───
-  // Start with actual avg pitch count, derive BF, project stats,
-  // check if stats imply the same pitch count. Iterate until stable.
-  const totalPitches = s.numberOfPitches || s.pitchesThrown || 0;
-  const rawAvgPC = totalPitches > 0 ? Math.round(totalPitches / gs) : null;
-  // Seed: use actual avg PC if available, else estimate from avg IP
-  let pc = rawAvgPC && rawAvgPC > 40 && rawAvgPC < 130 ? rawAvgPC : Math.round(avgIP * 15.5);
-  // Cap seed to realistic starter range
-  pc = Math.min(Math.max(pc, 60), 110);
-
-  let convergedBF, convergedIP;
-  for (let i = 0; i < 15; i++) {
-    // From pitch count → how many batters faced
-    const estBF = pc / pPerBF;
-    // From BF → how many outs → IP
-    const estOuts = estBF * outRate;
-    const estIP = Math.min(Math.max(estOuts / 3, 3.0), 8.0);
-    // From IP → how many BF (accounting for baserunners)
-    const impliedBF = (estIP * 3) / outRate;
-    // From BF → new pitch count
-    const newPC = Math.round(impliedBF * pPerBF);
-    // Cap to realistic range
-    const cappedPC = Math.min(Math.max(newPC, 55), 110);
-    convergedBF = Math.round(impliedBF);
-    convergedIP = estIP;
-    if (Math.abs(cappedPC - pc) < 1) { pc = cappedPC; break; }
-    pc = cappedPC;
+  // 1. Start with pitcher's avg PC
+  // 2. Divide by pitcher's rate → how many batters faced
+  // 3. Multiply by lineup's rate → pitches those batters would demand
+  // 4. If the two PC values don't agree, damp toward the midpoint (anchored
+  //    to avg PC so stamina stays the dominant constraint) and iterate.
+  let pc = avgPC;
+  let bfFinal = avgPC / pPerBFPitcher;
+  for (let i = 0; i < 20; i++) {
+    bfFinal = pc / pPerBFPitcher;
+    const lineupPC = bfFinal * pPerPALineup;
+    // Damped update: 25% pitcher view + 25% lineup view + 50% stamina anchor
+    const next = 0.25 * (pc + lineupPC) + 0.5 * avgPC;
+    if (Math.abs(next - pc) < 0.2) { pc = next; break; }
+    pc = next;
   }
 
-  const pBF = convergedBF;
-  const pIP = convergedIP;
+  const pBF = Math.round(bfFinal);
+  const pIP = Math.min(Math.max((bfFinal * outRate) / 3, 3.0), 8.0);
+  pc = Math.min(Math.max(Math.round(pc), 55), 115);
 
   const pkK = (park?.k || 100) / 100;
   const pkR = park?.pf || 1.0;
@@ -476,7 +514,9 @@ async function loadAll(setSt) {
       if (pp && statsMap[pp.id]) {
         const oppTeamId = side === "away" ? mlbGame.home.id : mlbGame.away.id;
         const oppTeam = teamHitting[oppTeamId] || null;
-        const proj = projPitcher(statsMap[pp.id], park, oppTeam);
+        const oppRoster = side === "away" ? mlbGame.homeRoster : mlbGame.awayRoster;
+        const oppRate = lineupPPerPA(oppRoster, statsMap);
+        const proj = projPitcher(statsMap[pp.id], park, oppTeam, oppRate);
         if (proj) pitProjs[side] = proj;
       }
     }
@@ -544,13 +584,15 @@ async function loadAll(setSt) {
       }
       if (!pStat) continue;
       // Determine opponent team
-      let oppTeam = null;
+      let oppTeam = null, oppRate = null;
       if (mlbGame) {
         const isAway = (mlbGame.awayRoster || []).some(p => norm(p.name) === norm(pStat.name));
         const oppTeamId = isAway ? mlbGame.home.id : mlbGame.away.id;
         oppTeam = teamHitting[oppTeamId] || null;
+        const oppRoster = isAway ? mlbGame.homeRoster : mlbGame.awayRoster;
+        oppRate = lineupPPerPA(oppRoster, statsMap);
       }
-      const proj = projPitcher(pStat, park, oppTeam);
+      const proj = projPitcher(pStat, park, oppTeam, oppRate);
       if (!proj) continue;
       for (const [pk, mkt] of Object.entries(PMKTS)) {
         const lv = getLine(lines, pStat.name, mkt);
