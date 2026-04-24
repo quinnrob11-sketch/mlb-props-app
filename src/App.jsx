@@ -260,7 +260,9 @@ function projPitcher(pStats, park, oppTeam) {
   const gs = s.gamesStarted || s.gamesPlayed || 1;
   const avgIP = ip / gs;
   const pIP = Math.min(Math.max(avgIP, 4.5), 7.0);
-  const pBF = Math.round(pIP * 3 + (hRate + bbRate) * pIP * 3);
+  // Correct BF calc: outs / out-rate-per-BF
+  const outRate = 1 - hRate - bbRate; // fraction of BFs that result in an out
+  const pBF = Math.round((pIP * 3) / Math.max(outRate, 0.55));
 
   const pkK = (park?.k || 100) / 100;
   const pkR = park?.pf || 1.0;
@@ -279,13 +281,19 @@ function projPitcher(pStats, park, oppTeam) {
 
   const kBoost = kRate >= 0.30 ? 1.08 : kRate >= 0.26 ? 1.05 : kRate >= 0.22 ? 1.02 : 1.0;
 
-  // Projected pitch count: high-K pitchers average ~4.1 pitches/BF, others ~3.85
-  const pitchesPerBF = kRate >= 0.26 ? 4.15 : kRate >= 0.20 ? 3.95 : 3.80;
-  const projPitches = Math.round(pBF * pitchesPerBF);
-
-  // Actual pitches per start from stats if available
+  // Pitch count: use actual avg if API provides it, otherwise estimate
+  // MLB avg ~3.95 pitches/BF, high-K arms ~4.1 (more deep counts)
   const totalPitches = s.numberOfPitches || s.pitchesThrown || 0;
   const avgPitches = totalPitches > 0 ? Math.round(totalPitches / gs) : null;
+  let projPitches;
+  if (avgPitches && avgPitches > 50) {
+    // Use their actual average pitch count, scaled by projected IP vs avg IP
+    projPitches = Math.round(avgPitches * (pIP / Math.max(avgIP, 3)));
+  } else {
+    // Estimate: pitches/BF varies by pitcher type
+    const pitchesPerBF = kRate >= 0.26 ? 4.10 : kRate >= 0.20 ? 3.95 : 3.85;
+    projPitches = Math.round(pBF * pitchesPerBF);
+  }
 
   return {
     name: pStats.name, hand: pStats.throw || "R",
@@ -870,6 +878,7 @@ export default function App() {
         </div>
       )}
 
+
       {tab === "pitchers" && <PitcherTable plays={propFilter === "ALL" ? pitcherPlays : pitcherPlays.filter(p => p.prop === propFilter)} />}
       {tab === "batters" && <BatterTable plays={batterPlays} />}
       {tab === "strong-bat" && <BatterTable plays={strongBat} />}
@@ -878,15 +887,11 @@ export default function App() {
         <div style={{ textAlign: "center", padding: 80, color: C.muted }}>
           <div style={{ fontSize: 52, marginBottom: 16 }}>{"\u26be"}</div>
           <div style={{ fontSize: 15, color: C.dim, marginBottom: 8 }}>Hit LOAD to pull every MLB game</div>
-          <div style={{ fontSize: 11, color: C.muted, maxWidth: 500, margin: "0 auto" }}>
-            Fetches real player stats + team batting data from MLB API, live odds from 6+ books,
-            then runs projections with opponent quality, park factors, and platoon splits.
-          </div>
         </div>
       )}
 
-      <div style={{ marginTop: 14, color: C.muted, fontSize: 8, textAlign: "center", ...sty.mono }}>
-        MLB Prop Engine — opponent quality + pitcher suppression + park factors + platoon splits
+      <div style={{ marginTop: 14, color: C.muted, fontSize: 8, textAlign: "center", fontFamily: "'Courier New',monospace" }}>
+        MLB Prop Engine
       </div>
     </div>
   );
