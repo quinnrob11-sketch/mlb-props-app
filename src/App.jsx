@@ -351,17 +351,26 @@ function projPitcher(pStats, park, oppTeam, oppLineupRate) {
 
   const kBoost = kRate >= 0.30 ? 1.08 : kRate >= 0.26 ? 1.05 : kRate >= 0.22 ? 1.02 : 1.0;
 
+  // Adjusted per-BF rates (for Monte Carlo)
+  const adjRates = {
+    K: kRate * pkK * oppK * kBoost,
+    H: hRate * oppH,
+    ER: erRate * pkR * oppH,
+    BB: bbRate * oppBB,
+  };
+
   return {
     name: pStats.name, hand: pStats.throw || "R",
-    K: +(kRate * pBF * pkK * oppK * kBoost).toFixed(1),
-    H: +(hRate * pBF * oppH).toFixed(1),
-    ER: +(erRate * pBF * pkR * oppH).toFixed(1),
-    BB: +(bbRate * pBF * oppBB).toFixed(1),
+    K: +(adjRates.K * pBF).toFixed(1),
+    H: +(adjRates.H * pBF).toFixed(1),
+    ER: +(adjRates.ER * pBF).toFixed(1),
+    BB: +(adjRates.BB * pBF).toFixed(1),
     era: s.era ?? "\u2014",
     kPer9: ip > 0 ? +((s.strikeOuts || 0) / ip * 9).toFixed(1) : 0,
     whip: ip > 0 ? +(((s.hits || 0) + (s.baseOnBalls || 0)) / ip).toFixed(2) : "\u2014",
     avgIP: +avgIP.toFixed(1),
     projPitches: pc, projIP: +pIP.toFixed(1), pBF,
+    adjRates,
     _hRate: hRate, _kRate: kRate, _erRate: erRate, _bbRate: bbRate,
     oppTeamName: oppTeam?.name || "?",
     oppK: oppTeam ? +(oppTeam.kRate * 100).toFixed(1) : null,
@@ -545,6 +554,7 @@ async function loadAll(setSt) {
           era: proj.era, kPer9: proj.kPer9, whip: proj.whip, avgIP: proj.avgIP,
           projPitches: proj.projPitches, projIP: proj.projIP,
           oppTeamName: proj.oppTeamName, oppK: proj.oppK, oppAVG: proj.oppAVG,
+          adjRate: proj.adjRates[pk], pBF: proj.pBF,
         });
         log.pitcherProps++;
       }
@@ -609,6 +619,7 @@ async function loadAll(setSt) {
           era: proj.era, kPer9: proj.kPer9, whip: proj.whip, avgIP: proj.avgIP,
           projPitches: proj.projPitches, projIP: proj.projIP,
           oppTeamName: proj.oppTeamName, oppK: proj.oppK, oppAVG: proj.oppAVG,
+          adjRate: proj.adjRates[pk], pBF: proj.pBF,
         });
         log.pitcherProps++;
       }
@@ -723,7 +734,110 @@ function callLabel(diff) {
   return "\u2014";
 }
 
-function PitcherTable({ plays }) {
+// ═══════════════════════════════════════════════════════════════════════════════
+// MONTE CARLO SIMULATION
+// ═══════════════════════════════════════════════════════════════════════════════
+function runMonteCarlo(adjRate, pBF, N = 50000) {
+  const bfStd = Math.max(2.5, pBF * 0.13);
+  const results = new Array(20).fill(0);
+  for (let i = 0; i < N; i++) {
+    const u1 = Math.random(), u2 = Math.random();
+    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    const simBF = Math.max(8, Math.min(32, Math.round(pBF + z * bfStd)));
+    let count = 0;
+    for (let b = 0; b < simBF; b++) { if (Math.random() < adjRate) count++; }
+    if (count < 20) results[count]++;
+  }
+  return results.map(r => +(r / N * 100).toFixed(1));
+}
+
+function MCModal({ play, onClose }) {
+  const dist = runMonteCarlo(play.adjRate, play.pBF);
+  const peak = Math.max(...dist);
+  const ev = dist.reduce((s, p, i) => s + i * p, 0) / 100;
+  const overLines = [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5].map(line => {
+    const overPct = dist.slice(Math.floor(line) + 1).reduce((a, b) => a + b, 0);
+    return { line, over: +overPct.toFixed(1), under: +(100 - overPct).toFixed(1) };
+  });
+  const closestLine = overLines.find(o => o.line === play.line) || null;
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.panel, borderRadius: 12, border: "1px solid " + C.border, maxWidth: 680, width: "100%", maxHeight: "90vh", overflowY: "auto", padding: "20px 24px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 900, color: C.white }}>{play.player}</div>
+            <div style={{ fontSize: 11, color: C.dim }}>{play.matchup} — {play.propLabel} — Line: {play.line}</div>
+          </div>
+          <button onClick={onClose} style={{ background: C.card, border: "1px solid " + C.border, color: C.dim, borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>CLOSE</button>
+        </div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+          {[
+            ["Proj", play.proj?.toFixed(1)],
+            ["MC Mean", ev.toFixed(2)],
+            ["Adj Rate/BF", (play.adjRate * 100).toFixed(1) + "%"],
+            ["Proj BF", play.pBF],
+            ["Pitches", play.projPitches],
+            ["Proj IP", play.projIP],
+          ].map(([label, val]) => (
+            <div key={label} style={{ background: C.card, borderRadius: 6, padding: "6px 12px", border: "1px solid " + C.border }}>
+              <div style={{ fontSize: 8, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.white }}>{val}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Probability distribution (50k sims)</div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 120, marginBottom: 4 }}>
+          {dist.slice(0, 14).map((pct, i) => {
+            const isLine = i === Math.floor(play.line) || i === Math.ceil(play.line);
+            const ht = peak > 0 ? (pct / peak) * 100 : 0;
+            return (
+              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}>
+                <div style={{ fontSize: 8, color: pct >= 10 ? C.white : C.dim, marginBottom: 2 }}>{pct > 0.2 ? pct.toFixed(0) + "%" : ""}</div>
+                <div style={{ width: "100%", height: ht + "%", minHeight: pct > 0 ? 2 : 0, background: isLine ? C.yellow : pct >= 15 ? C.green : pct >= 8 ? C.blue : C.muted, borderRadius: "3px 3px 0 0", transition: "height 0.3s" }} />
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 2, marginBottom: 16 }}>
+          {dist.slice(0, 14).map((_, i) => (
+            <div key={i} style={{ flex: 1, textAlign: "center", fontSize: 9, color: C.dim }}>{i}</div>
+          ))}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 10, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Over / under</div>
+            {overLines.filter(o => o.over > 2 && o.over < 98).map(o => (
+              <div key={o.line} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", borderBottom: "1px solid " + C.border + "44", color: o.line === play.line ? C.yellow : C.dim }}>
+                <span style={{ fontWeight: o.line === play.line ? 700 : 400 }}>O {o.line}</span>
+                <span style={{ fontWeight: 700, color: o.over > 55 ? C.green : o.over < 45 ? C.red : C.dim }}>{o.over}%</span>
+              </div>
+            ))}
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Exact outcomes</div>
+            {dist.slice(0, 12).map((pct, i) => pct >= 1 ? (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", borderBottom: "1px solid " + C.border + "44", color: C.dim }}>
+                <span>Exactly {i}</span>
+                <span style={{ fontWeight: 700, color: pct >= 15 ? C.green : pct >= 8 ? C.blue : C.dim }}>{pct}%</span>
+              </div>
+            ) : null)}
+          </div>
+        </div>
+        {closestLine && (
+          <div style={{ marginTop: 14, background: C.card, borderRadius: 8, padding: "10px 14px", border: "1px solid " + C.border }}>
+            <div style={{ fontSize: 12, color: C.white, fontWeight: 700 }}>
+              Line {play.line}: Over {closestLine.over}% / Under {closestLine.under}%
+              {closestLine.over > 55 && <span style={{ color: C.green, marginLeft: 8 }}>EDGE OVER</span>}
+              {closestLine.under > 55 && <span style={{ color: C.red, marginLeft: 8 }}>EDGE UNDER</span>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PitcherTable({ plays, onClickPlay }) {
   if (!plays.length) return (
     <div style={{ color: C.muted, padding: 40, textAlign: "center" }}>
       <div style={{ fontSize: 14, marginBottom: 8 }}>No pitcher props matched</div>
@@ -747,7 +861,7 @@ function PitcherTable({ plays }) {
             return (
               <tr key={i} style={{ background: rowBg }}>
                 <td style={{ ...sty.td, whiteSpace: "nowrap" }}>
-                  <b style={{ color: C.white, fontSize: 12 }}>{p.player}</b>
+                  <b onClick={() => onClickPlay && onClickPlay(p)} style={{ color: C.blue, fontSize: 12, cursor: "pointer", textDecoration: "underline", textDecorationColor: C.border, textUnderlineOffset: 2 }}>{p.player}</b>
                   <span style={{ color: C.muted, fontSize: 9, marginLeft: 4 }}>{p.hand}HP</span>
                 </td>
                 <td style={{ ...sty.td, color: C.dim, fontSize: 10, whiteSpace: "nowrap" }}>{p.matchup} <span style={{ color: C.muted, fontSize: 8 }}>{p.gameTime}</span></td>
@@ -850,6 +964,7 @@ export default function App() {
   const [tab, setTab] = useState("pitchers");
   const [propFilter, setPropFilter] = useState("ALL");
   const [updated, setUpdated] = useState(null);
+  const [mcPlay, setMcPlay] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -936,7 +1051,7 @@ export default function App() {
       )}
 
       {tab === "pitchers" && (
-        <PitcherTable plays={propFilter === "ALL" ? pitcherPlays : pitcherPlays.filter(p => p.prop === propFilter)} />
+        <PitcherTable plays={propFilter === "ALL" ? pitcherPlays : pitcherPlays.filter(p => p.prop === propFilter)} onClickPlay={setMcPlay} />
       )}
 
       {tab === "batters" && <BatterTable plays={batterPlays} />}
@@ -947,6 +1062,8 @@ export default function App() {
           No edges found. Try refreshing or wait for more odds to load.
         </div>
       )}
+
+      {mcPlay && mcPlay.adjRate && <MCModal play={mcPlay} onClose={() => setMcPlay(null)} />}
     </div>
   );
 }

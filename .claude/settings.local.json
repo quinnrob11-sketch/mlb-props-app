@@ -3,7 +3,12 @@
     "allow": [
       "Bash(git push:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m ':*)"
+      "Bash(git commit -m ':*)",
+      "Bash(npm run *)",
+      "Bash(git commit *)",
+      "Read(//c/Users/qrob1/Documents/Claude/Projects/nhl/**)",
+      "Bash(python scrape_boxscores.py 2026-04-24)",
+      "Bash(python scrape_boxscores.py 2026-04-26)"
     ]
   }
 }
