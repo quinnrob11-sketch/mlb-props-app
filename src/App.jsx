@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -422,6 +422,7 @@ function projPitcher(pStats, park, oppTeam, oppLineupRate, recent) {
   };
 
   return {
+    pid: pStats.id,
     name: pStats.name, hand: pStats.throw || "R",
     K: +(adjRates.K * pBF).toFixed(1),
     H: +(adjRates.H * pBF).toFixed(1),
@@ -486,11 +487,134 @@ function projBatter(bStats, pitProj, park) {
   const pHRR = +(pH + pR + pRBI).toFixed(2);
 
   return {
+    pid: bStats.id,
     name: bStats.name, bat: batH, pos: bStats.pos,
     H: pH, HR: pHR, R: pR, RBI: pRBI, TB: pTB,
     "2B": p2B, SB: pSB, K: pK, "1B": p1B, HRR: pHRR,
     pPA, oppPitcher: pitProj?.name || null,
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RESULTS TRACKING — auto snapshot each day's board, auto-grade vs box scores
+// ═══════════════════════════════════════════════════════════════════════════════
+const SNAP = "mlbprops_snap_", RES = "mlbprops_res_";
+
+// MLB days run on US/Eastern
+function etDate(d = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+}
+
+// Save today's board. Only pregame lines are recorded; once a game starts its
+// plays are frozen (no mid-game line contamination).
+function saveSnapshot(pPlays, bPlays) {
+  try {
+    const key = SNAP + etDate();
+    const snap = JSON.parse(localStorage.getItem(key) || '{"plays":{}}');
+    const now = Date.now();
+    const all = [
+      ...pPlays.map(p => ({ ...p, kind: "P" })),
+      ...bPlays.map(p => ({ ...p, kind: "B" })),
+    ];
+    for (const p of all) {
+      if (!p.pid || p.line == null) continue;
+      const started = p.commenceMs && p.commenceMs < now;
+      const k = p.pid + "_" + p.kind + "_" + p.prop;
+      if (started) continue; // freeze at first pitch
+      snap.plays[k] = { pid: p.pid, name: p.player, kind: p.kind, prop: p.prop, line: p.line, proj: p.proj, diff: p.diff, dir: p.direction };
+    }
+    localStorage.setItem(key, JSON.stringify(snap));
+  } catch { /* storage full/blocked — tracking is best-effort */ }
+}
+
+// Grade one past day against real box scores (game logs from MLB API)
+async function gradeDay(date) {
+  const snap = JSON.parse(localStorage.getItem(SNAP + date) || "null");
+  if (!snap) return;
+  const plays = Object.values(snap.plays || {});
+  if (!plays.length) { localStorage.setItem(RES + date, JSON.stringify({ date, plays: [] })); return; }
+  const ids = [...new Set(plays.map(p => p.pid))];
+  const season = date.slice(0, 4);
+  const logs = {};
+  for (let i = 0; i < ids.length; i += 25) {
+    const chunk = ids.slice(i, i + 25);
+    try {
+      const r = await mlbApi("api/v1/people", {
+        personIds: chunk.join(","),
+        hydrate: "stats(group=[hitting,pitching],type=[gameLog],season=" + season + ")",
+      });
+      if (!r.ok) continue;
+      const d = await r.json();
+      for (const p of d.people || []) {
+        for (const grp of ["hitting", "pitching"]) {
+          const gl = p.stats?.find(s => s.group?.displayName === grp && s.type?.displayName === "gameLog");
+          const sp = (gl?.splits || []).filter(s => s.date === date);
+          if (sp.length) { if (!logs[p.id]) logs[p.id] = {}; logs[p.id][grp] = sp.map(s => s.stat); }
+        }
+      }
+    } catch { /* skip chunk */ }
+  }
+  const graded = [];
+  for (const p of plays) {
+    const stats = p.kind === "P" ? logs[p.pid]?.pitching : logs[p.pid]?.hitting;
+    if (!stats || !stats.length) { graded.push({ ...p, result: "NP" }); continue; } // didn't play / postponed
+    // Doubleheader: sum is wrong for a single-game prop; grade vs first game
+    const st = stats[0];
+    let actual;
+    if (p.kind === "P") {
+      actual = p.prop === "K" ? (st.strikeOuts ?? 0)
+        : p.prop === "H" ? (st.hits ?? 0)
+        : p.prop === "ER" ? (st.earnedRuns ?? 0)
+        : (st.baseOnBalls ?? 0);
+    } else {
+      const h = st.hits ?? 0, hr = st.homeRuns ?? 0, r = st.runs ?? 0, rbi = st.rbi ?? 0;
+      const tb = st.totalBases ?? 0, d2 = st.doubles ?? 0, t3 = st.triples ?? 0;
+      const sb = st.stolenBases ?? 0, k = st.strikeOuts ?? 0;
+      actual = ({ H: h, HR: hr, R: r, RBI: rbi, TB: tb, HRR: h + r + rbi, "2B": d2, SB: sb, K: k, "1B": Math.max(0, h - d2 - t3 - hr) })[p.prop];
+    }
+    let result = "P"; // push (whole-number lines only)
+    if (actual > p.line) result = p.dir === "OVER" ? "W" : "L";
+    else if (actual < p.line) result = p.dir === "UNDER" ? "W" : "L";
+    graded.push({ ...p, actual, result });
+  }
+  localStorage.setItem(RES + date, JSON.stringify({ date, plays: graded }));
+}
+
+// Grade every past snapshot that hasn't been graded yet
+async function gradeAllPending(setSt) {
+  const today = etDate();
+  const pending = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k?.startsWith(SNAP)) {
+      const d = k.slice(SNAP.length);
+      if (d < today && !localStorage.getItem(RES + d)) pending.push(d);
+    }
+  }
+  pending.sort();
+  for (const d of pending) {
+    if (setSt) setSt("Grading " + d + " results...");
+    await gradeDay(d);
+  }
+  return pending.length;
+}
+
+function loadResults() {
+  const days = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k?.startsWith(RES)) { try { days.push(JSON.parse(localStorage.getItem(k))); } catch { /* */ } }
+  }
+  days.sort((a, b) => b.date.localeCompare(a.date));
+  return days;
+}
+
+function tally(plays) {
+  const t = { W: 0, L: 0, P: 0, NP: 0 };
+  for (const p of plays) t[p.result] = (t[p.result] || 0) + 1;
+  const dec = t.W + t.L;
+  t.pct = dec > 0 ? +(t.W / dec * 100).toFixed(1) : null;
+  return t;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -613,6 +737,7 @@ async function loadAll(setSt) {
         // Skip if the recommended side isn't actually priced (unbettable)
         if ((diff > 0 && lv.ov == null) || (diff < 0 && lv.uv == null)) continue;
         pitcherPlays.push({
+          pid: proj.pid, commenceMs: new Date(ev.commence_time).getTime(),
           player: proj.name, matchup, gameTime,
           prop: pk, propLabel: PROP_LABELS[pk] || pk,
           line: lv.pt, proj: modelVal, diff,
@@ -680,6 +805,7 @@ async function loadAll(setSt) {
         // Skip if the recommended side isn't actually priced (unbettable)
         if ((diff > 0 && lv.ov == null) || (diff < 0 && lv.uv == null)) continue;
         pitcherPlays.push({
+          pid: proj.pid, commenceMs: new Date(ev.commence_time).getTime(),
           player: proj.name, matchup, gameTime,
           prop: pk, propLabel: PROP_LABELS[pk] || pk,
           line: lv.pt, proj: modelVal, diff,
@@ -758,6 +884,7 @@ async function loadAll(setSt) {
         if (Math.abs(diff) < 0.35) continue; // meaningful edges only
         if ((diff > 0 && lv.ov == null) || (diff < 0 && lv.uv == null)) continue; // side must be priced
         batterPlays.push({
+          pid: bp.pid, commenceMs: new Date(ev.commence_time).getTime(),
           player: bp.name, pos: bp.pos, matchup, gameTime,
           prop: pk, propLabel: BPROP_LABELS[pk] || pk,
           line: lv.pt, proj: modelVal, diff,
@@ -1023,6 +1150,89 @@ function BatterTable({ plays }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// RESULTS TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+function ResultsView({ version }) {
+  const days = useMemo(() => loadResults(), [version]);
+  const allPlays = days.flatMap(d => d.plays);
+  if (!allPlays.length) {
+    return (
+      <div style={{ color: C.muted, padding: 40, textAlign: "center" }}>
+        <div style={{ fontSize: 14, marginBottom: 8 }}>No graded results yet</div>
+        <div style={{ fontSize: 10 }}>Load a slate today, then open the app tomorrow — it grades automatically against the box scores.</div>
+      </div>
+    );
+  }
+  const overall = tally(allPlays);
+  const strong = tally(allPlays.filter(p => Math.abs(p.diff) >= 1));
+  const medium = tally(allPlays.filter(p => Math.abs(p.diff) >= 0.5 && Math.abs(p.diff) < 1));
+  const lean = tally(allPlays.filter(p => Math.abs(p.diff) >= 0.3 && Math.abs(p.diff) < 0.5));
+  const pctColor = pct => pct == null ? C.muted : pct >= 55 ? C.green : pct >= 50 ? C.yellow : C.red;
+  const card = (label, t) => (
+    <div key={label} style={{ background: C.card, borderRadius: 8, padding: "10px 16px", border: "1px solid " + C.border, minWidth: 130 }}>
+      <div style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 900, color: pctColor(t.pct) }}>{t.pct == null ? "\u2014" : t.pct + "%"}</div>
+      <div style={{ fontSize: 10, color: C.dim, ...sty.mono }}>{t.W}-{t.L}{t.P ? "-" + t.P + "p" : ""}{t.NP ? " (" + t.NP + " np)" : ""}</div>
+    </div>
+  );
+  // per-prop tallies
+  const props = {};
+  for (const p of allPlays) { (props[(p.kind === "P" ? "SP " : "BAT ") + p.prop] = props[(p.kind === "P" ? "SP " : "BAT ") + p.prop] || []).push(p); }
+  const propRows = Object.entries(props).map(([k, v]) => ({ k, t: tally(v) })).sort((a, b) => (b.t.W + b.t.L) - (a.t.W + a.t.L));
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        {card("All-time", overall)}
+        {card("Strong (\u22651.0)", strong)}
+        {card("Solid (0.5\u20131.0)", medium)}
+        {card("Lean (0.3\u20130.5)", lean)}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
+        <div>
+          <div style={{ fontSize: 10, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Daily record</div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead><tr>{["Date", "Plays", "W-L", "Hit %", "Strong W-L"].map(h => <th key={h} style={sty.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {days.map(d => {
+                const t = tally(d.plays);
+                const s = tally(d.plays.filter(p => Math.abs(p.diff) >= 1));
+                return (
+                  <tr key={d.date}>
+                    <td style={{ ...sty.td, ...sty.mono }}>{d.date}</td>
+                    <td style={{ ...sty.td, color: C.dim }}>{d.plays.length}</td>
+                    <td style={{ ...sty.td, ...sty.mono, fontWeight: 700 }}>{t.W}-{t.L}{t.P ? "-" + t.P : ""}</td>
+                    <td style={{ ...sty.td, ...sty.mono, fontWeight: 900, color: pctColor(t.pct) }}>{t.pct == null ? "\u2014" : t.pct + "%"}</td>
+                    <td style={{ ...sty.td, ...sty.mono, color: C.dim }}>{s.W + s.L > 0 ? s.W + "-" + s.L : "\u2014"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>By prop type</div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead><tr>{["Prop", "W-L", "Hit %"].map(h => <th key={h} style={sty.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {propRows.map(r => (
+                <tr key={r.k}>
+                  <td style={{ ...sty.td, fontWeight: 700, color: r.k.startsWith("SP") ? C.blue : C.orange }}>{r.k}</td>
+                  <td style={{ ...sty.td, ...sty.mono }}>{r.t.W}-{r.t.L}{r.t.P ? "-" + r.t.P : ""}</td>
+                  <td style={{ ...sty.td, ...sty.mono, fontWeight: 900, color: pctColor(r.t.pct) }}>{r.t.pct == null ? "\u2014" : r.t.pct + "%"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style={{ marginTop: 14, fontSize: 9, color: C.muted }}>
+        Boards are snapshotted automatically when you load a slate (pregame lines only) and graded automatically against MLB box scores the next time you open the app. History is stored in this browser.
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function App() {
@@ -1035,6 +1245,14 @@ export default function App() {
   const [propFilter, setPropFilter] = useState("ALL");
   const [updated, setUpdated] = useState(null);
   const [mcPlay, setMcPlay] = useState(null);
+  const [resVersion, setResVersion] = useState(0);
+
+  // Auto-grade any past days on app open
+  useEffect(() => {
+    gradeAllPending(setStatus).then(n => {
+      if (n > 0) { setResVersion(v => v + 1); setStatus("Graded " + n + " past day(s) \u2014 see RESULTS tab"); }
+    }).catch(() => {});
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1044,6 +1262,7 @@ export default function App() {
     setLog(result.log);
     setUpdated(new Date().toLocaleTimeString());
     setLoading(false);
+    saveSnapshot(result.pitcherPlays, result.batterPlays); // auto-track today's board
   }, []);
 
   const strongSP = pitcherPlays.filter(p => Math.abs(p.diff) >= 0.5);
@@ -1095,13 +1314,12 @@ export default function App() {
         </div>
       )}
 
-      {(pitcherPlays.length > 0 || batterPlays.length > 0) && (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-          {tabBtn("pitchers", "PITCHERS", pitcherPlays.length)}
-          {tabBtn("batters", "BATTERS", batterPlays.length)}
-          {tabBtn("strong-bat", "STRONG BAT", strongBat.length)}
-        </div>
-      )}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        {tabBtn("pitchers", "PITCHERS", pitcherPlays.length)}
+        {tabBtn("batters", "BATTERS", batterPlays.length)}
+        {tabBtn("strong-bat", "STRONG BAT", strongBat.length)}
+        {tabBtn("results", "RESULTS", loadResults().reduce((s, d) => s + d.plays.filter(p => p.result === "W" || p.result === "L").length, 0))}
+      </div>
 
       {tab === "pitchers" && pitcherPlays.length > 0 && (
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 12 }}>
@@ -1126,6 +1344,7 @@ export default function App() {
 
       {tab === "batters" && <BatterTable plays={batterPlays} />}
       {tab === "strong-bat" && <BatterTable plays={strongBat} />}
+      {tab === "results" && <ResultsView version={resVersion} />}
 
       {pitcherPlays.length === 0 && batterPlays.length === 0 && !loading && (
         <div style={{ textAlign: "center", padding: 40, color: C.dim }}>
