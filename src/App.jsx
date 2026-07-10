@@ -184,6 +184,39 @@ async function fetchStats(ids) {
   return map;
 }
 
+// Last-5-appearance workload per pitcher (pitches + IP per game).
+// Season totals lag role changes (reliever -> starter etc.); recent games don't.
+async function fetchPitcherRecent(ids) {
+  if (!ids.length) return {};
+  const season = new Date().getFullYear();
+  const map = {};
+  for (let i = 0; i < ids.length; i += 25) {
+    const chunk = ids.slice(i, i + 25);
+    try {
+      const r = await mlbApi("api/v1/people", {
+        personIds: chunk.join(","),
+        hydrate: "stats(group=[pitching],type=[gameLog],season=" + season + ")",
+      });
+      if (!r.ok) continue;
+      const d = await r.json();
+      for (const p of d.people || []) {
+        const gl = p.stats?.find(s => s.group?.displayName === "pitching" && s.type?.displayName === "gameLog");
+        const splits = (gl?.splits || []).slice(-5);
+        if (splits.length < 2) continue;
+        let pit = 0, pitN = 0, ipOuts = 0;
+        for (const sp of splits) {
+          const st = sp.stat || {};
+          if (st.numberOfPitches > 0) { pit += st.numberOfPitches; pitN++; }
+          const [w, f] = String(st.inningsPitched || "0").split(".");
+          ipOuts += (parseInt(w) || 0) * 3 + (parseInt(f) || 0);
+        }
+        map[p.id] = { rPitches: pitN > 0 ? pit / pitN : null, rIP: ipOuts / 3 / splits.length, n: splits.length };
+      }
+    } catch { /* skip */ }
+  }
+  return map;
+}
+
 async function fetchTeamHitting() {
   const season = new Date().getFullYear();
   const map = {};
@@ -218,18 +251,33 @@ function parseOdds(data, tgt) {
     const bm = (data.bookmakers || []).find(b => b.key === bk);
     if (!bm) continue;
     for (const mkt of bm.markets || []) {
+      // Group outcomes by player AND point so alternate ladders (e.g. "2+ HR")
+      // can't collide with the main line.
       const byP = {};
       for (const o of mkt.outcomes || []) {
         const d = (o.description || "").toLowerCase().replace(/\s+/g, "_");
-        if (!d) continue; // skip empty descriptions
+        if (!d || o.point == null) continue;
         if (!byP[d]) byP[d] = {};
-        if (o.name === "Over") { byP[d].ov = o.price; if (o.point != null) byP[d].pt = o.point; }
-        if (o.name === "Under") byP[d].uv = o.price;
+        const pt = o.point;
+        if (!byP[d][pt]) byP[d][pt] = { pt };
+        if (o.name === "Over") byP[d][pt].ov = o.price;
+        if (o.name === "Under") byP[d][pt].uv = o.price;
       }
-      for (const [desc, v] of Object.entries(byP)) {
-        if (v.pt == null) continue;
+      for (const [desc, pts] of Object.entries(byP)) {
+        // Main line = the two-sided point with juice closest to even.
+        // If a book only posts one-sided alt ladders, take the lowest point.
+        const cands = Object.values(pts);
+        let best = null, bestScore = Infinity;
+        for (const c of cands) {
+          if (c.ov != null && c.uv != null) {
+            const score = Math.abs(mlP(c.ov) - 0.5) + Math.abs(mlP(c.uv) - 0.5);
+            if (score < bestScore) { bestScore = score; best = c; }
+          }
+        }
+        if (!best) best = cands.reduce((a, b) => (a.pt <= b.pt ? a : b));
+        if (!best || best.pt == null) continue;
         const key = desc + "_" + mkt.key;
-        if (!seen.has(key)) { seen.add(key); tgt[key] = { pt: v.pt, ov: v.ov ?? null, uv: v.uv ?? null, bk: bm.title }; }
+        if (!seen.has(key)) { seen.add(key); tgt[key] = { pt: best.pt, ov: best.ov ?? null, uv: best.uv ?? null, bk: bm.title }; }
       }
     }
   }
@@ -281,7 +329,7 @@ function lineupPPerPA(roster, statsMap) {
   return w > 0 ? sum / w : null;
 }
 
-function projPitcher(pStats, park, oppTeam, oppLineupRate) {
+function projPitcher(pStats, park, oppTeam, oppLineupRate, recent) {
   if (!pStats?.pitching) return null;
   const s = pStats.pitching;
   const ip = parseFloat(s.inningsPitched) || 0;
@@ -295,8 +343,11 @@ function projPitcher(pStats, park, oppTeam, oppLineupRate) {
   const bbRate = (s.baseOnBalls || 0) / bf;
   const outRate = Math.max(1 - hRate - bbRate, 0.55);
 
-  const gs = s.gamesStarted || s.gamesPlayed || 1;
-  const avgIP = ip / gs;
+  // Total appearances, NOT just starts — a swingman (e.g. 19 G / 5 GS) would
+  // otherwise get his whole season's pitches credited to a handful of starts,
+  // inflating projected workload to absurd levels.
+  const apps = Math.max(s.gamesPlayed || 0, s.gamesStarted || 0, 1);
+  const avgIP = ip / apps;
 
   // Pitcher's ACTUAL rate from the season (total pitches / BF)
   const totalPitches = s.numberOfPitches || s.pitchesThrown || 0;
@@ -305,9 +356,13 @@ function projPitcher(pStats, park, oppTeam, oppLineupRate) {
     : (kRate >= 0.26 ? 4.05 : kRate >= 0.20 ? 3.90 : 3.75);
 
   // Pitcher's avg PC per start — the stamina anchor
-  const avgPC = totalPitches > 0
-    ? totalPitches / gs
+  let avgPC = totalPitches > 0
+    ? totalPitches / apps
     : avgIP * pPerBFPitcher * 3 / outRate;
+
+  // Blend in recent workload (last 5 games) when available — 60/40 recent/season.
+  // Season averages lag role changes; the last five outings don't.
+  if (recent?.rPitches && recent.rPitches > 20) avgPC = 0.6 * recent.rPitches + 0.4 * avgPC;
 
   // Lineup's pitches-per-PA (tonight's opponent). Fallback to league ~3.90.
   const pPerPALineup = oppLineupRate && oppLineupRate > 2.5 && oppLineupRate < 4.8
@@ -331,9 +386,9 @@ function projPitcher(pStats, park, oppTeam, oppLineupRate) {
     pc = next;
   }
 
-  const pBF = Math.round(bfFinal);
-  const pIP = Math.min(Math.max((bfFinal * outRate) / 3, 3.0), 8.0);
-  pc = Math.min(Math.max(Math.round(pc), 55), 115);
+  const pBF = Math.min(Math.round(bfFinal), 30);
+  const pIP = Math.min(Math.max((bfFinal * outRate) / 3, 3.0), 7.5);
+  pc = Math.min(Math.max(Math.round(pc), 55), 112);
 
   const pkK = (park?.k || 100) / 100;
   const pkR = park?.pf || 1.0;
@@ -349,7 +404,9 @@ function projPitcher(pStats, park, oppTeam, oppLineupRate) {
     oppBB = Math.max(0.88, Math.min(1.15, oppBB));
   }
 
-  const kBoost = kRate >= 0.30 ? 1.08 : kRate >= 0.26 ? 1.05 : kRate >= 0.22 ? 1.02 : 1.0;
+  // No separate "stuff boost" — K rate already encodes it; an extra multiplier
+  // just biased every high-K arm toward the OVER.
+  const kBoost = 1.0;
 
   // Adjusted per-BF rates (for Monte Carlo)
   const adjRates = {
@@ -452,6 +509,7 @@ async function loadAll(setSt) {
   // 3. Rosters + Stats
   const statsMap = {};
   const rostersByTeam = {};
+  const recentMap = {};
   if (mlbGames.length > 0) {
     const teamIds = new Set();
     const allIds = new Set();
@@ -464,10 +522,12 @@ async function loadAll(setSt) {
       if (g.pp.home?.id) allIds.add(g.pp.home.id);
     }
     await Promise.all(rosterPs);
+    const ppIds = [...allIds]; // probable pitcher ids collected so far
     for (const roster of Object.values(rostersByTeam)) for (const p of roster) allIds.add(p.id);
     setSt("Loading stats for " + allIds.size + " players...");
-    const fetched = await fetchStats([...allIds]);
+    const [fetched, recents] = await Promise.all([fetchStats([...allIds]), fetchPitcherRecent(ppIds)]);
     Object.assign(statsMap, fetched);
+    Object.assign(recentMap, recents);
     log.statsLoaded = Object.keys(statsMap).length;
     for (const g of mlbGames) {
       g.awayRoster = rostersByTeam[g.away.id] || [];
@@ -525,7 +585,7 @@ async function loadAll(setSt) {
         const oppTeam = teamHitting[oppTeamId] || null;
         const oppRoster = side === "away" ? mlbGame.homeRoster : mlbGame.awayRoster;
         const oppRate = lineupPPerPA(oppRoster, statsMap);
-        const proj = projPitcher(statsMap[pp.id], park, oppTeam, oppRate);
+        const proj = projPitcher(statsMap[pp.id], park, oppTeam, oppRate, recentMap[pp.id]);
         if (proj) pitProjs[side] = proj;
       }
     }
@@ -545,6 +605,8 @@ async function loadAll(setSt) {
         const modelVal = proj[pk];
         if (modelVal == null) continue;
         const diff = +(modelVal - lv.pt).toFixed(2);
+        // Skip if the recommended side isn't actually priced (unbettable)
+        if ((diff > 0 && lv.ov == null) || (diff < 0 && lv.uv == null)) continue;
         pitcherPlays.push({
           player: proj.name, matchup, gameTime,
           prop: pk, propLabel: PROP_LABELS[pk] || pk,
@@ -602,7 +664,7 @@ async function loadAll(setSt) {
         const oppRoster = isAway ? mlbGame.homeRoster : mlbGame.awayRoster;
         oppRate = lineupPPerPA(oppRoster, statsMap);
       }
-      const proj = projPitcher(pStat, park, oppTeam, oppRate);
+      const proj = projPitcher(pStat, park, oppTeam, oppRate, recentMap[pStat.id]);
       if (!proj) continue;
       for (const [pk, mkt] of Object.entries(PMKTS)) {
         const lv = getLine(lines, pStat.name, mkt);
@@ -610,6 +672,8 @@ async function loadAll(setSt) {
         const modelVal = proj[pk];
         if (modelVal == null) continue;
         const diff = +(modelVal - lv.pt).toFixed(2);
+        // Skip if the recommended side isn't actually priced (unbettable)
+        if ((diff > 0 && lv.ov == null) || (diff < 0 && lv.uv == null)) continue;
         pitcherPlays.push({
           player: proj.name, matchup, gameTime,
           prop: pk, propLabel: PROP_LABELS[pk] || pk,
@@ -687,6 +751,7 @@ async function loadAll(setSt) {
         if (modelVal == null) continue;
         const diff = +(modelVal - lv.pt).toFixed(2);
         if (Math.abs(diff) < 0.35) continue; // meaningful edges only
+        if ((diff > 0 && lv.ov == null) || (diff < 0 && lv.uv == null)) continue; // side must be priced
         batterPlays.push({
           player: bp.name, pos: bp.pos, matchup, gameTime,
           prop: pk, propLabel: BPROP_LABELS[pk] || pk,
