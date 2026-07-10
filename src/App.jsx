@@ -336,11 +336,16 @@ function projPitcher(pStats, park, oppTeam, oppLineupRate, recent) {
   const bf = s.battersFaced || Math.round(ip * 3 + (s.hits || 0) + (s.baseOnBalls || 0));
   if (ip < 3 || bf < 10) return null;
 
-  // Per-BF rates from season stats
-  const kRate = (s.strikeOuts || 0) / bf;
-  const hRate = (s.hits || 0) / bf;
-  const erRate = (s.earnedRuns || 0) / bf;
-  const bbRate = (s.baseOnBalls || 0) / bf;
+  // Per-BF rates from season stats, with SAMPLE-SIZE SHRINKAGE:
+  // regress toward league average until the pitcher has enough batters faced
+  // for his rates to be trustworthy. A guy 3 IP off the IL with 8 ER would
+  // otherwise project off a 21.00 ERA at face value.
+  const trust = bf / (bf + 120); // ~0.45 at 100 BF, ~0.77 at 400 BF
+  const shrink = (raw, lg) => trust * raw + (1 - trust) * lg;
+  const kRate = shrink((s.strikeOuts || 0) / bf, LGA.pk);
+  const hRate = shrink((s.hits || 0) / bf, LGA.ph);
+  const erRate = shrink((s.earnedRuns || 0) / bf, LGA.per);
+  const bbRate = shrink((s.baseOnBalls || 0) / bf, LGA.pbb);
   const outRate = Math.max(1 - hRate - bbRate, 0.55);
 
   // Total appearances, NOT just starts — a swingman (e.g. 19 G / 5 GS) would
