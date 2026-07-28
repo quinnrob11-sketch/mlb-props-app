@@ -182,14 +182,22 @@ export const CORE_MARKET_LIST = [
  * @param {boolean} includeAlternates - Sharp mode. Adds every alternate ladder,
  *   roughly doubling the market count and the upstream credit cost.
  * @returns {string} Comma-separated market keys. The proxy lowercases, dedupes
- *   and sorts this before forwarding, so ordering here does not fragment the
- *   CDN cache.
+ *   and sorts this before forwarding.
+ *
+ * Sorted and deduped here so the emitted URL is already in the proxy's
+ * canonical form. The proxy 308s anything non-canonical onto a single CDN
+ * cache key (see api/odds.js); matching that form up front means the app's own
+ * requests never pay for the redirect hop.
  */
 export const marketsParam = (includeAlternates) =>
   [
-    ...CORE_MARKET_LIST,
-    ...(includeAlternates ? Object.keys(ALT_MARKETS) : []),
-  ].join(",");
+    ...new Set([
+      ...CORE_MARKET_LIST,
+      ...(includeAlternates ? Object.keys(ALT_MARKETS) : []),
+    ]),
+  ]
+    .sort()
+    .join(",");
 
 /**
  * The only bookmakers ever read out of an odds response.

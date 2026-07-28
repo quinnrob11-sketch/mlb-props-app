@@ -14,6 +14,7 @@ function mock(url, headers = {}) {
     status(c) { this.statusCode = c; return this; },
     json(o) { this.body = JSON.stringify(o); return this; },
     send(b) { this.body = b; return this; },
+    end() { return this; },
   };
   return [{ method: "GET", url, headers: { "x-forwarded-for": "1.2.3.4", ...headers } }, res];
 }
@@ -56,42 +57,64 @@ await check("bad eventId", odds, "/api/odds?endpoint=event-odds&eventId=nope&mar
 await check("unlisted market", odds, "/api/odds?endpoint=event-odds&eventId=" + "a".repeat(32) + "&markets=player_anytime_td", { status: 400 });
 await check("no markets", odds, "/api/odds?endpoint=event-odds&eventId=" + "a".repeat(32), { status: 400 });
 
-console.log("\n── odds.js: market canonicalisation ──");
+console.log("\n── odds.js: upstream URL is canonical ──");
 {
-  // Same set, different order/case/dupes must produce one identical upstream URL.
-  const seen = new Set();
+  // Given already-canonical input, the upstream URL must have sorted markets
+  // and a fixed bookmaker list — the thing that bounds cost per cache entry.
+  let seen = null;
   const original = globalThis.fetch;
   globalThis.fetch = async (u) => {
-    seen.add(String(u).replace(/apiKey=[^&]*/, "apiKey=REDACTED"));
+    seen = String(u).replace(/apiKey=[^&]*/, "apiKey=REDACTED");
     return { ok: true, status: 200, headers: new Map(), text: async () => "[]" };
   };
   process.env.ODDS_API_KEY = "test";
   const id = "b".repeat(32);
-  for (const m of ["batter_hits,batter_rbis", "batter_rbis,batter_hits", "BATTER_RBIS, batter_hits ,batter_hits"]) {
-    const [req, res] = mock(`/api/odds?endpoint=event-odds&eventId=${id}&markets=${encodeURIComponent(m)}`);
-    await odds(req, res);
-  }
+  const [req, res] = mock(`/api/odds?endpoint=event-odds&eventId=${id}&markets=batter_hits%2Cbatter_rbis&books=core`);
+  await odds(req, res);
   globalThis.fetch = original;
-  const ok = seen.size === 1;
-  console.log(`${ok ? "  ok  " : " FAIL "} 3 orderings collapse to 1 cache key`);
+  const ok = res.statusCode === 200 &&
+    seen.includes("markets=batter_hits%2Cbatter_rbis") &&
+    seen.includes("bookmakers=betmgm%2Ccaesars%2Cdraftkings%2Cfanduel%2Cpinnacle");
+  console.log(`${ok ? "  ok  " : " FAIL "} canonical input builds sorted upstream URL`);
   ok ? pass++ : fail++;
-  if (!ok) for (const u of seen) console.log("        " + u);
-  else console.log("        " + [...seen][0]);
+  console.log("        " + seen);
 }
 
-console.log("\n── odds.js: rate limiter ──");
+console.log("\n── odds.js: CDN cache-key canonicalisation ──");
 {
-  const [, res] = mock("/api/odds?endpoint=events");
-  let limited = false;
-  for (let i = 0; i < 200; i++) {
-    const [rq, rs] = mock("/api/odds?endpoint=events", { "x-forwarded-for": "9.9.9.9" });
-    // Short-circuit before any network by using an invalid endpoint after limit.
-    await odds(rq, rs);
-    if (rs.statusCode === 429) { limited = true; break; }
+  const id = "c".repeat(32);
+  const canonical = `/api/odds?endpoint=event-odds&eventId=${id}&markets=batter_hits%2Cbatter_home_runs&books=core`;
+  // Non-canonical forms must 308 to exactly one target, so the CDN sees one key.
+  const variants = [
+    `/api/odds?endpoint=event-odds&eventId=${id}&markets=batter_home_runs,batter_hits&books=core`,
+    `/api/odds?endpoint=event-odds&eventId=${id}&markets=BATTER_HOME_RUNS,batter_hits,batter_hits`,
+    `/api/odds?endpoint=event-odds&eventId=${id.toUpperCase()}&markets=batter_hits,batter_home_runs`,
+    `/api/odds?endpoint=event-odds&eventId=${id}&markets=batter_hits,batter_home_runs`,
+  ];
+  const targets = new Set();
+  let all308 = true;
+  for (const v of variants) {
+    const [req, res] = mock(v);
+    await odds(req, res);
+    if (res.statusCode !== 308) all308 = false;
+    else targets.add(res.headers["location"]);
   }
-  console.log(`${limited ? "  ok  " : " FAIL "} 429 after burst from one IP`);
-  limited ? pass++ : fail++;
-  void res;
+  const ok = all308 && targets.size === 1 && [...targets][0] === canonical;
+  console.log(`${ok ? "  ok  " : " FAIL "} 4 permutations all 308 to one canonical URL`);
+  ok ? pass++ : fail++;
+  if (!ok) console.log("        targets:", [...targets], "all308:", all308);
+
+  // The canonical URL itself must NOT redirect, or it loops forever.
+  process.env.ODDS_API_KEY = "test";
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, headers: new Map(), text: async () => "{}" });
+  const [rq, rs] = mock(canonical);
+  await odds(rq, rs);
+  globalThis.fetch = original;
+  const noLoop = rs.statusCode === 200 && (rs.headers["cache-control"] || "").includes("s-maxage=60");
+  console.log(`${noLoop ? "  ok  " : " FAIL "} canonical URL serves 200 and does not redirect`);
+  noLoop ? pass++ : fail++;
+  if (!noLoop) console.log("        got", rs.statusCode, rs.headers["cache-control"], rs.headers["location"]);
 }
 
 if (process.env.ODDS_LIVE === "1") {

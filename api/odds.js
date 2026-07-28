@@ -136,6 +136,29 @@ export default async function handler(req, res) {
     const markets = normalizeMarkets(q.get("markets"));
     if (markets.error) return fail(res, 400, markets.error);
 
+    const books = (q.get("books") || "core") === "all" ? "all" : "core";
+
+    // The CDN keys on the *incoming* URL, not the upstream one we build below.
+    // So canonicalising markets only for the upstream call does nothing to stop
+    // someone permuting `markets` to mint a fresh cache entry on every request
+    // and bill each one to the key — 15 markets is 15! distinct URLs for one
+    // identical response.
+    //
+    // Redirecting to the canonical form collapses every permutation onto a
+    // single cache key. The app already sends canonical requests, so it never
+    // sees this hop. Sorting/deduping/lowercasing is idempotent, so the
+    // redirect target can never itself redirect.
+    const canonical =
+      `/api/odds?endpoint=event-odds&eventId=${eventId}` +
+      `&markets=${encodeURIComponent(markets.value)}&books=${books}`;
+    const incoming = new URL(req.url, "http://localhost");
+    if (incoming.pathname + incoming.search !== canonical) {
+      // Cache the redirect too, or the redirect itself becomes the hot path.
+      res.setHeader("Cache-Control", "public, s-maxage=600");
+      res.setHeader("Location", canonical);
+      return res.status(308).end();
+    }
+
     upstream = new URL(`${UPSTREAM}/sports/${SPORT}/events/${eventId}/odds`);
     upstream.searchParams.set("markets", markets.value);
     upstream.searchParams.set("oddsFormat", "american");
@@ -144,7 +167,7 @@ export default async function handler(req, res) {
     // `core` pins an explicit book list; `all` widens to whole regions. Both
     // are fixed strings, so neither can be used to inflate upstream cost
     // beyond what the app itself would request.
-    if ((q.get("books") || "core") === "all") {
+    if (books === "all") {
       upstream.searchParams.set("regions", ALL_REGIONS);
     } else {
       upstream.searchParams.set("bookmakers", CORE_BOOKS.join(","));
