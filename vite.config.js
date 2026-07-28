@@ -1,34 +1,12 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  build: { sourcemap: true },
   server: {
-    proxy: {
-      '/api/odds': {
-        target: 'https://api.the-odds-api.com',
-        changeOrigin: true,
-        rewrite: (path) => {
-          const url = new URL('http://localhost' + path);
-          const apiPath = url.searchParams.get('path') || '';
-          url.searchParams.delete('path');
-          // Add API key for local dev (set VITE_ODDS_API_KEY in .env.local)
-          const key = process.env.VITE_ODDS_API_KEY || '';
-          if (key) url.searchParams.set('apiKey', key);
-          return `/v4/${apiPath}?${url.searchParams.toString()}`;
-        },
-      },
-      '/api/mlb': {
-        target: 'https://statsapi.mlb.com',
-        changeOrigin: true,
-        rewrite: (path) => {
-          const url = new URL('http://localhost' + path);
-          const apiPath = url.searchParams.get('path') || '';
-          url.searchParams.delete('path');
-          return `/${apiPath}?${url.searchParams.toString()}`;
-        },
-      },
-    },
+    // Dev hits the same serverless handlers shape as production. Run
+    // `vercel dev` for the real functions; this proxy is a thin stand-in.
+    proxy: { '/api': { target: 'http://localhost:3000', changeOrigin: true } },
   },
 })

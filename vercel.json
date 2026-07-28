@@ -1,7 +1,14 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/*.js": {
+      "maxDuration": 20
+    }
+  },
   "rewrites": [
-    {"source": "/api/odds", "destination": "/api/odds"},
-    {"source": "/api/mlb", "destination": "/api/mlb"},
-    {"source": "/(.*)", "destination": "/index.html"}
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
   ]
 }
