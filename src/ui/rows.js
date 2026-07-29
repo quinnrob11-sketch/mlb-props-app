@@ -52,6 +52,10 @@ export function flattenRows(slate) {
           under: prop.under,
           proj: prop.proj,
           edge: prop.edge,
+          // Where the called price came from and every venue quoting this
+          // line — the boards' click-through and the DFS board read these.
+          venue: prop.venue ?? null,
+          venues: prop.venues || [],
           flags: pitcher.flags,
           detailRef: pitcher,
           game,
@@ -84,6 +88,8 @@ export function flattenRows(slate) {
           under: prop.under,
           proj: prop.proj,
           edge: prop.edge,
+          venue: prop.venue ?? null,
+          venues: prop.venues || [],
           flags: batter.flags,
           detailRef: batter,
           game,

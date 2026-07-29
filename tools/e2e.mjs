@@ -4,7 +4,7 @@ const p = await b.newPage();
 const errors = [], logs = [];
 p.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
 p.on('console', m => { if (m.type() === 'error') errors.push('CONSOLE: ' + m.text()); else logs.push(m.text()); });
-await p.goto('http://localhost:4173/', { waitUntil: 'networkidle' });
+await p.goto('https://mlb-props-app.vercel.app/', { waitUntil: 'networkidle' });
 console.log('TITLE:', await p.title());
 console.log('HEADER:', (await p.locator('.hdr-title').first().textContent().catch(()=> 'none')));
 console.log('TABS:', await p.locator('.tab').allTextContents());

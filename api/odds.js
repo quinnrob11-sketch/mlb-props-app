@@ -8,9 +8,10 @@
 //   1. Strict allowlisting  — only two endpoints, one sport, a fixed market
 //                             vocabulary, and a 32-hex event id. There is no
 //                             way to reach an arbitrary upstream URL.
-//   2. Canonical cache keys — markets are lowercased, deduped and sorted before
-//                             they are forwarded, so `k,hits` and `hits,k` are
-//                             the same URL and share one cache entry.
+//   2. Canonical cache keys — markets are lowercased, deduped and sorted and
+//                             `books` is resolved to one of three named modes
+//                             before either is forwarded, so `k,hits` and
+//                             `hits,k` are the same URL and share one entry.
 //   3. Edge caching         — repeat traffic is served by Vercel's CDN and
 //                             costs zero upstream credits.
 //
@@ -23,10 +24,50 @@
 const UPSTREAM = "https://api.the-odds-api.com/v4";
 const SPORT = "baseball_mlb";
 
-// Books used when `books=core`. Sorted so the upstream URL is stable.
-const CORE_BOOKS = ["betmgm", "caesars", "draftkings", "fanduel", "pinnacle"];
-// Regions used when `books=all`.
+// ── book sets ────────────────────────────────────────────────────────────────
+// Named, explicit sets so the upstream cost of each one is legible right here.
+//
+// Billing is per 10 bookmakers = 1 "region-equivalent". A `bookmakers=` list of
+// 1..10 keys therefore costs exactly the same as any other list of 1..10 keys:
+// `wide` (10 keys) bills identically to `core` (5 keys). The 11th key crosses
+// into a second region-equivalent and DOUBLES the cost of every call, so
+// `wide` is a hard ceiling — do not add an entry without removing one.
+//
+// Each list is sorted so the upstream URL (and hence its cache entry) is stable.
+const BOOK_SETS = {
+  core: ["betmgm", "caesars", "draftkings", "fanduel", "pinnacle"],
+  // core + five exchange/DFS venues. Exactly 10 = the quota ceiling.
+  wide: [
+    "betmgm", "betr_us_dfs", "caesars", "draftkings", "fanduel",
+    "kalshi", "novig", "pick6", "pinnacle", "prizepicks",
+  ],
+};
+
+// `books=all` is kept only for backwards compatibility with callers that still
+// send it. It swaps the pinned `bookmakers=` list for whole regions, which
+// returns far more than 10 books and so costs MORE than one region-equivalent.
+// It is not the default and should not be used by new code.
 const ALL_REGIONS = "us,us2";
+
+// Every accepted value of `books`, and the one used when the param is absent.
+//
+// NOTE: the app still sends `books` explicitly (`sharp ? 'all' : 'core'` in
+// src/data/loadSlate.js), so it does not yet pick this default up. That call
+// site has to switch to `wide` for the app to see the extra five venues; this
+// default only covers callers that omit the param.
+const BOOK_MODES = new Set([...Object.keys(BOOK_SETS), "all"]);
+const DEFAULT_BOOKS = "wide";
+
+// Fixed extras on every event-odds call. Deliberately NOT caller-controlled:
+// making them query params would let anyone mint fresh cache keys by toggling
+// them, and neither carries a documented extra cost.
+//   includeLinks       - deep links per event/market/outcome, plus `sid`.
+//   includeMultipliers - DFS payout multipliers (a line + multiplier rather
+//                        than a two-sided price).
+const EVENT_ODDS_EXTRAS = {
+  includeLinks: "true",
+  includeMultipliers: "true",
+};
 
 // Every market the app is allowed to ask for. Anything else is rejected before
 // it reaches the upstream, which is what bounds the cache-key space.
@@ -99,6 +140,21 @@ function normalizeMarkets(raw) {
   return { value: [...new Set(wanted)].sort().join(",") };
 }
 
+// `books` is part of the canonical URL, so it gets the same treatment as
+// `markets`: trimmed and lowercased (idempotent, so the canonical form can
+// never itself redirect), then checked against a closed set. An unrecognised
+// value is a 400 rather than a silent fallback — a typo that quietly served
+// the wrong book set would be invisible until the numbers looked wrong.
+function normalizeBooks(raw) {
+  if (raw === null) return { value: DEFAULT_BOOKS };
+  const mode = raw.trim().toLowerCase();
+  if (!mode) return { value: DEFAULT_BOOKS };
+  if (!BOOK_MODES.has(mode)) {
+    return { error: `unsupported books value: ${mode}` };
+  }
+  return { value: mode };
+}
+
 function fail(res, status, message) {
   res.setHeader("Cache-Control", "no-store");
   return res.status(status).json({ error: message });
@@ -136,7 +192,9 @@ export default async function handler(req, res) {
     const markets = normalizeMarkets(q.get("markets"));
     if (markets.error) return fail(res, 400, markets.error);
 
-    const books = (q.get("books") || "core") === "all" ? "all" : "core";
+    const booksMode = normalizeBooks(q.get("books"));
+    if (booksMode.error) return fail(res, 400, booksMode.error);
+    const books = booksMode.value;
 
     // The CDN keys on the *incoming* URL, not the upstream one we build below.
     // So canonicalising markets only for the upstream call does nothing to stop
@@ -148,6 +206,13 @@ export default async function handler(req, res) {
     // single cache key. The app already sends canonical requests, so it never
     // sees this hop. Sorting/deduping/lowercasing is idempotent, so the
     // redirect target can never itself redirect.
+    //
+    // `books` is part of that key: `core` and `wide` are different responses
+    // and must not share an entry. Every input that resolves to the same mode
+    // (absent, empty, `WIDE`, ` wide `) lands on the same single target, and
+    // the resolved mode is always one of the literals in BOOK_MODES — so the
+    // canonical URL re-parses to itself. The include flags are fixed, so they
+    // stay out of the key entirely.
     const canonical =
       `/api/odds?endpoint=event-odds&eventId=${eventId}` +
       `&markets=${encodeURIComponent(markets.value)}&books=${books}`;
@@ -164,13 +229,22 @@ export default async function handler(req, res) {
     upstream.searchParams.set("oddsFormat", "american");
     upstream.searchParams.set("dateFormat", "iso");
 
-    // `core` pins an explicit book list; `all` widens to whole regions. Both
-    // are fixed strings, so neither can be used to inflate upstream cost
-    // beyond what the app itself would request.
+    // Always-on extras. Set before the book selection so nothing below can be
+    // shadowed by them.
+    for (const [k, v] of Object.entries(EVENT_ODDS_EXTRAS)) {
+      upstream.searchParams.set(k, v);
+    }
+
+    // `core`/`wide` pin an explicit book list; `all` widens to whole regions.
+    // All three are fixed strings chosen from a closed set, so none can be used
+    // to inflate upstream cost beyond what the app itself would request.
+    //
+    // `bookmakers` takes priority over `regions` upstream, so the two are never
+    // sent together — the pinned lists would silently win and make `all` a lie.
     if (books === "all") {
       upstream.searchParams.set("regions", ALL_REGIONS);
     } else {
-      upstream.searchParams.set("bookmakers", CORE_BOOKS.join(","));
+      upstream.searchParams.set("bookmakers", BOOK_SETS[books].join(","));
     }
   } else {
     return fail(res, 400, "endpoint must be 'events' or 'event-odds'");

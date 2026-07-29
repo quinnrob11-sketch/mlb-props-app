@@ -13,8 +13,11 @@ import { loadSlate } from '../data/loadSlate.js';
 import { saveSnapshot, saveClosingLines, serializeSlate, reviveSlate } from './snapshotStore.js';
 import { flattenRows } from './rows.js';
 import { applyCriteria, loadCriteria, saveCriteria } from './filters.js';
+import { loadPriceMode, savePriceMode } from './makerMode.js';
+import { buildDfsBoard } from './dfsRows.js';
 import FilterBar from './FilterBar.jsx';
 import BestBets from './BestBets.jsx';
+import DfsBoard from './DfsBoard.jsx';
 // TODO(recon): the shared pitcher/batter table (minified `Wa`, app.js:2158) is
 // reconstructed outside this region; file name assumed.
 import PropTable from './PropTable.jsx';
@@ -45,6 +48,12 @@ export default function App() {
   const [bankroll, setBankroll] = useState(() => Number(localStorage.getItem('bankroll')) || 100);
   // Sharp mode is opt-out: anything other than the literal "off" means on.
   const [sharp, setSharp] = useState(() => localStorage.getItem('sharpMode') !== 'off');
+  // Taker (hit the best price now) vs maker (rest inside Kalshi's book).
+  // Persisted next to `criteriaV1` / `bankroll` / `sharpMode`.
+  const [priceMode, setPriceMode] = useState(() => loadPriceMode());
+  useEffect(() => {
+    savePriceMode(priceMode);
+  }, [priceMode]);
   // The whole criteria filter, persisted under `criteriaV1`. It also owns the
   // alt-line rule that used to live in its own `showAlts` key — `loadCriteria`
   // seeds `hideAlts` from that key on first run and `saveCriteria` mirrors it
@@ -136,6 +145,10 @@ export default function App() {
   const pitcherRows = filtered.filter((r) => r.kind === 'pitcher');
   const batterAll = allRows.filter((r) => r.kind === 'batter');
   const batterRows = filtered.filter((r) => r.kind === 'batter');
+  // DFS board: only rows a DFS app actually carries survive `buildDfsBoard`,
+  // so the tab count is the real number of shoppable plays.
+  const dfsRows = filtered.filter(isCallable);
+  const dfsCount = buildDfsBoard(dfsRows).length;
 
   // Tab counts track the filtered set. PITCHERS/BATTERS keep their original
   // "distinct players" meaning rather than switching to a prop-row count.
@@ -238,6 +251,7 @@ export default function App() {
           ['best', 'BEST BETS', bestRows.length],
           ['pitchers', 'PITCHERS', players(pitcherRows)],
           ['batters', 'BATTERS', players(batterRows)],
+          ['dfs', 'DFS', dfsCount],
           ['nrfi', 'NRFI', nrfiOn ? nrfiGames : 0],
           ['results', 'RESULTS', null],
           ['method', 'METHOD', null],
@@ -253,7 +267,7 @@ export default function App() {
         ))}
       </nav>
 
-      {(tab === 'best' || tab === 'pitchers' || tab === 'batters') && (
+      {(tab === 'best' || tab === 'pitchers' || tab === 'batters' || tab === 'dfs') && (
         <div className="toolbar">
           <input
             className="search"
@@ -269,6 +283,28 @@ export default function App() {
             altCount={altEdges}
             showStrongChip={tab === 'best'}
           />
+          {tab !== 'dfs' && (
+            <div className="chips modeswitch" role="group" aria-label="Price mode">
+              {[
+                ['taker', 'Taker', 'Best price on the board right now — click to hit it.'],
+                [
+                  'maker',
+                  'Maker',
+                  "Kalshi rows only: the live bid/ask, where the model's fair value sits in it, and where a resting order could still have edge. Display only.",
+                ],
+              ].map(([key, label, hint]) => (
+                <button
+                  key={key}
+                  className={`chip ${priceMode === key ? 'on' : ''}`}
+                  onClick={() => setPriceMode(key)}
+                  title={hint}
+                  aria-pressed={priceMode === key}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -292,6 +328,7 @@ export default function App() {
           slip={slip}
           toggleSlip={toggleSlip}
           bankroll={bankroll}
+          priceMode={priceMode}
         />
       )}
 
@@ -305,6 +342,7 @@ export default function App() {
           kind="pitcher"
           slip={slip}
           toggleSlip={toggleSlip}
+          priceMode={priceMode}
         />
       )}
 
@@ -318,6 +356,16 @@ export default function App() {
           kind="batter"
           slip={slip}
           toggleSlip={toggleSlip}
+          priceMode={priceMode}
+        />
+      )}
+
+      {slate && tab === 'dfs' && (
+        <DfsBoard
+          rows={dfsRows}
+          unfilteredRows={bestAll}
+          criteria={criteria}
+          query={query}
         />
       )}
 

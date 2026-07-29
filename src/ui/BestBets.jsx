@@ -7,6 +7,8 @@ import { fmt } from '../lib/format.js';
 import { matchesQuery } from './rows.js';
 import { explainEmpty } from './filters.js';
 import VerdictChip from './VerdictChip.jsx';
+import VenueLinks from './VenueLinks.jsx';
+import MakerPanel, { useKalshiBooks } from './MakerPanel.jsx';
 import DistributionChart from './DistributionChart.jsx';
 
 export default function BestBets({
@@ -19,11 +21,15 @@ export default function BestBets({
   slip,
   toggleSlip,
   bankroll,
+  priceMode = 'taker',
 }) {
   const sorted = rows
     .filter((row) => matchesQuery(row, query))
     // Rows without an edge sort to the bottom via the -99 sentinel.
     .sort((a, b) => (b.edge?.ev ?? -99) - (a.edge?.ev ?? -99));
+
+  // Hook order is fixed: this runs before any of the early returns below.
+  const books = useKalshiBooks(sorted, priceMode === 'maker');
 
   if (!sorted.length) {
     // Criteria first: if they are what emptied the board, say exactly which.
@@ -138,6 +144,17 @@ export default function BestBets({
               market={row.market}
               side={edge.side}
             />
+
+            {priceMode === 'maker' ? (
+              <MakerPanel
+                row={row}
+                entry={books.entries.get(row.key)}
+                status={books.status}
+                error={books.error}
+              />
+            ) : (
+              <VenueLinks row={row} />
+            )}
 
             <div className="card-foot">
               <span className="psub">

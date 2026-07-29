@@ -4,6 +4,8 @@ import { fmt } from "../lib/format.js";
 import { matchesQuery } from "./rows.js";
 import { explainEmpty } from "./filters.js";
 import VerdictChip from "./VerdictChip.jsx";
+import VenueLinks from "./VenueLinks.jsx";
+import MakerPanel, { useKalshiBooks } from "./MakerPanel.jsx";
 import PitcherCard from "./PitcherCard.jsx";
 import BatterCard from "./BatterCard.jsx";
 
@@ -15,6 +17,10 @@ import BatterCard from "./BatterCard.jsx";
  * Local UI state only: market filter chip, sort key, which row is expanded and
  * the "Lines only" toggle (on by default — rows without a book line are
  * projections, not bets).
+ *
+ * The VENUES column lists every venue quoting the row's line — not just the
+ * best — so the row itself is enough to line shop from. In maker mode the same
+ * column shows Kalshi's live book instead of a price to cross.
  */
 export default function PropTable({
   rows,
@@ -27,6 +33,7 @@ export default function PropTable({
   kind,
   slip,
   toggleSlip,
+  priceMode = "taker",
 }) {
   const [market, setMarket] = useState("ALL");
   const [sort, setSort] = useState("ev");
@@ -49,6 +56,10 @@ export default function PropTable({
               ? a.name.localeCompare(b.name)
               : 0;
     });
+
+  // Kalshi books are only fetched while maker mode is on, and only for the
+  // rows actually on screen.
+  const books = useKalshiBooks(visible, priceMode === "maker");
 
   // Chip counts respect the "Lines only" toggle but not the market filter.
   const counts = {
@@ -122,13 +133,14 @@ export default function PropTable({
               <th className="num">Best O/U</th>
               <th className="num">EV</th>
               <th>Call</th>
+              <th>{priceMode === "maker" ? "Kalshi book" : "Venues"}</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {visible.length === 0 && (
               <tr>
-                <td colSpan={11}>
+                <td colSpan={12}>
                   <div className="notice">
                     <b>{emptyState.headline}</b>
                     <div className="sub">{emptyState.detail}</div>
@@ -225,6 +237,21 @@ export default function PropTable({
                     <td>
                       <VerdictChip edge={edge} />
                     </td>
+                    <td className="venuecell">
+                      {row.line == null ? (
+                        <span className="dim">—</span>
+                      ) : priceMode === "maker" ? (
+                        <MakerPanel
+                          row={row}
+                          entry={books.entries.get(row.key)}
+                          status={books.status}
+                          error={books.error}
+                          compact
+                        />
+                      ) : (
+                        <VenueLinks row={row} compact />
+                      )}
+                    </td>
                     <td>
                       {edge && edge.verdict !== "PASS" && (
                         <button
@@ -241,7 +268,7 @@ export default function PropTable({
                   </tr>
                   {isOpen && (
                     <tr className="detail">
-                      <td colSpan={11}>
+                      <td colSpan={12}>
                         {kind === "pitcher" ? (
                           <PitcherCard p={row.detailRef} />
                         ) : (

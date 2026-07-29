@@ -217,7 +217,44 @@ export const CORE_BOOKS = [
 ];
 
 /**
+ * The exchange and DFS venues `/api/odds` now requests alongside CORE_BOOKS
+ * (`books=wide`). They are READ but they are NOT part of the consensus:
+ *
+ *   - a DFS entry is a line plus a payout multiplier, not a two-sided price, and
+ *     the upstream marks these "indicative only" - averaging one into a fair
+ *     probability would be a category error;
+ *   - an exchange quote is a bid/ask pair whose spread means something different
+ *     from a book's hold.
+ *
+ * `parseEventOdds` therefore tags their quotes `consensus: false`, which keeps
+ * them out of the modal-point vote, out of `nBooks` and out of `evaluateEdge`,
+ * while still letting a row show where else the same line is available and at
+ * what payout. See `VENUES` in `lib/venues.js` for what each one is.
+ *
+ * @type {string[]}
+ */
+export const EXTRA_BOOKS = [
+  "kalshi",
+  "novig",
+  "prizepicks",
+  "pick6",
+  "betr_us_dfs",
+];
+
+/**
+ * Every bookmaker key `parseEventOdds` will read out of a response, consensus
+ * books first. A response containing anything else has it silently discarded.
+ *
+ * @type {string[]}
+ */
+export const PARSED_BOOKS = [...CORE_BOOKS, ...EXTRA_BOOKS];
+
+/**
  * Odds API bookmaker key -> the short label used on rows and in BOOK_WEIGHT.
+ *
+ * Kept byte-identical to `VENUES[key].short` in `lib/venues.js`, which is the
+ * single source of truth for venue identity; `test/venues.test.js` asserts the
+ * two tables agree so they cannot drift apart.
  *
  * @type {Record<string, string>}
  */
@@ -227,6 +264,11 @@ export const BOOK_LABEL = {
   betmgm: "MGM",
   caesars: "CZR",
   pinnacle: "PIN",
+  kalshi: "KAL",
+  novig: "NVG",
+  prizepicks: "PP",
+  pick6: "PK6",
+  betr_us_dfs: "BETR",
 };
 
 /**

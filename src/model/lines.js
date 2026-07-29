@@ -50,6 +50,7 @@ import {
   BOOK_LABEL,
   BOOK_WEIGHT,
   CORE_BOOKS,
+  PARSED_BOOKS,
 } from "../lib/markets.js";
 import {
   matchName,
@@ -58,6 +59,7 @@ import {
   teamKey,
 } from "../lib/names.js";
 import { americanToDecimal } from "../lib/odds.js";
+import { isDfs, rowVenue, venue as venueInfo, venueKeyByShort } from "../lib/venues.js";
 import { MARKET_WEIGHT, evaluateEdge } from "./edges.js";
 
 /** Player key used for team markets, which carry no `description`. */
@@ -84,6 +86,23 @@ export const FEED_BOTH = "both";
  * @property {string} [market] - Market key the quote was parsed from.
  * @property {string[]} [feeds] - Which feeds supplied this (book, point):
  *   `["base"]`, `["alt"]` or both.
+ * @property {string|null} [bookKey] - Odds API bookmaker key, i.e. the venue
+ *   identity `lib/venues.js` is keyed by. `book` is only a display badge.
+ * @property {boolean} [consensus] - Whether this quote may vote on the market's
+ *   line and be counted as a book. False for the exchange/DFS venues in
+ *   EXTRA_BOOKS; see the note there.
+ * @property {"book"|"exchange"|"dfs"} [kind] - Venue kind.
+ * @property {string|null} [overLink] - Outcome-tier deep link for the over.
+ * @property {string|null} [overSid] - The feed's outcome id for the over.
+ * @property {string|null} [underLink]
+ * @property {string|null} [underSid]
+ * @property {string|null} [marketLink] - Market-tier link, the first fallback.
+ * @property {string|null} [marketSid]
+ * @property {string|null} [eventLink] - Event-tier link, the second fallback.
+ * @property {number|null} [overMultiplier] - DFS payout multiplier on the over.
+ *   DFS venues quote a line and a multiplier INSTEAD of a two-sided price, so
+ *   `over`/`under` stay null for them.
+ * @property {number|null} [underMultiplier]
  */
 
 // ── low-level quote plumbing ────────────────────────────────────────────────
@@ -143,6 +162,11 @@ function feedTag(feeds) {
  *     one genuine two-sided quote;
  *   - `feeds` accumulates every feed that supplied the pair.
  *
+ * Link material travels WITH its side: when a duplicate fills in a side the
+ * winner left null, that side's deep link, `sid` and DFS multiplier are taken
+ * from the same duplicate. Otherwise a row could show the base feed's over link
+ * next to the alternate feed's under price.
+ *
  * Input quotes are never mutated; copies are returned.
  *
  * @param {Quote[]|null|undefined} quotes
@@ -168,20 +192,53 @@ export function dedupeQuotes(quotes) {
       const copy = {
         ...quote,
         book: quote.book ?? null,
+        bookKey: quote.bookKey ?? venueKeyByShort(quote.book),
         bookId,
         point,
         over: quote.over ?? null,
         under: quote.under ?? null,
         w: quote.w || 1,
         feeds,
+        // Link/multiplier material, normalised so the merge below can test it.
+        overLink: quote.overLink ?? null,
+        overSid: quote.overSid ?? null,
+        underLink: quote.underLink ?? null,
+        underSid: quote.underSid ?? null,
+        marketLink: quote.marketLink ?? null,
+        marketSid: quote.marketSid ?? null,
+        eventLink: quote.eventLink ?? null,
+        overMultiplier: quote.overMultiplier ?? null,
+        underMultiplier: quote.underMultiplier ?? null,
       };
       byIdentity.set(identity, copy);
       out.push(copy);
       continue;
     }
 
-    if (seen.over == null && quote.over != null) seen.over = quote.over;
-    if (seen.under == null && quote.under != null) seen.under = quote.under;
+    if (seen.over == null && quote.over != null) {
+      seen.over = quote.over;
+      seen.overLink = quote.overLink ?? seen.overLink;
+      seen.overSid = quote.overSid ?? seen.overSid;
+    }
+    if (seen.under == null && quote.under != null) {
+      seen.under = quote.under;
+      seen.underLink = quote.underLink ?? seen.underLink;
+      seen.underSid = quote.underSid ?? seen.underSid;
+    }
+    // A DFS quote has no price to gate on, so its multiplier is merged on its
+    // own terms rather than as a passenger of `over`/`under`.
+    if (seen.overMultiplier == null && quote.overMultiplier != null) {
+      seen.overMultiplier = quote.overMultiplier;
+    }
+    if (seen.underMultiplier == null && quote.underMultiplier != null) {
+      seen.underMultiplier = quote.underMultiplier;
+    }
+    if (seen.marketLink == null && quote.marketLink != null) {
+      seen.marketLink = quote.marketLink;
+    }
+    if (seen.eventLink == null && quote.eventLink != null) {
+      seen.eventLink = quote.eventLink;
+    }
     if ((quote.w || 1) > seen.w) seen.w = quote.w || 1;
     for (const feed of feeds) if (!seen.feeds.includes(feed)) seen.feeds.push(feed);
   }
@@ -263,6 +320,51 @@ export function oddsIndexMeta(index) {
   }
   derivedMeta.set(index, meta);
   return meta;
+}
+
+/**
+ * Which side of the line an outcome is.
+ *
+ * The five books all say "Over"/"Under"; the DFS apps and exchanges label the
+ * same two sides "More"/"Less" or "Yes"/"No" depending on the venue. Anything
+ * unrecognised returns null and the outcome is skipped rather than guessed onto
+ * a side.
+ *
+ * @param {unknown} name
+ * @returns {"over"|"under"|null}
+ */
+function outcomeSide(name) {
+  switch (String(name ?? "").trim().toLowerCase()) {
+    case "over":
+    case "more":
+    case "yes":
+      return "over";
+    case "under":
+    case "less":
+    case "no":
+      return "under";
+    default:
+      return null;
+  }
+}
+
+/**
+ * DFS payout multiplier on an outcome. The upstream has spelled this field more
+ * than one way, so all the observed spellings are accepted; anything
+ * non-numeric is treated as absent.
+ *
+ * @param {object} outcome
+ * @returns {number|null}
+ */
+function outcomeMultiplier(outcome) {
+  const raw =
+    outcome.multiplier ??
+    outcome.payout_multiplier ??
+    outcome.payoutMultiplier ??
+    null;
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
 }
 
 /** Roster lookup structure built from the caller's player list. */
@@ -369,9 +471,22 @@ function resolveDescription(description, hints, roster) {
  *
  * Key points about the reduction:
  *
- *   - Only the five CORE_BOOKS are read. Their iteration order is no longer
- *     load-bearing: `bestQuote` breaks ties on an explicit chain now, not on
+ *   - The five CORE_BOOKS are read as consensus books; the EXTRA_BOOKS
+ *     (exchanges and DFS apps, which `/api/odds` now requests as `books=wide`)
+ *     are read too but tagged `consensus: false`, so they can be shown on a row
+ *     without voting on its line or inflating its book count. Iteration order is
+ *     not load-bearing: `bestQuote` breaks ties on an explicit chain now, not on
  *     whoever happened to be parsed first.
+ *   - LINKS. With `includeLinks=true` the upstream hangs a `link` (and a `sid`)
+ *     off the outcome, the market and the bookmaker, documented as a fallback
+ *     hierarchy in that order. All three tiers are retained per quote, per side,
+ *     so `attachLines` can hand `venueLink` everything it needs to say how
+ *     precisely a click lands - rather than silently presenting a market-level
+ *     link as if it were the bet.
+ *   - MULTIPLIERS. A DFS venue posts a line and a payout multiplier, not a
+ *     two-sided price (the upstream marks them "indicative only"). Their
+ *     `over`/`under` are therefore left null on purpose and the multiplier is
+ *     stored beside them; nothing downstream can mistake one for a price.
  *   - Over and Under arrive as two separate outcomes; they are merged into one
  *     Quote per (book, point) pair.
  *   - IDENTITY. With no `players` option the player key is
@@ -406,14 +521,25 @@ export function parseEventOdds(event, options = {}) {
   const resolutionCache = new Map();
   const unresolved = new Set();
 
-  for (const bookKey of CORE_BOOKS) {
+  for (const bookKey of PARSED_BOOKS) {
     const bookmaker = event.bookmakers.find((b) => b.key === bookKey);
     if (!bookmaker) continue;
 
     const label = BOOK_LABEL[bookKey];
+    // Consensus membership is decided here, once, by venue identity - not by
+    // whether a price happens to look usable further downstream.
+    const consensus = CORE_BOOKS.includes(bookKey);
+    const dfs = isDfs(bookKey);
+    const kind = venueInfo(bookKey)?.kind ?? "book";
+    // Bookmaker-tier link: the coarsest tier the upstream offers, i.e. "this
+    // event at this venue".
+    const eventLink = bookmaker.link ?? null;
+
     for (const market of bookmaker.markets || []) {
       byMarket[market.key] = byMarket[market.key] || {};
       const byPlayer = byMarket[market.key];
+      const marketLink = market.link ?? null;
+      const marketSid = market.sid ?? null;
 
       for (const outcome of market.outcomes || []) {
         let playerKey;
@@ -502,17 +628,40 @@ export function parseEventOdds(event, options = {}) {
         if (!quote) {
           quote = {
             book: label,
+            bookKey,
             bookId: canonicalBookId(label),
             point: outcome.point,
             over: null,
             under: null,
             w: BOOK_WEIGHT[label] || 1,
             market: market.key,
+            consensus,
+            kind,
+            overLink: null,
+            overSid: null,
+            underLink: null,
+            underSid: null,
+            marketLink,
+            marketSid,
+            eventLink,
+            overMultiplier: null,
+            underMultiplier: null,
           };
           quotes.push(quote);
         }
-        if (outcome.name === "Over") quote.over = outcome.price;
-        if (outcome.name === "Under") quote.under = outcome.price;
+
+        const side = outcomeSide(outcome.name);
+        if (!side) continue;
+        if (dfs) {
+          // A multiplier is not a price. Leaving `over`/`under` null is what
+          // keeps a DFS payout out of `isPriced`, out of the modal-point vote
+          // and out of every de-vig in the engine.
+          quote[`${side}Multiplier`] = outcomeMultiplier(outcome);
+        } else {
+          quote[side] = outcome.price;
+        }
+        quote[`${side}Link`] = outcome.link ?? quote[`${side}Link`];
+        quote[`${side}Sid`] = outcome.sid ?? quote[`${side}Sid`];
       }
     }
   }
@@ -549,10 +698,11 @@ export function parseEventOdds(event, options = {}) {
  *
  *   1. Deduplicate by canonical (book, point) - see `dedupeQuotes`. One book is
  *      one vote no matter how many feeds carried it.
- *   2. Drop quotes that cannot support a row: no usable numeric point, or no
- *      price on either side. Neither can win the vote any more. (The original
- *      let `point: undefined` win and then emitted a row with real odds and a
- *      null line, and let a price-less quote both win and count as a book.)
+ *   2. Drop quotes that cannot support a row: no usable numeric point, no price
+ *      on either side, or `consensus: false` (an exchange or DFS venue - see
+ *      EXTRA_BOOKS). None of them can win the vote. (The original let
+ *      `point: undefined` win and then emitted a row with real odds and a null
+ *      line, and let a price-less quote both win and count as a book.)
  *   3. Tally a BOOK-WEIGHTED vote per point: each surviving quote contributes
  *      its book weight `w` (Pinnacle 3, everyone else 1). The original counted
  *      raw entries.
@@ -579,9 +729,14 @@ export function parseEventOdds(event, options = {}) {
 export function bestQuote(quotes) {
   if (!quotes?.length) return null;
 
-  // 1-2. canonical, deduplicated, and only quotes that can actually price a row
+  // 1-2. canonical, deduplicated, and only quotes that can actually price a
+  // row. Non-consensus venues (`consensus: false` - the exchanges and DFS apps)
+  // are excluded HERE rather than only in `attachLines`, so every caller of
+  // `bestQuote` - including the NRFI game total, which reads the index directly
+  // - gets a consensus built from consensus books alone. A quote that never set
+  // the flag is a consensus quote, so hand-built quotes behave as before.
   const pool = dedupeQuotes(quotes).filter(
-    (q) => q.point != null && isPriced(q),
+    (q) => q.point != null && isPriced(q) && q.consensus !== false,
   );
   if (!pool.length) return null;
 
@@ -929,7 +1084,31 @@ export function resolvePlayer(odds, query) {
  * @property {"matched"|"ambiguous"|"unmatched"|"no-odds"} playerMatch - How the
  *   player was joined to the feed. Anything but "matched" means the empty row
  *   is an identity problem, not an absence of odds.
+ * @property {import("../lib/venues.js").RowVenue|null} venue - Where the price
+ *   the row is calling came from, and where clicking it goes. `venue.exact`
+ *   says whether that link is the specific outcome or something coarser.
+ * @property {VenueOffer[]} venues - Every venue quoting this exact line,
+ *   consensus books and non-consensus exchange/DFS venues alike.
  * @property {import("./edges.js").EdgeResult|null} edge
+ */
+
+/**
+ * @typedef {object} VenueOffer
+ * @property {string} key - Odds API bookmaker key.
+ * @property {string} label
+ * @property {string|null} short - Badge text, matching the row's `book`.
+ * @property {"book"|"exchange"|"dfs"} kind
+ * @property {string|null} link
+ * @property {boolean} exact
+ * @property {"outcome"|"market"|"event"|"brand"|null} granularity
+ * @property {number|null} line
+ * @property {"over"|"under"} side - The side this offer was resolved for.
+ * @property {number|null} over - American price, or null on a DFS venue, which
+ *   posts no two-sided price at all.
+ * @property {number|null} under
+ * @property {number|null} multiplier - DFS payout multiplier for `side`. Null
+ *   everywhere else.
+ * @property {boolean} consensus - Whether this venue voted on the row's line.
  */
 
 /**
@@ -997,6 +1176,80 @@ function tagFeed(quotes, feed, marketKey) {
   return (quotes || []).map((q) => ({ ...q, feed, market: q.market ?? marketKey }));
 }
 
+/** The side a row is being called on. No edge means nothing was called: show the over. */
+function calledSide(edge) {
+  return edge?.side === "under" ? "under" : "over";
+}
+
+/**
+ * Turn one quote into a venue offer for a given side.
+ *
+ * The link handed back is whatever `venueLink`'s hierarchy could resolve for
+ * THIS side (outcome -> market -> event -> venue builder -> brand), and `exact`
+ * comes back with it, so a row can never claim a market-wide link points at the
+ * bet it is showing.
+ *
+ * @param {Quote} quote
+ * @param {"over"|"under"} side
+ * @returns {VenueOffer|null} null for a quote whose venue we do not know.
+ */
+function venueOffer(quote, side) {
+  const key = quote.bookKey ?? venueKeyByShort(quote.book);
+  const info = rowVenue(key, {
+    link: side === "under" ? quote.underLink : quote.overLink,
+    sid: side === "under" ? quote.underSid : quote.overSid,
+    marketLink: quote.marketLink,
+    eventLink: quote.eventLink,
+  });
+  if (!info) return null;
+
+  const multiplier =
+    side === "under" ? quote.underMultiplier : quote.overMultiplier;
+  return {
+    ...info,
+    short: quote.book ?? null,
+    line: quote.point ?? null,
+    side,
+    // Null on a DFS venue by construction (see `parseEventOdds`): a payout
+    // multiplier is not half of a two-sided price and must not be shown as one.
+    over: quote.over ?? null,
+    under: quote.under ?? null,
+    multiplier: multiplier ?? null,
+    consensus: quote.consensus !== false,
+  };
+}
+
+/**
+ * Every venue quoting `line`, plus the one the row's price came from.
+ *
+ * @param {Quote[]} quotes - The full pool, consensus and non-consensus alike.
+ * @param {number|null} line
+ * @param {string|null} book - Short label of the book behind the chosen side.
+ * @param {"over"|"under"} side
+ * @returns {{venue: import("../lib/venues.js").RowVenue|null, venues: VenueOffer[]}}
+ */
+function venuesForLine(quotes, line, book, side) {
+  if (line == null) return { venue: null, venues: [] };
+  const venues = quotes
+    .filter((q) => q.point === line)
+    .map((q) => venueOffer(q, side))
+    .filter(Boolean);
+  const chosen = book ? venues.find((v) => v.short === book) : null;
+  return {
+    venue: chosen
+      ? {
+          key: chosen.key,
+          label: chosen.label,
+          kind: chosen.kind,
+          link: chosen.link,
+          exact: chosen.exact,
+          granularity: chosen.granularity,
+        }
+      : null,
+    venues,
+  };
+}
+
 /**
  * Build the priced rows for one player across a table of markets.
  *
@@ -1030,6 +1283,18 @@ function tagFeed(quotes, feed, marketKey) {
  *        consensus line". Its own `feed` says whether it came from the base
  *        market or the alternate ladder.
  *
+ *   VENUES (both kinds of row)
+ *     i. `venues` lists every venue quoting the row's line - the consensus books
+ *        that priced it AND the exchange/DFS venues that did not vote on it -
+ *        each with its own link resolved for the side the row is calling. A DFS
+ *        entry carries `multiplier` and null prices, because a payout multiplier
+ *        is not half of a two-sided market.
+ *     j. `venue` is that list's entry for the book behind the chosen price, i.e.
+ *        the one thing a "bet this" button should open. Its `exact` flag is the
+ *        difference between "this link is the bet" and "this link is the
+ *        neighbourhood the bet lives in"; both happen, and only one of them may
+ *        be presented as the former.
+ *
  * @param {Record<string, import("../lib/markets.js").MarketSpec>} markets -
  *   PITCHER_MARKETS or BATTER_MARKETS.
  * @param {string|{name?: string, fullName?: string, id?: number|string,
@@ -1052,7 +1317,8 @@ export function attachLines(markets, player, odds, projection, smallSample) {
 
   for (const [marketKey, spec] of Object.entries(markets)) {
     const altKey = BASE_TO_ALT[marketKey] || null;
-    const pool = playerKey
+    // Everything quoting this market for this player, deduplicated across feeds.
+    const offered = playerKey
       ? dedupeQuotes([
           ...tagFeed(odds?.[marketKey]?.[playerKey], FEED_BASE, marketKey),
           ...(altKey
@@ -1060,6 +1326,11 @@ export function attachLines(markets, player, odds, projection, smallSample) {
             : []),
         ])
       : [];
+
+    // Only consensus venues price the row. The exchange/DFS venues stay in
+    // `offered` so a row can show them, but they do not vote on the line, are
+    // not counted in `nBooks` and never reach `evaluateEdge` - see EXTRA_BOOKS.
+    const pool = offered.filter((q) => q.consensus !== false);
 
     // (a-c) one pool decides the point and the prices.
     const main = bestQuote(pool);
@@ -1086,6 +1357,8 @@ export function attachLines(markets, player, odds, projection, smallSample) {
         : main.overBook || main.underBook
       : null;
 
+    const mainVenues = venuesForLine(offered, line, book, calledSide(edge));
+
     rows.push({
       market: marketKey,
       ...spec,
@@ -1102,6 +1375,8 @@ export function attachLines(markets, player, odds, projection, smallSample) {
       under: main?.under ?? null,
       proj: projection[spec.projKey],
       playerMatch: resolution.status,
+      venue: mainVenues.venue,
+      venues: mainVenues.venues,
       edge,
     });
 
@@ -1138,6 +1413,13 @@ export function attachLines(markets, player, odds, projection, smallSample) {
           ? best.sub.underBook || best.sub.overBook
           : best.sub.overBook || best.sub.underBook;
 
+      const altVenues = venuesForLine(
+        offered,
+        best.pt,
+        bookAlt || null,
+        calledSide(best.edge),
+      );
+
       rows.push({
         market: marketKey,
         ...spec,
@@ -1154,6 +1436,8 @@ export function attachLines(markets, player, odds, projection, smallSample) {
         under: best.sub.under ?? null,
         proj: projection[spec.projKey],
         playerMatch: resolution.status,
+        venue: altVenues.venue,
+        venues: altVenues.venues,
         edge: best.edge,
       });
     }

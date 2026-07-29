@@ -272,7 +272,13 @@ export async function loadSlate({
             endpoint: 'event-odds',
             eventId,
             markets: marketsParam(sharp),
-            books: sharp ? 'all' : 'core',
+            // Always `wide`: 10 pinned bookmakers, which bills identically to
+            // the old 5-key `core` (cost is per 10 books) but adds Kalshi,
+            // Novig and the three DFS boards. `all` is deliberately no longer
+            // used even in sharp mode — it swapped the pinned list for
+            // `regions=us,us2`, which costs more AND dropped Pinnacle, the one
+            // book the model weights 3x.
+            books: 'wide',
           },
           oddsKey,
         );
