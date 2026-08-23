@@ -98,8 +98,43 @@ export const PARK_FACTORS = {
  *   (dimensionless; 0 = neutral, 1 = full published factor).
  * @returns {number} Multiplier to scale an expected count by (dimensionless).
  */
+/**
+ * Column means of PARK_FACTORS, computed once at module load.
+ *
+ * A park factor is a RELATIVE quantity: 110 means "10% more than an average
+ * park". That only holds if the average park actually sits at 100, and in this
+ * table it does not:
+ *
+ *     hits   99.76      so    100.76
+ *     runs   99.91      hr   101.33
+ *
+ * So before any park-to-park difference was applied, every venue was pushing
+ * home runs up 1.33% and strikeouts up 0.76% — a league-wide bias wearing the
+ * costume of a park adjustment. It is small, but it is one-directional, it
+ * lands on every player in every game, and it is the wrong SHAPE of error:
+ * a park factor should redistribute between venues, never add to the total.
+ *
+ * Dividing by the column mean re-centres the table without touching any park's
+ * position relative to another. Coors is exactly as extreme as it was; the
+ * average park is now genuinely average.
+ */
+const PARK_FACTOR_MEANS = (() => {
+  const means = {};
+  const parks = Object.values(PARK_FACTORS);
+  for (const key of ['hits', 'hr', 'so', 'runs', 'bb']) {
+    const values = parks.map((p) => p[key]).filter((v) => typeof v === 'number');
+    means[key] = values.length
+      ? values.reduce((a, b) => a + b, 0) / values.length
+      : 100;
+  }
+  return means;
+})();
+
 export function parkFactor(park, key, weight = 0.7) {
   const factors = PARK_FACTORS[park];
   if (!factors || factors[key] == null) return 1;
-  return 1 + weight * (factors[key] / 100 - 1);
+  // Re-centre on the league mean first, so an average park returns exactly 1.0
+  // and the adjustment redistributes rather than inflates.
+  const centred = factors[key] / (PARK_FACTOR_MEANS[key] || 100);
+  return 1 + weight * (centred - 1);
 }

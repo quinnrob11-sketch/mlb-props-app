@@ -105,6 +105,25 @@ export default function FilterBar({ criteria, onChange, rows, showStrongChip, al
   const games = useMemo(() => gameOptions(rows), [rows]);
   const matching = useMemo(() => applyCriteria(rows, c).length, [rows, c]);
 
+  // `hideAlts` is the one criterion that is ON by default and still removes
+  // rows, so the badge — which counts criteria moved OFF their default — reads
+  // 0 while a whole class of rows is gone. Counting it would stamp a permanent
+  // "(1)" on a board nobody has filtered, which is noise and trains the badge
+  // away. Instead: the badge shows "(alts)" in place of a number only when the
+  // rule is actually cutting rows off THIS board, the button's tooltip always
+  // lists every active rule (not just the changed ones), and the modal states
+  // the hidden count outright. Nothing ever claims "no filters" while alts are
+  // hidden, and a slate with no alt rungs stays silent.
+  const hiddenAlts = useMemo(
+    () => (c.hideAlts ? (rows || []).filter((r) => r.alt).length : 0),
+    [rows, c.hideAlts],
+  );
+  const badge = activeCount > 0 ? `(${activeCount})` : hiddenAlts > 0 ? '(alts)' : '';
+  // `describeCriteria` covers ACTIVE criteria, so the alt rule is in here even
+  // at its default — the tooltip is the badge's own explanation and must not
+  // under-report.
+  const activeText = describeCriteria(c).join(' · ');
+
   // "STRONG only" is the tier list narrowed to exactly STRONG — the same
   // criterion the modal edits, not a parallel piece of state.
   const strongOnly = c.verdicts.length === 1 && c.verdicts[0] === 'STRONG';
@@ -164,10 +183,10 @@ export default function FilterBar({ criteria, onChange, rows, showStrongChip, al
         type="button"
         className={`btn ${activeCount ? 'btn-primary' : ''}`}
         onClick={() => setOpen(true)}
-        title={activeCount ? describeCriteria(c).join(' · ') : 'Filter the board by criteria'}
+        title={activeText || 'Filter the board by criteria'}
       >
         ⚙ Filters
-        {activeCount > 0 && <span className="n">({activeCount})</span>}
+        {badge && <span className="n">{badge}</span>}
       </button>
 
       {activeCount > 0 && (
@@ -186,6 +205,10 @@ export default function FilterBar({ criteria, onChange, rows, showStrongChip, al
               {activeCount > 0
                 ? ` · ${activeCount} ${activeCount > 1 ? 'criteria' : 'criterion'} changed from default`
                 : ' · all criteria at their defaults'}
+              {/* Named explicitly because it is the one rule that filters
+                  without being "changed", so the count above never mentions it. */}
+              {hiddenAlts > 0 &&
+                ` · ${hiddenAlts} alternate-line row${hiddenAlts === 1 ? '' : 's'} hidden by the default alt rule`}
             </p>
 
             <div className="modal-body">

@@ -4,18 +4,21 @@
 // only interesting design question is HONESTY, because the entries are not
 // equivalent:
 //
-//   * `exact: true`  — the link lands on this side of this line. Say nothing.
-//   * `exact: false` — the link lands on something coarser. The chip states
-//     what you actually get ("game page", "market page", "home page") and a
-//     note under the chips spells it out in words.
+//   * `exact: true`  — the link lands on this side of this line. The chip is
+//     just venue + price: `DK -115`.
+//   * `exact: false` — the link lands on something coarser (game page, market
+//     page, home page). The chip carries a degree mark — `NVG -104°` — and the
+//     full wording lives in the chip's `title` plus ONE legend line per board
+//     footer (see `VenueLegend`), instead of a per-card sentence stack.
 //   * novig — a real exchange price with no web product at all. The price is
-//     shown because it is worth seeing; the chip is a span, not an anchor, and
-//     reads "app only". A dead <a> is never rendered.
+//     shown because it is worth seeing; the chip is a span, not an anchor.
+//     A dead <a> is never rendered.
 //
 // Every venue at the line is listed, not just the winner, because that is what
 // makes line shopping possible from the row itself.
 
 import { fmt } from "../lib/format.js";
+import { loadLinkPrefs, resolveOfferLink } from "../lib/venues.js";
 
 /** Price on the side the offer was resolved for. DFS entries have none. */
 function priceOf(offer) {
@@ -24,7 +27,8 @@ function priceOf(offer) {
 }
 
 /**
- * What a non-exact link actually opens, in the user's words.
+ * What a non-exact link actually opens, in the user's words. Title-only now —
+ * the chip itself shows a degree mark instead of these words.
  *
  * @param {object} offer
  * @returns {{tag: string, sentence: string}|null} null when the link is exact.
@@ -56,18 +60,10 @@ export function inexactNote(offer) {
   }
 }
 
-/** Agree the note's leading verb with more than one venue: "DK, FD open…". */
-function plural(sentence) {
-  return sentence.replace(
-    /^(opens|is|has)\b/,
-    (verb) => ({ opens: "open", is: "are", has: "have" })[verb],
-  );
-}
-
 /** The one-word reason a venue cannot be clicked. Only novig has one today. */
 function deadReason(offer) {
   if (offer?.link) return null;
-  return offer?.key === "novig" ? "app only" : "no link";
+  return "no link";
 }
 
 /** Badge text: price for a two-sided venue, line (+ multiplier) for a DFS app. */
@@ -102,11 +98,31 @@ function ordered(row) {
   });
 }
 
+/** Does any row on the board carry a linked-but-not-exact venue chip? */
+export function legendApplies(rows) {
+  return (rows || []).some((row) =>
+    (row?.venues || []).some((v) => v && v.link && v.exact !== true),
+  );
+}
+
+/**
+ * The ONE degree-mark legend a board renders in its footer — the wording every
+ * `°` chip on the board defers to instead of repeating it per card.
+ */
+export function VenueLegend({ rows }) {
+  if (!legendApplies(rows)) return null;
+  return (
+    <div className="vlegend">
+      ° opens the venue's page for this game/market — find the bet there
+    </div>
+  );
+}
+
 /**
  * @param {object} props
  * @param {object} props.row - A row from `flattenRows`.
- * @param {boolean} [props.compact] - Table density: notes render at 10px and
- *   the "best price" wording is dropped.
+ * @param {boolean} [props.compact] - Table density (kept for call sites; the
+ *   chips are already one line now that the note stack is gone).
  */
 export default function VenueLinks({ row, compact = false }) {
   const offers = ordered(row);
@@ -114,34 +130,23 @@ export default function VenueLinks({ row, compact = false }) {
     return <span className="dim">{compact ? "—" : "No venue link on this line."}</span>;
 
   const bestKey = row?.venue?.key ?? null;
-
-  // One note per distinct wording, listing the venues it applies to, so three
-  // coarse links cost one line rather than three.
-  const notes = new Map();
-  for (const offer of offers) {
-    const dead = deadReason(offer);
-    const note = inexactNote(offer);
-    const sentence = dead
-      ? offer.key === "novig"
-        ? "is app-only — the price is real, there is no web page to open"
-        : "has no link"
-      : note?.sentence;
-    if (!sentence) continue;
-    if (!notes.has(sentence)) notes.set(sentence, []);
-    notes.get(sentence).push(offer.short || offer.key);
-  }
+  // User prefs (Novig stake, MGM state) can complete templated outcome links
+  // that were unresolvable at parse time — re-resolve each offer at render.
+  const prefs = loadLinkPrefs();
 
   return (
     <div className="venues">
       <div className="venuechips">
         {offers.map((offer) => {
-          const dead = deadReason(offer);
-          const note = inexactNote(offer);
-          const tag = dead || note?.tag || null;
+          const resolved = resolveOfferLink(offer, prefs);
+          const view = { ...offer, ...resolved };
+          const dead = deadReason(view);
+          const note = inexactNote(view);
           const body = (
             <>
               {offer.short || offer.key} {chipValue(offer)}
-              {tag && <i className="tag">{tag}</i>}
+              {/* ↗ = lands on this exact bet; ° = lands on a coarser page */}
+              {view.exact ? <span className="golink">↗</span> : note ? "°" : ""}
             </>
           );
           const cls = `vchip v-venue${offer.key === bestKey ? " best" : ""}${
@@ -153,11 +158,7 @@ export default function VenueLinks({ row, compact = false }) {
               <span
                 key={offer.key}
                 className={`${cls} dead`}
-                title={`${offer.label} ${chipValue(offer)} — ${
-                  offer.key === "novig"
-                    ? "mobile app only, there is no web page to open."
-                    : "no link available."
-                }`}
+                title={`${offer.label} ${chipValue(offer)} — no link available.`}
               >
                 {body}
               </span>
@@ -167,13 +168,15 @@ export default function VenueLinks({ row, compact = false }) {
             <a
               key={offer.key}
               className={cls}
-              href={offer.link}
+              href={view.url}
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
               title={
-                offer.exact
-                  ? `Opens ${offer.label} at this exact bet.`
+                view.exact
+                  ? offer.key === "novig"
+                    ? `Opens ${offer.label} with this bet loaded in the order slip (stake prefilled, nothing placed).`
+                    : `Opens ${offer.label} at this exact bet.`
                   : `${offer.label} ${note.sentence}. Not a link to this exact bet.`
               }
             >
@@ -182,11 +185,6 @@ export default function VenueLinks({ row, compact = false }) {
           );
         })}
       </div>
-      {[...notes.entries()].map(([sentence, shorts]) => (
-        <div className="vnote" key={sentence}>
-          {shorts.join(", ")} {shorts.length > 1 ? plural(sentence) : sentence}.
-        </div>
-      ))}
     </div>
   );
 }

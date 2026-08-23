@@ -13,6 +13,13 @@ export const fmt = {
   // collapses everything to 0.0/0.1.
   n2: (v) => (v == null || isNaN(v) ? '—' : (Math.round(v * 100) / 100).toFixed(2)),
 
+  // Whole number. Callers were reaching for bare `Math.round(...)` for counts
+  // like batters faced and pitches, which renders a literal "NaN" the moment
+  // the field is missing — visible in the expanded pitcher panel. Every other
+  // formatter here guards; this one existing means they no longer have to
+  // choose.
+  int: (v) => (v == null || isNaN(v) ? '—' : String(Math.round(v))),
+
   // Probability 0..1 → whole percent.
   pct: (v) => (v == null || isNaN(v) ? '—' : Math.round(v * 100) + '%'),
 

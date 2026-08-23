@@ -309,16 +309,31 @@ export function pickGameLogSplits(person, group) {
 /** Person ids per `people` request. Keeps the upstream URL under its length cap. */
 const PEOPLE_CHUNK_SIZE = 35;
 
+/** Batches in flight at once. Enough to hide latency without stampeding. */
+const PEOPLE_CONCURRENCY = 4;
+
 /**
  * Fetch hydrated stats for a set of player ids, in batches.
  *
  * Ids are de-duplicated and falsy entries dropped before chunking, so a lineup
  * that repeats a player (or a slot with no id) costs nothing.
  *
- * TODO(recon): the batches are awaited sequentially inside the loop rather than
- * issued in parallel, so a 4-batch lookup serialises 4 round trips. The four
- * top-level `fetchPlayerStats` calls in `loadSlate` *are* parallelised against
- * each other via `Promise.all`, so this only costs latency within one call.
+ * Two things here are load-bearing for how fast a slate loads. This is the
+ * heaviest call in the app — a full slate is ~270 batters, or 8 batches — and
+ * it used to be the single biggest contributor to wall-clock time.
+ *
+ *  1. **Batches are issued concurrently**, capped at `PEOPLE_CONCURRENCY`.
+ *     They were awaited one at a time, so a full slate serialised 8 round trips
+ *     of the largest payload in the app for no reason: the batches are
+ *     independent and their results merge into a map.
+ *
+ *  2. **Ids are sorted before chunking.** `[...new Set(ids)]` preserves
+ *     insertion order, which is schedule order then lineup order — so as
+ *     lineups posted through the afternoon the batch boundaries shifted and
+ *     every request URL changed. The proxy caches `/people` for 600s keyed on
+ *     the URL, so that cache was being missed almost every time. Sorting makes
+ *     the URLs stable across reloads and across users on the same slate, which
+ *     is what actually turns a second REFRESH into a fast one.
  *
  * @param {Array<number|string>} ids - MLB person ids.
  * @param {"pitching"|"hitting"} group - Stat group to hydrate.
@@ -329,14 +344,31 @@ const PEOPLE_CHUNK_SIZE = 35;
  *   Ids the upstream does not return are simply absent from the map.
  */
 export async function fetchPlayerStats(ids, group, season, includeGameLog) {
+  const unique = [...new Set(ids)]
+    .filter(Boolean)
+    .sort((a, b) => Number(a) - Number(b));
+  const batches = chunk(unique, PEOPLE_CHUNK_SIZE);
+  const types = includeGameLog ? "season,gameLog" : "season";
+
+  const payloads = new Array(batches.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(PEOPLE_CONCURRENCY, batches.length) }, async () => {
+      while (next < batches.length) {
+        const i = next++;
+        payloads[i] = await mlbFetch(
+          `/api/v1/people?personIds=${batches[i].join(",")}` +
+            `&hydrate=stats(group=[${group}],type=[${types}],season=${season})`,
+        );
+      }
+    }),
+  );
+
+  // Merged in batch order, so a duplicate id resolves the same way it did when
+  // the batches were sequential.
   const byId = new Map();
-  for (const batch of chunk([...new Set(ids)].filter(Boolean), PEOPLE_CHUNK_SIZE)) {
-    const types = includeGameLog ? "season,gameLog" : "season";
-    const payload = await mlbFetch(
-      `/api/v1/people?personIds=${batch.join(",")}` +
-        `&hydrate=stats(group=[${group}],type=[${types}],season=${season})`,
-    );
-    for (const person of payload.people || []) byId.set(person.id, person);
+  for (const payload of payloads) {
+    for (const person of payload?.people || []) byId.set(person.id, person);
   }
   return byId;
 }

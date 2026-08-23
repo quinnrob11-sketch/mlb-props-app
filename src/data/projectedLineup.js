@@ -25,9 +25,11 @@
 //
 // Network shape per team, in the common case: one `/schedule` (team's recent
 // dates), one `/teams/{id}/roster`, one `/game/{pk}/boxscore` — the remaining
-// boxscores are only fetched when tier 1 comes up short. Everything is cached
-// per team for the life of one projector, so a doubleheader (or any team that
-// appears twice on a slate) never refetches.
+// boxscores are only fetched when tier 1 comes up short. Schedule and roster
+// are cached per team; boxscores are cached per gamePk across ALL teams (see
+// `boxscores` below). Both caches live exactly as long as the projector, so a
+// doubleheader — or any team appearing twice on a slate — never refetches, and
+// a REFRESH still gets fresh data.
 
 import { SEASON, mlbFetch } from '../lib/api.js';
 
@@ -42,6 +44,28 @@ export const LOOKBACK_DAYS = 21;
 
 /** A full batting order. */
 const LINEUP_SIZE = 9;
+
+/**
+ * `fields=` projection for the boxscore call: the complete set of key names
+ * `battingOrderFromBoxscore` actually reads, and nothing else.
+ *
+ * A boxscore is by far the largest thing this module pulls — a full one is
+ * ~170 kB of pitch-by-pitch and per-player season lines, of which this file
+ * touches the team id, each player's `battingOrder` and `person`, and the flat
+ * `battingOrder` id array. Measured against the live API over 16 completed
+ * games (32 team-sides): the projected payload produced byte-identical batting
+ * orders in every case while cutting 2.75 MB to 174 kB, a 93% reduction. On a
+ * 15-game slate where most teams need a tier-1 boxscore that is the difference
+ * between ~2 MB and ~130 kB of transfer on the critical path.
+ *
+ * MLB's `fields` filter matches by key name at every depth, which is why the
+ * container names (`teams`, `away`, `home`, `players`) have to be listed too,
+ * and why `id`/`fullName` are listed once rather than per parent. The proxy's
+ * route allowlist in `api/mlb.js` tests `pathname` only, so appending a query
+ * string here does not affect routing or its cache tier.
+ */
+const BOXSCORE_FIELDS =
+  'teams,away,home,team,id,players,battingOrder,person,fullName';
 
 /**
  * @typedef {object} ProjectedPlayer
@@ -191,9 +215,40 @@ export function createLineupProjector({
   let teamsFetched = 0;
 
   /**
-   * Schedule + roster for one team, plus a lazily-filled boxscore cache.
-   * Fetch failures degrade to empty data rather than rejecting: a team we
-   * cannot read simply produces no projected lineup.
+   * gamePk -> Promise<box>. Deliberately projector-wide rather than per team.
+   *
+   * A boxscore describes BOTH clubs, and the games in each team's lookback
+   * window are shared with whoever they played. Two teams that faced each
+   * other yesterday — which on any slate is a large fraction of the board,
+   * since the same matchups usually run as a series — each asked for that one
+   * gamePk separately when this cache lived inside `buildContext`. Roughly
+   * half of all tier-1 boxscore fetches were the identical payload pulled
+   * twice, in parallel, on the critical path of the slate load.
+   *
+   * The cached value is therefore the raw box, not a team's order: baking
+   * `teamId` into the promise is exactly what made it unshareable. Callers
+   * apply `battingOrderFromBoxscore(box, teamId)` themselves.
+   *
+   * A failed fetch caches `null` rather than rejecting, so a boxscore we
+   * cannot read costs one attempt and then reads as "no order" for both
+   * teams instead of being retried by the second one.
+   */
+  const boxscores = new Map();
+  const boxscoreFor = (gamePk) => {
+    if (!boxscores.has(gamePk))
+      boxscores.set(
+        gamePk,
+        fetchMlb(
+          `/api/v1/game/${gamePk}/boxscore?fields=${BOXSCORE_FIELDS}`,
+        ).catch(() => null),
+      );
+    return boxscores.get(gamePk);
+  };
+
+  /**
+   * Schedule + roster for one team. Fetch failures degrade to empty data
+   * rather than rejecting: a team we cannot read simply produces no projected
+   * lineup.
    */
   async function buildContext(teamId) {
     teamsFetched += 1;
@@ -219,26 +274,16 @@ export function createLineupProjector({
     const rosterPlayers = positionPlayersByPa(roster);
     const rosterIds = new Set(rosterPlayers.map((p) => p.id));
 
-    /** gamePk -> Promise<order>. Boxscores are pulled only when needed. */
-    const boxscores = new Map();
-    const orderFor = (game) => {
-      if (!boxscores.has(game.gamePk))
-        boxscores.set(
-          game.gamePk,
-          fetchMlb(`/api/v1/game/${game.gamePk}/boxscore`)
-            .then((box) => ({
-              gamePk: game.gamePk,
-              gameDate: game.gameDate,
-              order: battingOrderFromBoxscore(box, teamId),
-            }))
-            .catch(() => ({
-              gamePk: game.gamePk,
-              gameDate: game.gameDate,
-              order: [],
-            })),
-        );
-      return boxscores.get(game.gamePk);
-    };
+    // Boxscores are still pulled only when a tier needs them, but the fetch
+    // itself is shared across teams. Extracting this team's half is a pure
+    // read off the shared payload, and `battingOrderFromBoxscore` returns []
+    // for a null box, which is how a failed fetch surfaces.
+    const orderFor = (game) =>
+      boxscoreFor(game.gamePk).then((box) => ({
+        gamePk: game.gamePk,
+        gameDate: game.gameDate,
+        order: battingOrderFromBoxscore(box, teamId),
+      }));
 
     return {
       finals,

@@ -1,4 +1,9 @@
 import { useState } from "react";
+import {
+  DEFAULT_NOVIG_STAKE,
+  loadLinkPrefs,
+  saveLinkPrefs,
+} from "../lib/venues.js";
 
 /**
  * Settings dialog (bundle: `gh`). Local draft state; nothing is persisted
@@ -14,6 +19,11 @@ export default function SettingsModal({
   const [keyDraft, setKeyDraft] = useState(oddsKey);
   const [bankrollDraft, setBankrollDraft] = useState(bankroll);
   const [sharpDraft, setSharpDraft] = useState(sharp);
+  const prefs = loadLinkPrefs();
+  const [novigStakeDraft, setNovigStakeDraft] = useState(
+    prefs.novigStake ?? DEFAULT_NOVIG_STAKE,
+  );
+  const [mgmStateDraft, setMgmStateDraft] = useState(prefs.mgmState ?? "");
 
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -26,6 +36,23 @@ export default function SettingsModal({
           min="1"
           value={bankrollDraft}
           onChange={(e) => setBankrollDraft(Number(e.target.value) || 100)}
+        />
+
+        <label>Novig prefilled stake ($) — the ↗ chip loads the order slip with this amount; nothing is placed</label>
+        <input
+          type="number"
+          min="1"
+          value={novigStakeDraft}
+          onChange={(e) => setNovigStakeDraft(Number(e.target.value) || DEFAULT_NOVIG_STAKE)}
+        />
+
+        <label>BetMGM state code (e.g. oh, az) — needed for MGM exact-bet links; leave blank to use the game page</label>
+        <input
+          type="text"
+          maxLength={2}
+          placeholder="oh"
+          value={mgmStateDraft}
+          onChange={(e) => setMgmStateDraft(e.target.value)}
         />
 
         <label className="check">
@@ -58,7 +85,13 @@ export default function SettingsModal({
           </button>
           <button
             className="btn btn-primary"
-            onClick={() => onSave(keyDraft.trim(), bankrollDraft, sharpDraft)}
+            onClick={() => {
+              saveLinkPrefs({
+                novigStake: novigStakeDraft,
+                mgmState: mgmStateDraft.trim().toLowerCase(),
+              });
+              onSave(keyDraft.trim(), bankrollDraft, sharpDraft);
+            }}
           >
             Save
           </button>

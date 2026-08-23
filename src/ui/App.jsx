@@ -4,7 +4,7 @@
 // slip, the persisted settings (odds key / bankroll / sharp mode / alt lines)
 // and tab routing. Every board below it is presentational.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { fmt, slateDate } from '../lib/format.js';
 import { PITCHER_MARKETS, BATTER_MARKETS } from '../lib/markets.js';
@@ -12,12 +12,14 @@ import { loadSlate } from '../data/loadSlate.js';
 // Snapshot / closing-line persistence (minified `hh`, `mh`, `kh`, `Sh`).
 import { saveSnapshot, saveClosingLines, serializeSlate, reviveSlate } from './snapshotStore.js';
 import { flattenRows } from './rows.js';
+import { seriesForMarket } from '../lib/kalshi.js';
 import { applyCriteria, loadCriteria, saveCriteria } from './filters.js';
 import { loadPriceMode, savePriceMode } from './makerMode.js';
 import { buildDfsBoard } from './dfsRows.js';
 import FilterBar from './FilterBar.jsx';
 import BestBets from './BestBets.jsx';
 import DfsBoard from './DfsBoard.jsx';
+import KalshiBoard from './KalshiBoard.jsx';
 // TODO(recon): the shared pitcher/batter table (minified `Wa`, app.js:2158) is
 // reconstructed outside this region; file name assumed.
 import PropTable from './PropTable.jsx';
@@ -30,7 +32,12 @@ import SettingsModal from './SettingsModal.jsx';
 // A cached slate is only trusted for 20 minutes — after that the odds are too
 // stale to price against.
 const CACHE_TTL_MS = 20 * 60 * 1000;
-const CACHE_KEY = 'slateCacheV19';
+// Bumped v19 -> v22. The cached slate is a serialised PROJECTION, and the
+// projection's shape changed across v20, v21 and v22 (workload, run-environment
+// terms, the shrunk pitcher fields). Rehydrating a v19 slate into a v22
+// component tree crashed the whole app rather than one card. Bumping the key
+// makes a stale slate simply absent, which the UI already handles.
+const CACHE_KEY = 'slateCacheV22';
 
 export default function App() {
   const [date, setDate] = useState(slateDate());
@@ -149,12 +156,33 @@ export default function App() {
   // so the tab count is the real number of shoppable plays.
   const dfsRows = filtered.filter(isCallable);
   const dfsCount = buildDfsBoard(dfsRows).length;
+  // Rows that could map to a listed Kalshi series. Kalshi carries only two
+  // daily MLB player-prop series, so this is legitimately a small number and
+  // the tab should say so rather than looking broken.
+  const kalshiCount = filtered.filter(
+    (r) => r.line != null && Math.abs(r.line % 1) === 0.5 && seriesForMarket(r.market),
+  ).length;
 
   // Tab counts track the filtered set. PITCHERS/BATTERS keep their original
   // "distinct players" meaning rather than switching to a prop-row count.
   const players = (list) => new Set(list.map((r) => r.playerId)).size;
   const nrfiGames = slate ? slate.games.filter((g) => g.nrfi).length : 0;
   const nrfiOn = criteria.kinds.includes('nrfi');
+
+  // On a phone the tab row is a single horizontally-scrollable strip rather
+  // than two wrapped lines, so the selected tab has to be scrolled into view.
+  // The guard makes this a no-op on desktop, where the row wraps and there is
+  // nothing to scroll.
+  const tabsRef = useRef(null);
+  useEffect(() => {
+    const nav = tabsRef.current;
+    if (!nav || nav.scrollWidth <= nav.clientWidth) return;
+    const active = nav.querySelector('.tab.on');
+    if (!active) return;
+    const navBox = nav.getBoundingClientRect();
+    const box = active.getBoundingClientRect();
+    nav.scrollLeft += box.left - navBox.left - (navBox.width - box.width) / 2;
+  }, [tab]);
 
   const toggleSlip = (row) =>
     setSlip((prev) => {
@@ -171,7 +199,7 @@ export default function App() {
           <span className="hdr-logo">MLB</span>
           <span className="hdr-title">PROP ENGINE</span>
           <span className="hdr-sub">
-            v19.2 · tightened calls · PIN-anchored consensus · CLV · weather · ¼-Kelly
+            v22 · backtested calibration · PIN-anchored consensus · CLV · weather · ¼-Kelly
           </span>
         </div>
         <div className="hdr-spacer" />
@@ -181,11 +209,26 @@ export default function App() {
           onChange={(e) => setDate(e.target.value)}
           aria-label="Slate date"
         />
-        <button className="btn" onClick={() => setShowSettings(true)} title="Settings">
-          ⚙ Settings
+        {/* The `.lbl` spans are dropped at phone widths so the whole header
+            fits one 40px row; the desktop labels are unchanged. */}
+        <button
+          className="btn"
+          onClick={() => setShowSettings(true)}
+          title="Settings"
+          aria-label="Settings"
+        >
+          ⚙ <span className="lbl">Settings</span>
         </button>
         <button className="btn btn-primary" disabled={loading} onClick={load}>
-          {loading ? 'LOADING…' : slate ? '↻ REFRESH SLATE' : 'LOAD SLATE'}
+          {loading ? (
+            'LOADING…'
+          ) : slate ? (
+            <>
+              ↻ REFRESH <span className="lbl">SLATE</span>
+            </>
+          ) : (
+            'LOAD SLATE'
+          )}
         </button>
       </header>
 
@@ -211,10 +254,13 @@ export default function App() {
           <div className="cell">
             <b>{priced.length}</b> props w/ lines
           </div>
-          <div className="cell">
+          {/* `.key` carries no desktop styling — at phone widths it pulls the
+              two numbers the board is actually read for to the head of the
+              single-row strip. */}
+          <div className="cell key">
             <b className="pos">{callable.length}</b> callable edges
           </div>
-          <div className="cell">
+          <div className="cell key">
             <b className="pos">{strong.length}</b> strong
           </div>
           {slate.remaining && (
@@ -246,12 +292,13 @@ export default function App() {
         </div>
       )}
 
-      <nav className="tabs">
+      <nav className="tabs" ref={tabsRef}>
         {[
           ['best', 'BEST BETS', bestRows.length],
           ['pitchers', 'PITCHERS', players(pitcherRows)],
           ['batters', 'BATTERS', players(batterRows)],
           ['dfs', 'DFS', dfsCount],
+          ['kalshi', 'KALSHI', kalshiCount],
           ['nrfi', 'NRFI', nrfiOn ? nrfiGames : 0],
           ['results', 'RESULTS', null],
           ['method', 'METHOD', null],
@@ -276,35 +323,41 @@ export default function App() {
             onChange={(e) => setQuery(e.target.value)}
             aria-label="Search"
           />
-          <FilterBar
-            criteria={criteria}
-            onChange={setCriteria}
-            rows={allRows}
-            altCount={altEdges}
-            showStrongChip={tab === 'best'}
-          />
-          {tab !== 'dfs' && (
-            <div className="chips modeswitch" role="group" aria-label="Price mode">
-              {[
-                ['taker', 'Taker', 'Best price on the board right now — click to hit it.'],
-                [
-                  'maker',
-                  'Maker',
-                  "Kalshi rows only: the live bid/ask, where the model's fair value sits in it, and where a resting order could still have edge. Display only.",
-                ],
-              ].map(([key, label, hint]) => (
-                <button
-                  key={key}
-                  className={`chip ${priceMode === key ? 'on' : ''}`}
-                  onClick={() => setPriceMode(key)}
-                  title={hint}
-                  aria-pressed={priceMode === key}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
+          {/* `.toolgroup` is `display: contents` above 720px, so on desktop its
+              children stay the same direct flex items of `.toolbar` they always
+              were. Below 720px it becomes the scrollable half of a single-row
+              toolbar. */}
+          <div className="toolgroup">
+            <FilterBar
+              criteria={criteria}
+              onChange={setCriteria}
+              rows={allRows}
+              altCount={altEdges}
+              showStrongChip={tab === 'best'}
+            />
+            {tab !== 'dfs' && (
+              <div className="chips modeswitch" role="group" aria-label="Price mode">
+                {[
+                  ['taker', 'Taker', 'Best price on the board right now — click to hit it.'],
+                  [
+                    'maker',
+                    'Maker',
+                    "Kalshi rows only: the live bid/ask, where the model's fair value sits in it, and where a resting order could still have edge. Display only.",
+                  ],
+                ].map(([key, label, hint]) => (
+                  <button
+                    key={key}
+                    className={`chip ${priceMode === key ? 'on' : ''}`}
+                    onClick={() => setPriceMode(key)}
+                    title={hint}
+                    aria-pressed={priceMode === key}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -358,6 +411,10 @@ export default function App() {
           toggleSlip={toggleSlip}
           priceMode={priceMode}
         />
+      )}
+
+      {slate && tab === 'kalshi' && (
+        <KalshiBoard rows={filtered} bankroll={bankroll} />
       )}
 
       {slate && tab === 'dfs' && (

@@ -63,16 +63,25 @@ const REQUEST_TIMEOUT_MS = 25_000;
 /**
  * Our market keys -> the Kalshi series that prices them.
  *
- * Only mappings confirmed against live tickers are listed. `KXMLBSTATCOUNT`
- * exists and is an MLB prop series, but which of our market keys it corresponds
- * to has NOT been verified, so it is deliberately absent: an unmapped market
- * makes `matchKalshiMarket` refuse, which is the correct failure.
+ * Only mappings confirmed against live tickers are listed. Each entry below was
+ * verified by reading an open contract's own title, not inferred from the
+ * series name — "Pro Baseball Strikeouts" (KXMLBKS) reads equally well as a
+ * batter strikeout prop, and only the contracts settle it: they are pitchers
+ * ("Gerrit Cole: 9+ strikeouts?"), so it maps to `pitcher_strikeouts`.
+ *
+ * An unmapped market makes `matchKalshiMarket` refuse, which is the correct
+ * failure — a wrong mapping would price one stat off another's contract.
  *
  * @type {Record<string, string>}
  */
 export const SERIES_BY_MARKET = {
   batter_hits_runs_rbis: "KXMLBHRR",
   batter_total_bases: "KXMLBTB",
+  batter_hits: "KXMLBHIT",
+  batter_home_runs: "KXMLBHR",
+  batter_rbis: "KXMLBRBI",
+  pitcher_strikeouts: "KXMLBKS",
+  pitcher_outs: "KXMLBOUTS",
 };
 
 /** Series that exist and are fetchable but are not mapped to a prop market. */
@@ -81,7 +90,21 @@ export const KNOWN_SERIES = {
   KXMLBHRR: "batter_hits_runs_rbis",
   /** Total bases. */
   KXMLBTB: "batter_total_bases",
-  /** A composite stat-count series; market mapping unverified. */
+  /** Hits. */
+  KXMLBHIT: "batter_hits",
+  /** Home runs. */
+  KXMLBHR: "batter_home_runs",
+  /** RBIs. */
+  KXMLBRBI: "batter_rbis",
+  /** Strikeouts — verified PITCHER-side, despite the bare series title. */
+  KXMLBKS: "pitcher_strikeouts",
+  /** Outs recorded, i.e. innings pitched x 3. */
+  KXMLBOUTS: "pitcher_outs",
+  /**
+   * Season-long league-wide stat totals ("Will all hitters combined record 16+
+   * inside-the-park home runs?"). Verified NOT a player prop: its tickers carry
+   * no game or player segment, so nothing here can ever map to it.
+   */
   KXMLBSTATCOUNT: null,
   /** Game lines (moneyline), not a player prop. */
   KXMLBGAME: null,
@@ -269,18 +292,62 @@ function num(value) {
  * @param {object|null|undefined} raw
  * @returns {KalshiMarket|null} null when there is no ticker to key on.
  */
+/**
+ * Put a published strike into the SAME unit `thresholdForLine` produces: the N
+ * in "N+".
+ *
+ * The live exchange publishes a *half-point* floor strike — the "2+ hits+runs+
+ * RBIs" contract carries `floor_strike: 1.5`, because it settles on
+ * outcome > 1.5. `thresholdForLine(1.5)` returns 2. Left unconverted the two
+ * sides of the join in `matchKalshiMarket` are in different units and
+ * `1.5 === 2` is false for every contract, so no player Kalshi actually covers
+ * can ever match — the failure reads as the innocuous "no 2+ contract for this
+ * player" rather than as a bug.
+ *
+ * An already-integer strike is passed through unchanged: that is the unit the
+ * ticker-tail fallback yields, and it is what the recorded fixtures carry.
+ *
+ * @param {number|null} strike
+ * @returns {number|null}
+ */
+function thresholdFromStrike(strike) {
+  if (strike == null || !Number.isFinite(strike)) return null;
+  return Number.isInteger(strike) ? strike : Math.floor(strike) + 1;
+}
+
+/**
+ * A cent price, from whichever field the exchange supplied.
+ *
+ * The live API replaced every `yes_bid`-style cent integer with a
+ * `yes_bid_dollars` decimal STRING ("0.0300"). Reading only the old names
+ * yielded null for every price on every market, which presented downstream as
+ * "no two-sided book" — a market-conditions message for what was really a
+ * schema change. Rounded for the same reason as `dollarLevels`.
+ *
+ * @param {*} cents - Legacy cent field.
+ * @param {*} dollars - Current decimal-dollar field.
+ * @returns {number|null}
+ */
+function centsField(cents, dollars) {
+  const legacy = num(cents);
+  if (legacy != null) return legacy;
+  const asDollars = num(dollars);
+  return asDollars == null ? null : Math.round(asDollars * 100);
+}
+
 export function normalizeMarket(raw) {
   if (!raw?.ticker) return null;
   const ticker = String(raw.ticker).trim();
   const player = playerNameOf(raw);
 
   const tail = ticker.split("-").pop();
-  const threshold =
+  const threshold = thresholdFromStrike(
     num(raw.floor_strike) ??
-    num(raw.floorStrike) ??
-    num(raw.cap_strike) ??
-    num(raw.capStrike) ??
-    (/^\d+$/.test(tail || "") ? Number(tail) : null);
+      num(raw.floorStrike) ??
+      num(raw.cap_strike) ??
+      num(raw.capStrike) ??
+      (/^\d+$/.test(tail || "") ? Number(tail) : null),
+  );
 
   return {
     ticker,
@@ -291,14 +358,20 @@ export function normalizeMarket(raw) {
     threshold,
     status: raw.status ?? null,
     title: raw.title ?? null,
-    yesBid: num(raw.yes_bid ?? raw.yesBid),
-    yesAsk: num(raw.yes_ask ?? raw.yesAsk),
-    noBid: num(raw.no_bid ?? raw.noBid),
-    noAsk: num(raw.no_ask ?? raw.noAsk),
-    last: num(raw.last_price ?? raw.lastPrice),
-    volume: num(raw.volume),
-    openInterest: num(raw.open_interest ?? raw.openInterest),
-    liquidity: num(raw.liquidity),
+    yesBid: centsField(raw.yes_bid ?? raw.yesBid, raw.yes_bid_dollars),
+    yesAsk: centsField(raw.yes_ask ?? raw.yesAsk, raw.yes_ask_dollars),
+    noBid: centsField(raw.no_bid ?? raw.noBid, raw.no_bid_dollars),
+    noAsk: centsField(raw.no_ask ?? raw.noAsk, raw.no_ask_dollars),
+    last: centsField(raw.last_price ?? raw.lastPrice, raw.last_price_dollars),
+    volume: num(raw.volume) ?? num(raw.volume_fp),
+    openInterest:
+      num(raw.open_interest ?? raw.openInterest) ?? num(raw.open_interest_fp),
+    // `liquidity` was a cent figure; `liquidity_dollars` is dollars.
+    liquidity:
+      num(raw.liquidity) ??
+      (num(raw.liquidity_dollars) == null
+        ? null
+        : Math.round(num(raw.liquidity_dollars) * 100)),
     raw,
   };
 }
@@ -655,6 +728,28 @@ function levels(rows) {
 }
 
 /**
+ * The same, for the exchange's `_dollars` levels: `["0.1200", "75000.00"]`.
+ *
+ * Prices arrive as decimal-dollar STRINGS and must be scaled to the cents this
+ * module works in. `0.12 * 100` is 12.000000000000002 in binary floating point,
+ * and an unrounded price would then miss every equality the matching and
+ * signal code does on cents, so the multiply is rounded — a Kalshi price is
+ * always a whole cent.
+ */
+function dollarLevels(rows) {
+  return (rows || [])
+    .map((row) => {
+      const dollars = num(row?.[0]);
+      return {
+        cents: dollars == null ? null : Math.round(dollars * 100),
+        contracts: num(row?.[1]) ?? 0,
+      };
+    })
+    .filter((level) => level.cents != null)
+    .sort((a, b) => b.cents - a.cents);
+}
+
+/**
  * Normalise a `/markets/{ticker}/orderbook` payload.
  *
  * @param {string} ticker
@@ -662,9 +757,14 @@ function levels(rows) {
  * @returns {Orderbook}
  */
 export function normalizeOrderbook(ticker, body) {
+  // The exchange now returns `orderbook_fp` with decimal-dollar levels and no
+  // `orderbook` key at all. Read whichever is present: the legacy shape is what
+  // every recorded fixture carries, and dropping it would trade one blind spot
+  // for another.
+  const fp = body?.orderbook_fp;
   const book = body?.orderbook || body || {};
-  const yes = levels(book.yes);
-  const no = levels(book.no);
+  const yes = fp ? dollarLevels(fp.yes_dollars) : levels(book.yes);
+  const no = fp ? dollarLevels(fp.no_dollars) : levels(book.no);
   const bestYesBid = yes.length ? yes[0].cents : null;
   const bestNoBid = no.length ? no[0].cents : null;
   const bestYesAsk = bestNoBid == null ? null : 100 - bestNoBid;
@@ -696,4 +796,58 @@ export async function fetchOrderbook(ticker, options = {}) {
     options,
   );
   return normalizeOrderbook(ticker, body);
+}
+
+/** Month abbreviations as they appear in a Kalshi event ticker. */
+const TICKER_MONTHS = {
+  JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06",
+  JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12",
+};
+
+/**
+ * The GAME DATE encoded in a Kalshi market ticker, as `YYYY-MM-DD`.
+ *
+ * Kalshi event tickers embed the date and start time of the game they settle
+ * on, e.g. `KXMLBKS-26AUG021337STLTOR-TORMSCHERZER31-5` is the 13:37 St Louis
+ * at Toronto game on 2026-08-02.
+ *
+ * WHY THIS MATTERS
+ *
+ * `fetchKalshiMarkets` returns every OPEN market in a series, and open markets
+ * span more than one day — measured live, 22 for one date and 61 for the next.
+ * `matchKalshiMarket` keys on player, series and threshold, and nothing else, so
+ * without a date filter a projection built for one game can be matched to a
+ * contract that settles on a DIFFERENT game.
+ *
+ * That is not a subtle mispricing, it is buying the wrong contract. It surfaced
+ * when a run for one date and a run for the next produced byte-identical orders,
+ * including a starter whose only listed markets were on the other day.
+ *
+ * Returns null when the ticker carries no parseable date, so a caller can decide
+ * whether to drop the market or let it through rather than silently guessing.
+ *
+ * @param {string} ticker
+ * @returns {string|null} `YYYY-MM-DD`
+ */
+export function tickerGameDate(ticker) {
+  const match = /-(\d{2})([A-Z]{3})(\d{2})/.exec(String(ticker || ""));
+  if (!match) return null;
+  const month = TICKER_MONTHS[match[2]];
+  if (!month) return null;
+  return `20${match[1]}-${month}-${match[3]}`;
+}
+
+/**
+ * Keep only the markets that settle on `slateDate`.
+ *
+ * Markets whose ticker has no parseable date are DROPPED, not kept: an unknown
+ * game date on a contract you are about to buy is not a risk worth taking for
+ * the sake of one extra candidate.
+ *
+ * @param {KalshiMarket[]} markets
+ * @param {string} slateDate `YYYY-MM-DD`
+ */
+export function marketsForDate(markets, slateDate) {
+  if (!slateDate) return markets || [];
+  return (markets || []).filter((m) => tickerGameDate(m?.ticker) === slateDate);
 }

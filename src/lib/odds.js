@@ -84,6 +84,17 @@ export function probToAmerican(prob) {
 export function devig(over, under) {
   const pOver = impliedProb(over);
   const pUnder = impliedProb(under);
+  // FIX(v27) — two-sided quotes now devig by the POWER method rather than
+  // multiplicatively. Player props carry 8-15% vig and books shade the longshot
+  // side harder, which proportional splitting cannot see; see `devigPower`.
+  //
+  // This is safe to apply unconditionally because the two methods CONVERGE as
+  // vig falls: on a -110/-110 quote they agree to the last decimal place, and
+  // on a typical -135/+115 prop they differ by 0.31pp. The correction only
+  // becomes material where the bias it fixes is material — 2.85pp on a
+  // +400/-600 longshot. Falls back to multiplicative if the solve degenerates.
+  const power = pOver != null && pUnder != null ? devigPower(over, under) : null;
+  if (power) return { fairOver: power.fairOver, vig: power.vig, twoSided: true };
   return pOver != null && pUnder != null && pOver + pUnder > 0
     ? {
         fairOver: pOver / (pOver + pUnder),
@@ -212,4 +223,69 @@ export function blend(prob, american, side) {
   return decimal == null || prob == null
     ? null
     : ((side === "over" ? prob : 1 - prob) * decimal - 1) * 100;
+}
+
+/**
+ * Power devigging — the fair probability of the over, correcting for
+ * favourite-longshot bias.
+ *
+ * WHY NOT MULTIPLICATIVE
+ *
+ * `devig` above splits the overround PROPORTIONALLY: each side keeps its share
+ * of the total implied probability. That is the standard method and it is fine
+ * on a sharp, low-margin market — at Pinnacle's 1-3% every method converges.
+ *
+ * Player props are not that market. They carry 8-15% vig, and books do not
+ * spread it evenly: bettors systematically overbet longshots, so the longshot
+ * side is shaded harder. Multiplicative devigging cannot see that — it removes
+ * vig in proportion to price, so it under-removes it from the longshot and
+ * leaves that side looking more likely than it is.
+ *
+ * The power method solves for the exponent k where
+ *
+ *     p_over^k + p_under^k = 1
+ *
+ * Raising both to a common power compresses the small probability more than the
+ * large one, which is exactly the shape of the bias being corrected. It also
+ * cannot produce a negative probability, which the additive method can.
+ *
+ * DIRECTION, STATED PLAINLY, BECAUSE IT CUTS BOTH WAYS
+ *
+ * Power assigns the longshot a LOWER fair probability than multiplicative. On a
+ * +400 / -600 prop it moves the over's fair value from 18.9% to about 16.0%.
+ * So against an unchanged model, apparent edges on longshots get BIGGER, not
+ * smaller. That is the correct answer if the model is right about the tail and
+ * an expensive one if it is not — which is why the relative clamp in
+ * trade/signals.js exists independently of this.
+ *
+ * @param {number} over  American odds on the over
+ * @param {number} under American odds on the under
+ * @returns {{fairOver:number, vig:number, twoSided:boolean, k:number}|null}
+ */
+export function devigPower(over, under) {
+  const pOver = impliedProb(over);
+  const pUnder = impliedProb(under);
+  if (pOver == null || pUnder == null) return null;
+  if (!(pOver > 0) || !(pUnder > 0)) return null;
+
+  const total = (k) => Math.pow(pOver, k) + Math.pow(pUnder, k);
+
+  // total(k) is monotonically decreasing in k for probabilities below 1, so a
+  // plain bisection converges. k = 1 reproduces the raw (vigged) sum.
+  let lo = 0.5;
+  let hi = 4;
+  // Guard the bracket: if even k=4 cannot reach 1 the quote is degenerate.
+  if (total(hi) > 1) return null;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (total(mid) > 1) lo = mid;
+    else hi = mid;
+  }
+  const k = (lo + hi) / 2;
+  return {
+    fairOver: Math.pow(pOver, k),
+    vig: pOver + pUnder - 1,
+    twoSided: true,
+    k,
+  };
 }

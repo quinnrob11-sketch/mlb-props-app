@@ -3,11 +3,12 @@
 // Callers pass rows that already carry an `edge` (App filters PASS verdicts out
 // before rendering); the card reads `row.edge` unguarded.
 
+import { Fragment } from 'react';
 import { fmt } from '../lib/format.js';
-import { matchesQuery } from './rows.js';
+import { matchesQuery, byConviction } from './rows.js';
 import { explainEmpty } from './filters.js';
-import VerdictChip from './VerdictChip.jsx';
-import VenueLinks from './VenueLinks.jsx';
+import VerdictChip, { WhyNote } from './VerdictChip.jsx';
+import VenueLinks, { VenueLegend } from './VenueLinks.jsx';
 import MakerPanel, { useKalshiBooks } from './MakerPanel.jsx';
 import DistributionChart from './DistributionChart.jsx';
 
@@ -23,10 +24,13 @@ export default function BestBets({
   bankroll,
   priceMode = 'taker',
 }) {
-  const sorted = rows
-    .filter((row) => matchesQuery(row, query))
-    // Rows without an edge sort to the bottom via the -99 sentinel.
-    .sort((a, b) => (b.edge?.ev ?? -99) - (a.edge?.ev ?? -99));
+  // Ordered by CONVICTION, not raw EV — verdict tier first, then quarter-Kelly
+  // stake, then book agreement. See `byConviction` in rows.js for why EV alone
+  // was the wrong key. `topCount` is how many plays share the best tier on the
+  // board, so the divider below is drawn from the data rather than a guess.
+  const { ordered: sorted, topCount, topTier } = byConviction(
+    rows.filter((row) => matchesQuery(row, query)),
+  );
 
   // Hook order is fixed: this runs before any of the early returns below.
   const books = useKalshiBooks(sorted, priceMode === 'maker');
@@ -65,16 +69,38 @@ export default function BestBets({
   }
 
   return (
+    <>
+    {topCount > 0 && (
+      <div className="conviction-head">
+        <b>Take these first</b>
+        <span>
+          {topCount} {topTier === 3 ? 'STRONG' : topTier === 2 ? 'SOLID' : 'LEAN'} play
+          {topCount > 1 ? 's' : ''} — ordered by ¼-Kelly stake, not raw EV
+        </span>
+      </div>
+    )}
     <div className="cards">
-      {sorted.map((row) => {
+      {sorted.map((row, i) => {
         const edge = row.edge;
         const inSlip = !!slip[row.key];
+        // The board is ordered by conviction, so position IS the recommendation.
+        // Numbering it makes that explicit instead of leaving the user to infer
+        // it from a column of percentages.
+        const rank = i + 1;
+        const isTop = topCount > 0 && i < topCount;
 
         return (
-          <div key={row.key} className={`card ${edge.verdict === 'STRONG' ? 'strong' : ''}`}>
+          <Fragment key={row.key}>
+          {/* First card after the top group gets a full-width rule before it,
+              so where conviction drops off is visible rather than inferred. */}
+          {topCount > 0 && i === topCount && (
+            <div className="rest-divider">Below this line the engine is less sure</div>
+          )}
+          <div className={`card ${edge.verdict === 'STRONG' ? 'strong' : ''} ${isTop ? 'top-play' : ''}`}>
             <div className="card-top">
               <div>
                 <div className="card-title">
+                  <span className={`rank ${isTop ? 'rank-top' : ''}`}>{rank}</span>
                   {row.name}
                   {' — '}
                   {row.label} {edge.side === 'over' ? 'OVER' : 'UNDER'} {row.line}
@@ -106,7 +132,10 @@ export default function BestBets({
                     ))}
                 </div>
               </div>
-              <VerdictChip edge={edge} />
+              <div className="vwrap">
+                <VerdictChip edge={edge} />
+                <WhyNote edge={edge} />
+              </div>
             </div>
 
             <div className="card-nums">
@@ -133,12 +162,21 @@ export default function BestBets({
                 <span className="l">Consensus fair%</span>
               </div>
               <div className="stat">
-                <span className={`v ${edge.ev >= 0 ? 'pos' : 'neg'}`}>{fmt.ev(edge.ev)}</span>
+                {/* A PASS never wears green — the engine refuses this price. */}
+                <span
+                  className={`v ${
+                    edge.verdict === 'PASS' ? 'dim' : edge.ev >= 0 ? 'pos' : 'neg'
+                  }`}
+                  title={edge.verdict === 'PASS' ? 'engine passes at this price' : undefined}
+                >
+                  {fmt.ev(edge.ev)}
+                </span>
                 <span className="l">EV @ {fmt.odds(edge.odds)}</span>
               </div>
             </div>
 
             <DistributionChart
+              proj={row.proj}
               distFn={row.detailRef?.proj?.dist?.[row.distKey]}
               line={row.line}
               market={row.market}
@@ -172,8 +210,12 @@ export default function BestBets({
               </button>
             </div>
           </div>
+          </Fragment>
         );
       })}
     </div>
+    {/* ONE degree-mark legend per board, instead of a note per card. */}
+    {priceMode !== 'maker' && <VenueLegend rows={sorted} />}
+    </>
   );
 }

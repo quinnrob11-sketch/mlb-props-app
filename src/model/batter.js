@@ -26,6 +26,19 @@
  *      longer converts singles into home runs one-for-one.
  *   7  The `Math.max(0.03, hitPA - hrPA)` floor is gone; hit conservation is
  *      now an identity rather than an accident.
+ *
+ * FIXED in v22, from measurement rather than judgement. `tools/backtest.mjs`
+ * replays historical slates out of the MLB Stats API with no lookahead and
+ * compares every projection to the boxscore; both of these were invisible
+ * before it existed and neither needed odds history to find:
+ *
+ *   8  The stolen-base prior was 0.04/game, the all-roster rate, applied to a
+ *      population that is by definition starting. Measured 0.069. The market
+ *      was under-projected 8.2%.
+ *   9  `dist.hrr` assumed hits, runs and RBI are independent. They correlate
+ *      at rho ~ 0.42-0.51, so the convolution carried half the true variance
+ *      and mispriced the 0.5 line by 15.3pp. Mean is unchanged; only the
+ *      spread is corrected.
  */
 
 import {
@@ -95,6 +108,151 @@ const RUN_VALUE_HR = 1.4;
 const RUN_CONTEXT_PASSTHROUGH = 0.4;
 
 /**
+ * How much wider the real H+R+RBI distribution is than the one you get by
+ * convolving independent hits / runs / RBI marginals.
+ *
+ * MEASURED, not chosen. `tools/backtest.mjs` collects every boxscore in the
+ * range and computes the covariance structure directly. Over 21,872
+ * player-games:
+ *
+ *     Var(H) + Var(R) + Var(RBI)  =  1.866      <- the independence assumption
+ *     Var(H + R + RBI)            =  3.633      <- reality
+ *     ratio                       =  1.947
+ *
+ * The three legs are strongly positively correlated (rho ~ 0.42-0.51): a home
+ * run is +1 to all three at once, and beyond that a batter's runs and RBI both
+ * ride the same team-scoring night. Excluding games containing a home run the
+ * ratio is still 1.64, so this is mostly shared game context rather than the
+ * mechanical HR link.
+ *
+ * Critically, the ratio is STABLE where a fitted dispersion constant would not
+ * be — across the nine lineup slots it moves only between 1.887 and 1.963, and
+ * across 3/4/5-PA games between 1.76 and 1.82. That is what makes it safe to
+ * carry as one number: it is a property of how baseball scoring works, not of
+ * any particular hitter. The variance it is applied to is still the model's
+ * own, so a quiet hitter in a pitchers' park gets a narrow distribution and a
+ * middle-of-the-order bat in Coors gets a wide one.
+ *
+ * Why this matters: v20 replaced a fitted NB(k=2.2) with the independent
+ * convolution because the convolution's MEAN is exactly `projHRR` by
+ * construction. That fixed a real defect — the old tail's mean did not match
+ * the projection printed beside it — but it also threw away half the variance,
+ * and the backtest caught it:
+ *
+ *     line 0.5   predicted 83.1%  observed 67.8%   +15.3pp
+ *     line 1.5   predicted 52.9%  observed 45.7%    +7.2pp
+ *     line 2.5   predicted 26.6%  observed 29.4%    -2.8pp
+ *     line 3.5   predicted 11.3%  observed 17.6%    -6.3pp
+ *
+ * — the exact signature of a distribution that is too narrow: too much mass in
+ * the middle, not enough in either tail. On a market carrying MARKET_WEIGHT
+ * 0.40 that is a standing fake OVER at 0.5/1.5 and a standing fake UNDER at
+ * 2.5/3.5, every slate.
+ *
+ * Re-measure with:  node tools/backtest.mjs --from <start> --to <end>
+ */
+const HRR_VARIANCE_INFLATION = 1.947;
+
+/**
+ * Probability that a batter-game is a STRUCTURAL blank — no hit, no run, no
+ * RBI — over and above what the fitted distribution already produces.
+ *
+ * WHY A VARIANCE FIX WAS NOT ENOUGH
+ *
+ * `HRR_VARIANCE_INFLATION` gave this market the right spread, and the mean has
+ * been exactly right since v22. It was still 3.25 points too high at the 0.5
+ * line in BOTH backtested seasons, and 0.5 is the only line Kalshi lists for it.
+ *
+ * `P(HRR > 0.5)` is just `1 - P(blank game)`, so that gap is entirely a
+ * statement about the point mass at zero — and a point mass is not a variance
+ * property. Widening a distribution spreads its shoulders; it does not add the
+ * spike real batter-games have at nothing-at-all.
+ *
+ * HOW BIG THE EFFECT IS. Over 82,408 batter-games:
+ *
+ *     P(H=0)  0.4304    P(R=0)  0.6484    P(RBI=0)  0.7227
+ *     independent product                   0.2017
+ *     ACTUAL P(H=0 and R=0 and RBI=0)       0.3634     1.80x
+ *
+ * A blank game is 1.8 times commoner than independence implies. The three legs
+ * do not fail separately — a hitter who goes 0-for-4 in a game his team loses
+ * 2-0 misses all three at once, and that is one event, not three.
+ *
+ * THE MEAN IS PRESERVED BY CONSTRUCTION. Mixing a structural zero in at rate pi
+ * would scale the mean by (1 - pi), so the NB's own mean is lifted to
+ * `mean / (1 - pi)` and the mixture returns to exactly the projection. This
+ * market's card number does not move; only its shape does.
+ *
+ * 0.0815 is solved, not chosen: it is the pi for which the mixture's P(0)
+ * equals the 0.322 observed in the backtest population, at that population's
+ * 1.82 mean and measured 2.09 variance-to-mean ratio.
+ *
+ * Re-measure with:  node tools/backtest.mjs --from <start> --to <end> --kind batter
+ */
+const HRR_STRUCTURAL_ZERO = 0.0815;
+
+/**
+ * League-average stolen bases per game for a player in a starting lineup.
+ *
+ * MEASURED over the same 24,073 batter-games as above: 0.069. The model
+ * previously shrank toward 0.04, which is roughly the rate across *all*
+ * rostered players rather than the ones who actually start, and the backtest
+ * showed the consequence — `batter_stolen_bases` under-projected by 8.2%,
+ * the only batter market with a significant mean bias left after v20.
+ *
+ * The arithmetic lines up exactly: at a typical 100 games played and the
+ * shrinkage strength of 30 below, the prior carries 30/(100+30) = 23% of the
+ * estimate, so a prior 42% too low drags the projection ~9.7% low.
+ *
+ * `loadSlate` overrides this with the live slate-wide rate when it can; this
+ * constant is the fallback.
+ */
+export const SB_PER_GAME_PRIOR = 0.069;
+
+/**
+ * The batter contact/power split, and the stolen-base scale.
+ *
+ * MEASURED, both seasons, same sign in each. The batter board was tilted in a
+ * specific and repeatable shape — contact markets OVER, power UNDER:
+ *
+ *     market                 2025     2026     mean
+ *     batter_singles        +0.8%    +1.6%    +1.2%   over
+ *     batter_hits           +0.8%    +1.4%    +1.1%   over
+ *     batter_runs_scored    +1.3%    +1.0%    +1.2%   over
+ *     batter_total_bases    +0.6%    +0.6%    +0.6%   over
+ *     batter_home_runs      -1.6%    -2.8%    -2.2%   UNDER
+ *     batter_stolen_bases   +3.3%    +3.1%    +3.2%   over
+ *
+ * Contact over and power under is not a level error, it is a MISALLOCATION —
+ * the same shape as the pitcher K/contact split in model/pitcher.js. Balls that
+ * should have been leaving the yard were being counted as singles, which is why
+ * singles is the worst of the contact markets and home runs is the only one
+ * pointing the other way.
+ *
+ * Some of this is mine. v22.1 removed a flat 0.975 haircut from the non-HR hit
+ * rate on the grounds that nothing justified it, which took hits from -1.5% to
+ * +0.7%. That was the right direction and too far. v22.8 then raised the
+ * starter hit rate that `spHit` divides by, pushing the whole batter side up
+ * again — flagged at the time, and this is the correction.
+ *
+ * The measured answer is neither the original 0.975 nor the 1.0 that replaced
+ * it. These two constants are ONE correction and must move together: they shift
+ * a little over a point of plate-appearance outcome from contact back to power,
+ * leaving the total hit rate almost unchanged.
+ *
+ * Re-measure with:  node tools/backtest.mjs --from <start> --to <end> --kind batter
+ */
+const CONTACT_SHARE = 0.989;
+const POWER_SHARE = 1.022;
+
+/**
+ * Stolen bases run ~3.2% high in both seasons. Unlike the split above this is a
+ * plain level error, so it gets a plain scale rather than being folded into the
+ * contact/power pair — the two have nothing to do with each other.
+ */
+const SB_SCALE = 0.969;
+
+/**
  * Expected runs allowed per batter faced implied by a starter's hit and HR
  * rates, in the model's own linear weights.
  */
@@ -148,10 +306,13 @@ function starterTalentRates(spRates, park, lg) {
 
   // Re-clamp to projectPitcher's own adjusted-rate bounds: dividing a clamped
   // value by a park factor can push it a hair outside the model's range.
+  // Missing rates fall back to the STARTING-PITCHER baseline, so an unknown
+  // starter is a neutral one (multiplier exactly 1.0) rather than a
+  // league-wide average that no starter actually posts.
   return {
-    k: k == null ? lg.kRate : clamp(k, 0.05, 0.45),
-    h: h == null ? lg.hRate : clamp(h, 0.12, 0.34),
-    hr: hr == null ? lg.hrRate : clamp(hr, 0.005, 0.07),
+    k: k == null ? lg.spKRate : clamp(k, 0.05, 0.45),
+    h: h == null ? lg.spHRate : clamp(h, 0.12, 0.34),
+    hr: hr == null ? lg.spHrRate : clamp(hr, 0.005, 0.07),
   };
 }
 
@@ -283,19 +444,26 @@ export function projectBatter(input) {
   // part-timer at 0.333 SB/game and a 25% chance to steal), below it a flat
   // 0.04 for everyone including catchers. It now goes through `shrunkRate` like
   // every other rate, in games rather than PA:
-  //   - prior 0.04 SB/game, the model's own pre-existing default, so the
-  //     zero-playing-time answer is unchanged;
   //   - strength 30 games. `shrunkRate`'s strength is in denominator units, so
   //     30 games is ~126 PA — the same neighbourhood as the 100-120 PA used for
-  //     the model's other rare events (HR 100, triples 120), and it carries the
-  //     same prior *event* mass (30 x 0.04 = 1.2 steals) that 100 PA x 0.03
-  //     carries for home runs. The >20-game cliff disappears: playing time now
-  //     moves the estimate continuously.
-  const sbPerGame = shrunkRate(
-    s26.stolenBases, s26.gamesPlayed,
-    s25.stolenBases, s25.gamesPlayed,
-    0.04, 30,
-  );
+  //     the model's other rare events (HR 100, triples 120). The >20-game cliff
+  //     disappears: playing time now moves the estimate continuously.
+  //
+  // FIX(8) — the PRIOR was wrong. v20 kept the model's pre-existing 0.04
+  // default so the zero-playing-time answer would not move, but 0.04 is the
+  // rate across all rostered players, and everyone this function projects is in
+  // a starting lineup. Measured over 24,073 batter-games the right figure is
+  // 0.069 (see SB_PER_GAME_PRIOR), and the 0.04 prior was dragging the whole
+  // market 8.2% low — the last significant mean bias on the batter board.
+  // FIX(v31) — scaled by SB_SCALE, which corrects a measured ~3.2% over-projection
+  // present in both backtested seasons. Applied to the shrunk rate rather than
+  // to the prior, so it corrects every hitter and not only the low-sample ones.
+  const sbPerGame =
+    shrunkRate(
+      s26.stolenBases, s26.gamesPlayed,
+      s25.stolenBases, s25.gamesPlayed,
+      lg.sbPerGame ?? SB_PER_GAME_PRIOR, 30,
+    ) * SB_SCALE;
 
   // ---------------------------------------------------------------------
   // 3. Platoon multiplier.
@@ -329,9 +497,16 @@ export function projectBatter(input) {
   let spHr = 1;
   let spRunEnv = 1;
   if (sp) {
-    spK = 1 + PITCHER_INFLUENCE * (sp.k / lg.kRate - 1);
-    spHit = 1 + PITCHER_INFLUENCE * 0.8 * (sp.h / lg.hRate - 1);
-    spHr = 1 + PITCHER_INFLUENCE * 0.8 * (sp.hr / lg.hrRate - 1);
+    // FIX(v22) — the denominators are the STARTING-PITCHER baselines, not the
+    // league-wide ones. `sp.k/h/hr` are a starter's rates, so dividing by a
+    // league-wide rate that includes relievers means an average starter does
+    // not come out at 1.0, and every batter on the slate gets pushed the same
+    // direction. Relievers strike out more and allow fewer hits, so the old
+    // denominators made every starter look hit-prone and strikeout-poor.
+    // See the measured split in model/league.js.
+    spK = 1 + PITCHER_INFLUENCE * (sp.k / lg.spKRate - 1);
+    spHit = 1 + PITCHER_INFLUENCE * 0.8 * (sp.h / lg.spHRate - 1);
+    spHr = 1 + PITCHER_INFLUENCE * 0.8 * (sp.hr / lg.spHrRate - 1);
 
     // FIX(2a) — run environment created by the starter. The ratio is built
     // from the same two legs (hits, HR) at the model's own run values, and is
@@ -341,7 +516,7 @@ export function projectBatter(input) {
     spRunEnv =
       1 +
       PITCHER_INFLUENCE * 0.8 *
-        (runProxy(sp.h, sp.hr) / runProxy(lg.hRate, lg.hrRate) - 1);
+        (runProxy(sp.h, sp.hr) / runProxy(lg.spHRate, lg.spHrRate) - 1);
   }
 
   // ---------------------------------------------------------------------
@@ -397,18 +572,38 @@ export function projectBatter(input) {
   // platoon-sensitive as batting average. The `platoon === 1 ? 1 : ...` guard
   // keeps an unknown matchup at exactly 1 (algebraically identical, but
   // preserved verbatim).
+  //
+  // FIX(v31) — the CONTACT/POWER SPLIT. See the constants below.
   const hrPARaw = clamp(
-    rates.hr * (platoon === 1 ? 1 : (platoon - 1) * 1.8 + 1) * spHr * parkHrWeather,
+    rates.hr * (platoon === 1 ? 1 : (platoon - 1) * 1.8 + 1) * spHr * parkHrWeather *
+      POWER_SHARE,
     0.002, 0.1,
   );
 
-  // Non-HR hit rate: platoon x starter x park, then the same flat 0.975
-  // haircut the hit rate has always carried. `rates.hit - rates.hr` is strictly
-  // positive (HR are a subset of hits, and the hit prior contributes 13.32
-  // synthetic hits against the HR prior's 3.0), so nothing has to be floored.
+  // Non-HR hit rate: platoon x starter x park. `rates.hit - rates.hr` is
+  // strictly positive (HR are a subset of hits, and the hit prior contributes
+  // 13.32 synthetic hits against the HR prior's 3.0), so nothing has to be
+  // floored.
+  //
+  // FIX(v22) — the flat 0.975 haircut that used to sit on the end is gone.
+  // Nothing ever justified it: it was applied here and to RBI and to no other
+  // market, and no comment in the original bundle explained what it calibrated
+  // for. The backtest showed it as a standing one-directional shade, exactly
+  // the size of the constant — `batter_hits` came back 1.5% low and
+  // `batter_singles` 2.1% low over 41,689 batter-games, and singles took it
+  // worst because they are the largest share of non-HR hits.
+  //
+  // Note the RBI leg keeps its own 0.975 (see `projRBI`), because RBI measured
+  // clean without any correction. The two haircuts were never one decision.
+  //
+  // FIX(v31) — `CONTACT_SHARE` corrects the over-projection that removing the
+  // haircut left behind. Removing 0.975 outright was too much: it took hits
+  // from -1.5% to +0.7% and the batter side has drifted further up since,
+  // partly because v22.8 raised the starter hit rate that `spHit` reads. The
+  // measured answer is neither 0.975 nor 1.0.
   const nonHrHitPARaw = Math.max(
     0,
-    (rates.hit - rates.hr) * platoon * spHit * parkHits * 0.975,
+    (rates.hit - rates.hr) * platoon * spHit * parkHits * CONTACT_SHARE,
   );
 
   // The [0.05, 0.42] clamp still applies to the TOTAL hit rate, as before. When
@@ -541,30 +736,100 @@ export function projectBatter(input) {
   })();
 
   // ---------------------------------------------------------------------
-  // 11. H+R+RBI as the convolution of its own components.
+  // 11. H+R+RBI: the model's own mean, with the real correlation restored.
   //
-  //     FIX(3) — `projHRR` is defined as `projH + projR + projRBI`, but the
-  //     distribution was a fitted NB(k=2.2) whose mean did not even match
-  //     (`round(pa)` in the hits leg pulled the implied mean to 2.035 against a
-  //     reported 2.114) and which disagreed with the convolution of the model's
-  //     own marginals by up to 9.7pp — the app could recommend both sides of
-  //     the same hitter. The self-consistent object is the convolution of
-  //     `dist.hits`, `dist.runs` and `dist.rbi`, which is what this is: same
-  //     binomial mixture, same Poisson(projR), same NB(projRBI, 0.85). Its mean
-  //     is therefore exactly projH + projR + projRBI = projHRR.
+  //     FIX(3) — v20. `projHRR` is `projH + projR + projRBI`, but the shipped
+  //     distribution was a fitted NB(k=2.2) whose mean did not match it, so the
+  //     app could recommend both sides of the same hitter. v20 replaced it with
+  //     the convolution of the model's own hits / runs / RBI marginals, whose
+  //     mean is exactly `projHRR` by construction.
   //
-  //     Independence is assumed, as it is everywhere else in the model. The
-  //     three legs are in truth positively correlated (analysis #4.5), so this
-  //     understates the tails — but it is the model's own standing assumption
-  //     rather than a fourth, unrelated dispersion constant.
+  //     FIX(9) — that convolution assumed the three legs are INDEPENDENT, and
+  //     they are emphatically not: rho ~ 0.42-0.51 pairwise (a home run is +1
+  //     to all three simultaneously, and runs and RBI both ride the same team's
+  //     scoring that night). The convolution therefore carried barely half the
+  //     true variance, and `tools/backtest.mjs` measured the damage on 24,073
+  //     batter-games — +15.3pp at the 0.5 line, -6.3pp at 3.5.
+  //
+  //     The repair keeps everything v20 got right and fixes only the variance:
+  //
+  //       mean      exactly `projHRR`, as before — still the sum of the three
+  //                 components the card displays, so the self-consistency that
+  //                 motivated FIX(3) is untouched;
+  //       variance  the model's OWN component variances, summed as before and
+  //                 then scaled by the measured `HRR_VARIANCE_INFLATION`.
+  //
+  //     Matching those two moments to a negative binomial gives the tail. NB is
+  //     the natural family here and is already what the model uses for RBI, SB
+  //     and pitcher ER; at these means it is also very close to what the
+  //     inflated convolution would look like, without needing a latent-variable
+  //     mixture the rest of the model has no vocabulary for.
+  //
+  //     Note this is NOT a return to the old hand-fitted k=2.2. The dispersion
+  //     is derived per hitter from his own projected components; only the
+  //     correlation correction is a shared constant, and that constant was
+  //     measured rather than chosen.
   // ---------------------------------------------------------------------
-  const hrrPmf = (() => {
-    const hitsPmf = new Array(paCeil + 1)
-      .fill(0)
-      .map((_, k) => mixOverPa((n) => binomPmf(k, n, hitPA)));
-    const runsPmf = densePmf((k) => poissonPmf(k, projR), projR);
-    const rbiPmf = densePmf((k) => negBinomPmf(k, projRBI, 0.85), projRBI);
-    return convolvePmf(convolvePmf(hitsPmf, runsPmf), rbiPmf);
+
+  // Variance of the hits leg under the floor/ceil PA mixture:
+  //   Var = E[Var(X|n)] + Var(E[X|n])
+  //       = pa*p*(1-p) + p^2 * (E[n^2] - pa^2)
+  const hitsVar = (() => {
+    const eN2 = paFrac <= 0 ? paFloor ** 2 : (1 - paFrac) * paFloor ** 2 + paFrac * paCeil ** 2;
+    return pa * hitPA * (1 - hitPA) + hitPA ** 2 * (eN2 - pa ** 2);
+  })();
+  // Poisson: variance = mean. NB(mu, k): variance = mu + mu^2 / k.
+  const runsVar = projR;
+  const rbiVar = projRBI + (projRBI * projRBI) / 0.85;
+
+  const hrrMean = projHRR;
+  const hrrVar = HRR_VARIANCE_INFLATION * (hitsVar + runsVar + rbiVar);
+
+  const hrrTail = (() => {
+    // A negative binomial needs variance strictly above the mean. For any
+    // realistic hitter the inflated variance clears it comfortably (the
+    // measured var/mean for this market is 2.09), but a hitter projected at
+    // almost nothing could in principle not, so fall back to the exact
+    // independent convolution rather than producing a degenerate k.
+    if (!(hrrVar > hrrMean * 1.02) || !(hrrMean > 0)) {
+      const hitsPmf = new Array(paCeil + 1)
+        .fill(0)
+        .map((_, k) => mixOverPa((n) => binomPmf(k, n, hitPA)));
+      const runsPmf = densePmf((k) => poissonPmf(k, projR), projR);
+      const rbiPmf = densePmf((k) => negBinomPmf(k, projRBI, 0.85), projRBI);
+      const pmf = convolvePmf(convolvePmf(hitsPmf, runsPmf), rbiPmf);
+      return (line) => tailFromPmf(pmf, line);
+    }
+    // ZERO-INFLATION. See HRR_STRUCTURAL_ZERO for the measurement.
+    //
+    // The negative binomial below has the right mean and the right variance and
+    // STILL puts too little mass on a blank game, because a point mass at zero
+    // is not a variance property — widening a distribution does not add the
+    // spike that real batter-games have at nothing-at-all.
+    //
+    // Mixing in a structural zero with probability pi would drag the mean down
+    // by a factor of (1 - pi), so the NB's own mean is lifted to
+    // `hrrMean / (1 - pi)` to compensate. The mixture mean is then
+    // (1 - pi) * hrrMean / (1 - pi) = hrrMean exactly, preserving the property
+    // that every distribution's mean equals the projection printed beside it.
+    // Dispersion is recomputed at the lifted mean so the variance relation is
+    // the one that was measured, not one inherited from the old mean.
+    const pi = HRR_STRUCTURAL_ZERO;
+    const liftedMean = hrrMean / (1 - pi);
+    const liftedVar = (hrrVar / hrrMean) * liftedMean;
+    if (!(liftedVar > liftedMean * 1.02)) {
+      const k = (hrrMean * hrrMean) / (hrrVar - hrrMean);
+      return (line) => negBinomTailOver(line, hrrMean, k);
+    }
+    const k = (liftedMean * liftedMean) / (liftedVar - liftedMean);
+    return (line) => {
+      // P(X > line). The structural zero contributes nothing above any line at
+      // or beyond 0, so the mixture tail is simply the NB tail scaled by
+      // (1 - pi) for every line >= 0.
+      const nbTail = negBinomTailOver(line, liftedMean, k);
+      if (nbTail == null || isNaN(nbTail)) return nbTail;
+      return line < 0 ? nbTail : (1 - pi) * nbTail;
+    };
   })();
 
   // ---------------------------------------------------------------------
@@ -586,7 +851,7 @@ export function projectBatter(input) {
 
     runs: (line) => poissonTailOver(line, projR),
     rbi:  (line) => negBinomTailOver(line, projRBI, 0.85),
-    hrr:  (line) => tailFromPmf(hrrPmf, line),
+    hrr:  hrrTail,
     sb:   (line) => negBinomTailOver(line, Math.max(0.01, projSB), 1),
   };
 
@@ -625,12 +890,19 @@ export function projectBatter(input) {
 }
 
 /*
- * Deliberately unchanged (out of the brief; all still live defects):
+ * Deliberately unchanged:
  *
- *   #5  RBI NB(k=0.85) vs runs Poisson for two near-identical real
- *       distributions — retuning the RBI dispersion would move a live market
- *       on judgement alone, and `dist.hrr` now inherits whatever `dist.rbi`
- *       says rather than contradicting it.
+ *   #5  RBI NB(k=0.85) vs runs Poisson. This was previously left alone because
+ *       retuning it would have been judgement; it is now left alone because the
+ *       backtest says it is RIGHT. Over 24,073 batter-games the two markets
+ *       genuinely do have different shapes — runs came back var/mean 0.985
+ *       (Poisson, as modelled) and RBI 1.586 (overdispersed, implying k ~ 0.78
+ *       against the shipped 0.85). Calibration confirms it: runs 0.5 is off by
+ *       0.3pp and RBI 0.5 by 0.6pp. The "6.8pp standing UNDER lean on RBI"
+ *       reported in BATTER-ANALYSIS.md §2b was an argument from symmetry, and
+ *       the data does not support it. Runs and RBI are not interchangeable:
+ *       scoring a run needs teammates behind you, driving one needs runners in
+ *       front, and only the latter arrives in clusters.
  *   #9  `lg` overrides reach only kRate/bbRate; `lg.hRate`/`lg.hrRate` are
  *       frozen constants that `loadSlate` never computes.
  *   #10 The 0.975 haircut on hits and RBI only.

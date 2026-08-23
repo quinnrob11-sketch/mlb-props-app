@@ -20,11 +20,20 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
   // playerId -> { pitching?, batting? }
   const actualsByPlayer = new Map();
 
-  // Sequential on purpose: each boxscore gets its own status line.
-  for (const game of finals) {
-    status(`Boxscore ${game.gamePk}…`);
-    const box = await mlbFetch(`/api/v1/game/${game.gamePk}/boxscore`);
+  // Boxscores are fetched concurrently. This used to be a sequential loop so
+  // that each game could get its own status line, which cost one full round
+  // trip per Final game — 15 on a normal slate, and RESULTS grades a whole
+  // history of them. The counter below carries the same information.
+  let done = 0;
+  const boxes = await Promise.all(
+    finals.map(async (game) => {
+      const box = await mlbFetch(`/api/v1/game/${game.gamePk}/boxscore`);
+      status(`Boxscores ${++done}/${finals.length}…`);
+      return box;
+    }),
+  );
 
+  for (const box of boxes) {
     for (const side of ['away', 'home']) {
       const players = box.teams?.[side]?.players || {};
       for (const key of Object.keys(players)) {

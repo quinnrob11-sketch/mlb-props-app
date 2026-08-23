@@ -739,12 +739,44 @@ export function diagnoseCriteria(rows, criteria) {
 }
 
 /**
- * Honest empty state for a board that is showing nothing.
+ * How thin a surviving board has to be before it explains itself.
+ *
+ * Both conditions are required, because either one alone misfires:
+ *
+ *  - `THIN_MAX_KEPT` — a board with more than a handful of rows left is a
+ *    filter doing its job, not a board that "looks broken". v20's batter board
+ *    is ~288 rows before criteria, so a purely proportional test would nag at
+ *    30 perfectly usable rows.
+ *  - `THIN_MAX_SHARE` — on a six-row morning slate, three rows left is not a
+ *    filtering problem; without a proportional guard the notice would fire on
+ *    every quiet slate and be trained away as noise.
+ *
+ * Together they target exactly the reported complaint: "the board looks thin",
+ * i.e. a board that had plenty and now shows a handful.
+ */
+const THIN_MAX_KEPT = 9;
+const THIN_MAX_SHARE = 0.25;
+
+/**
+ * Honest diagnosis for a board the criteria have gutted.
+ *
+ * Fires in two situations:
+ *   - the criteria removed EVERY row (`severity: 'empty'`);
+ *   - the criteria left only a handful of a much larger board
+ *     (`severity: 'thin'`) — see `THIN_MAX_KEPT` / `THIN_MAX_SHARE`. Before
+ *     v20 this case barely existed; a 288-row batter board makes "40 rows cut
+ *     to 3" the common shape of the complaint, and a board that shows three
+ *     rows and no explanation reads as a broken model rather than a tight
+ *     filter.
+ *
+ * The kept count is computed here rather than taken from the caller so every
+ * board gets the same answer — callers pass the same `unfilteredRows` they
+ * already pass for the empty case and need no extra bookkeeping.
  *
  * @param {object[]} rows - the unfiltered rows the board would show.
  * @param {object} criteria
- * @returns {{headline:string, detail:string}|null} null when the criteria are
- *   not the reason the board is empty (caller should show its own message).
+ * @returns {{severity:'empty'|'thin', headline:string, detail:string}|null}
+ *   null when the criteria are not worth blaming (caller shows its own copy).
  */
 export function explainEmpty(rows, criteria) {
   const c = normalizeCriteria(criteria);
@@ -753,13 +785,25 @@ export function explainEmpty(rows, criteria) {
   const list = Array.isArray(rows) ? rows : [];
   if (!list.length) return null;
 
+  const total = list.length;
+  const kept = applyCriteria(list, c).length;
+  // A board that still has plenty on it needs no apology.
+  if (kept > 0 && !(kept <= THIN_MAX_KEPT && kept <= total * THIN_MAX_SHARE)) return null;
+
   const diag = diagnoseCriteria(list, c);
   const blockers = diag.filter((d) => d.recovered > 0);
   const all = diag.map((d) => d.label).join(' · ');
+  const severity = kept > 0 ? 'thin' : 'empty';
+  // "brings back N more rows" only makes sense when some are already showing.
+  const more = kept > 0 ? 'more ' : '';
 
   if (!blockers.length)
     return {
-      headline: `All ${list.length} rows are excluded by your filters.`,
+      severity,
+      headline:
+        kept > 0
+          ? `Showing ${kept} of ${total} rows — your filters cut the other ${total - kept}.`
+          : `All ${total} rows are excluded by your filters.`,
       detail: `No single filter is responsible — ${specs.length} are active together (${all}). Loosen a few, or hit Reset.`,
     };
 
@@ -770,8 +814,12 @@ export function explainEmpty(rows, criteria) {
     : '';
 
   return {
-    headline: `Filtered out all ${list.length} rows.`,
-    detail: `“${top.label}” is the biggest cut — relaxing just that brings back ${top.recovered} row${
+    severity,
+    headline:
+      kept > 0
+        ? `Showing ${kept} of ${total} rows — your filters cut the other ${total - kept}.`
+        : `Filtered out all ${total} rows.`,
+    detail: `“${top.label}” is the biggest cut — relaxing just that brings back ${top.recovered} ${more}row${
       top.recovered === 1 ? '' : 's'
     }.${restText} Active: ${all}.`,
   };
@@ -783,6 +831,41 @@ export const CRITERIA_STORAGE_KEY = 'criteriaV1';
 /** Pre-criteria key that owned the alt-line toggle; kept in sync both ways. */
 export const LEGACY_ALTS_KEY = 'showAlts';
 
+/**
+ * Schema version stamped into the stored blob, so a criterion whose MEANING
+ * changed can be migrated instead of silently inherited.
+ *
+ * v2 — the v20 lineup expansion. The batter board used to be "whichever
+ * lineups were posted" (~18 rows); v20 projects the rest, taking it to ~288.
+ * `confirmedLineupOnly` was therefore a no-op when it shipped — every batter
+ * already came off a posted card — so a user could tick it, see nothing
+ * happen, and forget it. Post-v20 the same flag drops every row carrying
+ * `PROJ LINEUP`: roughly 94% of the batter board, with no expiry on
+ * `criteriaV1` to ever undo it. The v1→v2 migration resets exactly that one
+ * flag and leaves every other choice the user made intact.
+ *
+ * The version lives INSIDE the blob rather than in the key name. A key bump
+ * (`criteriaV2`) would strand the old value under `criteriaV1` forever and
+ * make every future migration chain through dead keys; a field is read in one
+ * place and `normalizeCriteria` drops it on the way out, so nothing
+ * downstream ever sees it.
+ */
+export const CRITERIA_SCHEMA_VERSION = 2;
+
+/**
+ * Bring a restored blob up to `CRITERIA_SCHEMA_VERSION`. Unversioned blobs
+ * (everything written before v20) count as v1.
+ */
+function migrateCriteria(raw) {
+  const from = Number(raw?._v) || 1;
+  if (from >= CRITERIA_SCHEMA_VERSION) return raw;
+  const out = { ...raw };
+  // v1 → v2: see CRITERIA_SCHEMA_VERSION. Reset, not clear — the user gets the
+  // default (off) and can re-tick it now that it visibly does something.
+  if (from < 2) out.confirmedLineupOnly = DEFAULT_CRITERIA.confirmedLineupOnly;
+  return out;
+}
+
 function storage() {
   try {
     return typeof localStorage === 'undefined' ? null : localStorage;
@@ -792,16 +875,22 @@ function storage() {
 }
 
 /**
- * Restore criteria from `criteriaV1`. On a first run the alt-line rule is
- * seeded from the pre-existing `showAlts` key so an upgrading user keeps their
- * setting. Any parse failure falls back to the defaults rather than throwing.
+ * Restore criteria from `criteriaV1`, migrating anything written under an
+ * older schema (see `CRITERIA_SCHEMA_VERSION`). On a first run the alt-line
+ * rule is seeded from the pre-existing `showAlts` key so an upgrading user
+ * keeps their setting. Any parse failure falls back to the defaults rather
+ * than throwing.
+ *
+ * The migrated value is not written back here — `App` persists criteria in an
+ * effect the moment they land in state, so the next `saveCriteria` stamps the
+ * new version and the migration runs at most once per browser.
  */
 export function loadCriteria() {
   const ls = storage();
   if (!ls) return normalizeCriteria(DEFAULT_CRITERIA);
   try {
     const raw = ls.getItem(CRITERIA_STORAGE_KEY);
-    if (raw) return normalizeCriteria(JSON.parse(raw));
+    if (raw) return normalizeCriteria(migrateCriteria(JSON.parse(raw)));
   } catch {}
   return normalizeCriteria({ hideAlts: ls.getItem(LEGACY_ALTS_KEY) !== 'on' });
 }
@@ -812,7 +901,9 @@ export function saveCriteria(criteria) {
   const ls = storage();
   if (!ls) return c;
   try {
-    ls.setItem(CRITERIA_STORAGE_KEY, JSON.stringify(c));
+    // `_v` rides along in storage only; `normalizeCriteria` strips it on the
+    // way back in, so the in-memory criteria object keeps its exact shape.
+    ls.setItem(CRITERIA_STORAGE_KEY, JSON.stringify({ ...c, _v: CRITERIA_SCHEMA_VERSION }));
     ls.setItem(LEGACY_ALTS_KEY, c.hideAlts ? 'off' : 'on');
   } catch {}
   return c;

@@ -24,3 +24,22 @@ export default function VerdictChip({ edge }) {
     </span>
   );
 }
+
+/**
+ * The reason a LEAN/PASS is not rated higher, rendered as a dim annotation
+ * beside the verdict chip: a +10.8% EV wearing a bare LEAN reads as a bug;
+ * "LEAN · model >15pts off market" reads as intended caution.
+ *
+ * First reason inline, the full demotion list in the title. Renders nothing on
+ * a clean ladder or on STRONG/SOLID (their reasons never demoted them to a
+ * verdict that needs explaining).
+ */
+export function WhyNote({ edge }) {
+  if (!edge?.why?.length) return null;
+  if (edge.verdict !== 'LEAN' && edge.verdict !== 'PASS') return null;
+  return (
+    <span className="vwhy" title={edge.why.join(' · ')}>
+      {edge.why[0]}
+    </span>
+  );
+}

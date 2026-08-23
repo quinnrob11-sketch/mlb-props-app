@@ -48,6 +48,74 @@ const SITE_BY_KEY = new Map(
   DFS_SITES.map((site, order) => [site.key, { ...site, order }]),
 );
 
+/**
+ * Entry formats the breakeven selector offers. These are ASSUMPTIONS the user
+ * can switch between, not gospel — payout formats change, check the app.
+ *
+ * A DFS entry pays line × multiplier, so the per-leg breakeven is the equal
+ * per-leg probability at which the entry exactly returns the stake:
+ * multiplier^(1/picks) per leg → breakeven prob = multiplier^(-1/picks).
+ * (2-pick 3.0x → 57.7%, 3-pick 6.0x → 55.0%, 4-pick 10.0x → 56.2%.)
+ *
+ * @type {Array<{key: string, label: string, picks: number, multiplier: number}>}
+ */
+export const DFS_FORMATS = [
+  { key: "2-pick", label: "2-pick power 3.0x", picks: 2, multiplier: 3.0 },
+  { key: "3-pick", label: "3-pick power 6.0x", picks: 3, multiplier: 6.0 },
+  { key: "4-pick", label: "4-pick power 10.0x", picks: 4, multiplier: 10.0 },
+];
+
+export const DEFAULT_DFS_FORMAT = "3-pick";
+
+/** Persisted alongside `priceModeV1` / `criteriaV1`. */
+export const DFS_FORMAT_KEY = "dfsFormatV1";
+
+/** The format for a key; anything unknown falls back to the 3-pick default. */
+export function dfsFormat(key) {
+  return (
+    DFS_FORMATS.find((f) => f.key === key) ||
+    DFS_FORMATS.find((f) => f.key === DEFAULT_DFS_FORMAT)
+  );
+}
+
+/** Per-leg breakeven probability for a format: multiplier^(-1/picks). */
+export function breakevenProb(format) {
+  const f = typeof format === "string" ? dfsFormat(format) : format;
+  if (!f) return null;
+  return Math.pow(f.multiplier, -1 / f.picks);
+}
+
+function storage() {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Restore the selected format key; missing/unknown reads as the default. */
+export function loadDfsFormat() {
+  const ls = storage();
+  if (!ls) return DEFAULT_DFS_FORMAT;
+  try {
+    return dfsFormat(ls.getItem(DFS_FORMAT_KEY)).key;
+  } catch {
+    return DEFAULT_DFS_FORMAT;
+  }
+}
+
+/** Persist the format key. Returns the normalised key actually stored. */
+export function saveDfsFormat(key) {
+  const next = dfsFormat(key).key;
+  const ls = storage();
+  if (ls) {
+    try {
+      ls.setItem(DFS_FORMAT_KEY, next);
+    } catch {}
+  }
+  return next;
+}
+
 /** Finite-number coercion; anything else is "absent". */
 function num(value) {
   if (value == null || value === "") return null;
@@ -165,7 +233,15 @@ function joinNames(names) {
  * @property {DfsOffer|null} runnerUp - Softest of the sites that are NOT tied.
  * @property {number|null} gap - Points between `best` and `runnerUp`.
  * @property {number|null} cushion - Model projection minus the softest line,
- *   signed toward the side being played. The board's sort key.
+ *   signed toward the side being played. Secondary text, and a sort tiebreak.
+ * @property {number|null} modelProb - Model probability of the played side AT
+ *   THE SOFTEST LINE — the number a DFS player can actually act on, and the
+ *   board's headline + primary sort key. From the projection's distribution
+ *   when it is live; on a revived cache (dist closures dropped) it falls back
+ *   to the engine's `modelOver` when the softest line IS the book line.
+ * @property {number|null} bookProb - The consensus book's fair probability of
+ *   the same side, only when a book prices this same line (the reality
+ *   anchor). Null = "no book anchor".
  * @property {"single"|"level"|"shopped"} coverage - single: one site only, so
  *   no comparison happened. level: every site posts the same number. shopped:
  *   one site is genuinely softer.
@@ -206,6 +282,27 @@ export function dfsPlay(row) {
   const cushion =
     proj == null ? null : side === "over" ? proj - best.line : best.line - proj;
 
+  // Model P(over) at the line actually being taken. The distribution is the
+  // real source; a revived cache has null-returning dist stubs, so when the
+  // softest line is the book line the engine's own modelOver is the same
+  // number and stands in.
+  const distFn = row.detailRef?.proj?.dist?.[row.distKey];
+  let overAtBest = typeof distFn === "function" ? num(distFn(best.line)) : null;
+  if (overAtBest == null && num(row.line) === best.line)
+    overAtBest = num(row.edge?.modelOver);
+  const modelProb =
+    overAtBest == null ? null : side === "over" ? overAtBest : 1 - overAtBest;
+
+  // The book anchor only exists when a consensus book prices this same line —
+  // a fair% from a different point is not a fair% for this pick.
+  const fairOver = num(row.edge?.fairOver);
+  const bookProb =
+    fairOver != null && num(row.line) === best.line
+      ? side === "over"
+        ? fairOver
+        : 1 - fairOver
+      : null;
+
   let coverage;
   let why;
   if (sites.length === 1) {
@@ -235,6 +332,8 @@ export function dfsPlay(row) {
     runnerUp,
     gap,
     cushion,
+    modelProb,
+    bookProb,
     coverage,
     why,
     multiplier: best.multiplier,
@@ -242,23 +341,36 @@ export function dfsPlay(row) {
 }
 
 /**
- * The whole board: every row that has DFS coverage, ranked by how far the
- * softest DFS line sits from the model's projection, biggest first.
+ * The whole board, ranked by model side% minus the per-leg breakeven,
+ * descending — the margin a DFS entry actually lives or dies on. A longshot
+ * HR/SB over at 6% model probability sinks to the bottom instead of leading
+ * the board, whatever its book EV says.
  *
- * Entries whose projection is unreadable sort to the bottom rather than
- * pretending to a cushion of zero. Ties fall back to EV and then to the play
- * text, so the order is total and stable across renders.
+ * Entries with no readable model probability sort to the bottom rather than
+ * pretending to a margin of zero. Ties fall back to cushion, then EV, then the
+ * play text, so the order is total and stable across renders.
  *
  * @param {object[]} rows
+ * @param {object} [opts]
+ * @param {number} [opts.breakeven] - Per-leg breakeven probability, 0..1.
+ *   Defaults to the default format's. (A single board shares one breakeven, so
+ *   the ORDER is the same for any value — the margin is what gets displayed.)
  * @returns {DfsPlay[]}
  */
-export function buildDfsBoard(rows) {
+export function buildDfsBoard(rows, opts = {}) {
+  const breakeven = opts.breakeven ?? breakevenProb(DEFAULT_DFS_FORMAT);
   const plays = [];
   for (const row of rows || []) {
     const play = dfsPlay(row);
-    if (play) plays.push(play);
+    if (play) {
+      play.beMargin = play.modelProb == null ? null : play.modelProb - breakeven;
+      plays.push(play);
+    }
   }
   return plays.sort((a, b) => {
+    const am = a.beMargin == null ? -Infinity : a.beMargin;
+    const bm = b.beMargin == null ? -Infinity : b.beMargin;
+    if (bm !== am) return bm - am;
     const ac = a.cushion == null ? -Infinity : a.cushion;
     const bc = b.cushion == null ? -Infinity : b.cushion;
     if (bc !== ac) return bc - ac;

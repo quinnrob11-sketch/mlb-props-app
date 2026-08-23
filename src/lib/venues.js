@@ -129,11 +129,18 @@ export const VENUES = {
     label: "Novig",
     short: "NVG",
     kind: "exchange",
-    // Mobile app only. There is no web product and no documented deep link, so
-    // there is no URL to hand a browser - verified, not assumed.
-    web: false,
-    deepLink: false,
-    home: null,
+    // CORRECTED 2026-07-29 against a live `books=wide` response. Secondary
+    // sources described Novig as mobile-app-only with no web product; the odds
+    // feed disproves that. It returns a clean bookmaker-level page:
+    //   https://novig.com/event-markets/019fa9e3-ef79-7bf1-826e-0470b7b6c03b
+    // and an outcome-level link carrying an UNRESOLVED template placeholder:
+    //   https://novig.com/events/{uuid}/oddsapi/{wager}
+    // The placeholder is why `deepLink` is true but outcome links still get
+    // rejected by `hasUnresolvedPlaceholder` below and fall back to the event
+    // page. See that guard - it is general, not Novig-specific.
+    web: true,
+    deepLink: true,
+    home: "https://novig.com",
   },
 
   // ── DFS (line + payout multiplier, not a two-sided price) ─────────────────
@@ -309,7 +316,76 @@ const str = (value) => {
  * @returns {VenueLink|null} null for an unknown venue, a web-less venue, or a
  *   venue with nothing to link to at any tier.
  */
-export function venueLink(key, ctx = {}) {
+/**
+ * True when a link still contains an unsubstituted `{placeholder}`.
+ *
+ * The odds feed hands back templated URLs for some venues — Novig's outcome
+ * links arrive as `https://novig.com/events/{uuid}/oddsapi/{wager}`, where
+ * `{wager}` is meant to be filled in by the caller. Opening one verbatim lands
+ * the user on a broken page, which is worse than dropping a tier and opening
+ * the event page that definitely works.
+ *
+ * Deliberately general rather than a Novig special case: any venue can start
+ * returning a template, and a link we cannot complete is not a link.
+ *
+ * @param {string} url
+ * @returns {boolean}
+ */
+function hasUnresolvedPlaceholder(url) {
+  return /\{[^}]*\}/.test(url);
+}
+
+/**
+ * Link preferences the user controls in Settings (persisted as `linkPrefsV1`).
+ *
+ * @typedef {object} LinkPrefs
+ * @property {number} [novigStake] - Stake prefilled into Novig's order slip.
+ *   VERIFIED live 2026-07-31: `.../oddsapi/{wager}` with a number substituted
+ *   redirects to `novig.com/?orderslip_outcomes=<uuid>&amount=<n>` with the
+ *   exact side/line/price loaded in the order slip and the Take/Make toggle
+ *   ready. Prefilling an amount places nothing — Novig still requires login
+ *   and an explicit confirm.
+ * @property {string} [mgmState] - Two-letter state code for BetMGM, whose
+ *   links arrive as `https://sports.{state}.betmgm.com/...`. No sane default
+ *   exists, so with this unset those links fall back a tier instead.
+ */
+
+export const DEFAULT_NOVIG_STAKE = 10;
+
+/**
+ * Fill the template placeholders we have VERIFIED values for; leave anything
+ * unknown in place so `usable()` still rejects it. Case-per-placeholder, not
+ * per-venue: any book could adopt `{state}` tomorrow.
+ *
+ * @param {string} url
+ * @param {LinkPrefs} prefs
+ * @returns {string}
+ */
+export function completeTemplate(url, prefs = {}) {
+  let out = url;
+  const stake = prefs.novigStake ?? DEFAULT_NOVIG_STAKE;
+  if (Number.isFinite(stake) && stake > 0) {
+    out = out.replaceAll("{wager}", String(Math.round(stake)));
+  }
+  const state = (prefs.mgmState || "").trim().toLowerCase();
+  if (/^[a-z]{2}$/.test(state)) {
+    out = out.replaceAll("{state}", state);
+  }
+  return out;
+}
+
+/**
+ * A link is usable only if, after filling the placeholders we can complete,
+ * nothing is left to fill in.
+ */
+function usable(raw, prefs) {
+  const url = str(raw);
+  if (!url) return null;
+  const done = completeTemplate(url, prefs);
+  return hasUnresolvedPlaceholder(done) ? null : done;
+}
+
+export function venueLink(key, ctx = {}, prefs = {}) {
   const found = venue(key);
   if (!found) return null;
   // No web product => nowhere to click, at any tier.
@@ -323,13 +399,13 @@ export function venueLink(key, ctx = {}) {
     exact: granularity === "outcome" && found.deepLink === true,
   });
 
-  const outcome = str(ctx.link);
+  const outcome = usable(ctx.link, prefs);
   if (outcome) return settle(outcome, "outcome");
 
-  const market = str(ctx.marketLink);
+  const market = usable(ctx.marketLink, prefs);
   if (market) return settle(market, "market");
 
-  const event = str(ctx.eventLink);
+  const event = usable(ctx.eventLink, prefs);
   if (event) return settle(event, "event");
 
   const built = BUILDERS[found.key]?.(ctx) || null;
@@ -371,5 +447,76 @@ export function rowVenue(key, ctx = {}) {
     link: link?.url ?? null,
     exact: link?.exact ?? false,
     granularity: link?.granularity ?? null,
+    // The untouched outcome link, template placeholders and all. Rows are
+    // built before user preferences are known; the UI re-completes this with
+    // `completeTemplate(rawLink, loadLinkPrefs())` at render, which is how a
+    // BetMGM `{state}` link becomes exact once the user sets a state code.
+    rawLink: str(ctx.link) || null,
+  };
+}
+
+/** localStorage key for LinkPrefs. */
+export const LINK_PREFS_KEY = "linkPrefsV1";
+
+/**
+ * Read LinkPrefs from an injected storage (defaults to localStorage when
+ * present — safe under SSR/tests where it is absent).
+ *
+ * @returns {LinkPrefs}
+ */
+export function loadLinkPrefs(storage) {
+  const s =
+    storage ?? (typeof localStorage !== "undefined" ? localStorage : null);
+  if (!s) return {};
+  try {
+    const raw = JSON.parse(s.getItem(LINK_PREFS_KEY) || "{}");
+    const prefs = {};
+    const stake = Number(raw.novigStake);
+    if (Number.isFinite(stake) && stake > 0) prefs.novigStake = stake;
+    if (typeof raw.mgmState === "string") prefs.mgmState = raw.mgmState;
+    return prefs;
+  } catch {
+    return {};
+  }
+}
+
+/** Persist LinkPrefs. Merges nothing — callers pass the whole object. */
+export function saveLinkPrefs(prefs, storage) {
+  const s =
+    storage ?? (typeof localStorage !== "undefined" ? localStorage : null);
+  if (!s) return;
+  try {
+    s.setItem(LINK_PREFS_KEY, JSON.stringify(prefs || {}));
+  } catch {
+    /* quota — links just keep their defaults */
+  }
+}
+
+/**
+ * The best link for an offer once user preferences are applied: if the raw
+ * templated outcome link completes cleanly under `prefs`, it wins (outcome
+ * tier, exact for a deep-linkable venue); otherwise whatever the parse-time
+ * hierarchy resolved stands.
+ *
+ * @param {RowVenue & {rawLink?: string|null}} offer
+ * @param {LinkPrefs} prefs
+ * @returns {{url: string|null, exact: boolean, granularity: string|null}}
+ */
+export function resolveOfferLink(offer, prefs = {}) {
+  if (offer?.rawLink) {
+    const done = completeTemplate(offer.rawLink, prefs);
+    if (!hasUnresolvedPlaceholder(done)) {
+      const found = venue(offer.key);
+      return {
+        url: done,
+        exact: found?.deepLink === true,
+        granularity: "outcome",
+      };
+    }
+  }
+  return {
+    url: offer?.link ?? null,
+    exact: offer?.exact ?? false,
+    granularity: offer?.granularity ?? null,
   };
 }

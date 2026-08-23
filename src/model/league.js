@@ -28,6 +28,38 @@ export const LEAGUE_AVG = {
   obp: 0.315,
   pitchesPerBF: 3.9,
   strikePct: 0.64,
+
+  // ── Starting-pitcher baselines ────────────────────────────────────────────
+  //
+  // The four rates above are LEAGUE-WIDE: they mix starters and relievers.
+  // That is right when the quantity being compared is also league-wide — the
+  // opponent-lineup terms in `projectPitcher` divide a team's batting rate by
+  // the league's batting rate, and both sides match.
+  //
+  // It is WRONG as a prior for a starter, and wrong as the denominator when
+  // the numerator is a starter's rate. Relievers are a different population:
+  // they throw an inning at a time, so they strike out more, walk more, and
+  // allow fewer hits and homers. Measured over 8,138 starts against 26,682
+  // relief appearances by `tools/backtest.mjs`:
+  //
+  //                starters   relievers   league-wide prior used before
+  //     K / BF       0.2191     0.2259     0.221   -> starters' K biased UP
+  //     H / BF       0.2223     0.2127     0.221   -> hits biased DOWN
+  //     BB / BF      0.0797     0.0946     0.082   -> walks biased UP
+  //     HR / BF      0.0327     0.0281     0.031   -> homers biased DOWN
+  //
+  // Those four biases are exactly the pattern the backtest reported: strikeouts
+  // over-projected, hits allowed under-projected, in both seasons tested. The
+  // HR gap is the largest at 5.2%, and it does the most damage because HR
+  // shrinks hardest (strength 120), so a low prior drags every starter with it.
+  //
+  // `projectBatter` needs these too. Its `spK` / `spHit` / `spHr` multipliers
+  // divide a STARTER's rate by a league rate, so an average starter has to come
+  // out at exactly 1.0 or every batter on the slate is pushed the same way.
+  spKRate: 0.2191,
+  spBbRate: 0.0797,
+  spHRate: 0.2223,
+  spHrRate: 0.0327,
 };
 
 /**

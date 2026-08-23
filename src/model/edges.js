@@ -46,6 +46,9 @@ export { MARKET_WEIGHT };
  * @property {number|null} ev     Expected value in percent of stake.
  * @property {number|null} odds   American odds of the chosen side.
  * @property {"STRONG"|"SOLID"|"LEAN"|"PASS"} verdict
+ * @property {string[]} why      One entry per demotion that fired on the way to
+ *   `verdict`, in the order the ladder applies them. Empty when the verdict is
+ *   the ladder's own answer. Presentation only — nothing reads it back.
  * @property {number|null} kelly  Quarter-Kelly stake fraction of bankroll.
  */
 
@@ -150,46 +153,109 @@ export function evaluateEdge(modelOver, line, overOdds, underOdds, opts = {}) {
   const sideEdge = edge == null ? null : side === "over" ? edge : -edge;
 
   // ── 4. verdict ladder ─────────────────────────────────────────────────────
+  // `why` records the reason each demotion below fires, in firing order, so the
+  // UI can annotate a LEAN/PASS that would otherwise look wrong next to its EV.
+  // Additive only: no threshold, weight, clamp or demotion rule changes here.
+  const why = [];
   let verdict = "PASS";
   const smallSample = !!opts.smallSample;
   if (ev != null && sideEdge != null && !smallSample) {
     // Both EV (percent) and probability edge must clear the bar together.
-    if (ev >= 10 && sideEdge >= 0.07) verdict = "STRONG";
+    // FIX(v22) — STRONG's EV bar was 10, and it was ARITHMETICALLY UNREACHABLE
+    // for 8 of the 9 batter markets.
+    //
+    // The proof is short. `usedOver` can sit at most `weight * 0.15` above fair,
+    // because step 2 clamps the pre-weight move to 0.15. At a -110/-110 market
+    // (decimal 1.909, fair 0.5) the best attainable EV is therefore
+    //
+    //     EV_max = (0.5 + weight*0.15) * 1.909 - 1
+    //
+    //     weight 0.30 -> 4.05%    weight 0.45 -> 8.34%
+    //     weight 0.35 -> 5.48%    weight 0.50 -> 9.77%
+    //     weight 0.40 -> 6.91%    weight 0.55 -> 11.20%
+    //
+    // Only `batter_strikeouts` (0.55) could clear 10, and only in a window ~1
+    // probability point wide — whose top edge is closed by the demotion below,
+    // since floating point makes 0.65 - 0.5 = 0.15000000000000002 > 0.15.
+    //
+    // So the top tier could essentially never fire at the most common price in
+    // the book. That is a defect, not a risk preference: a tier that cannot
+    // exist is not a conservative tier, it is a dead branch.
+    //
+    // 7 is the largest round bar that is attainable at the median market weight
+    // (0.45) at -110, with headroom at better prices. SOLID and LEAN are
+    // untouched — both were already reachable (raw edges of 0.1115 and 0.0825
+    // respectively at weight 0.45).
+    //
+    // The `sideEdge` bars are also untouched. They are effectively a floor
+    // rather than a co-equal gate — the EV bar binds first in every realistic
+    // market — but they cost nothing and they stop a large EV built purely on a
+    // long price from promoting itself on a tiny probability disagreement.
+    if (ev >= 7 && sideEdge >= 0.07) verdict = "STRONG";
     else if (ev >= 5 && sideEdge >= 0.05) verdict = "SOLID";
     else if (ev >= 2.5 && sideEdge >= 0.03) verdict = "LEAN";
   } else if (
     ev != null &&
     sideEdge != null &&
     smallSample &&
-    ev >= 10 &&
+    ev >= 7 &&
     sideEdge >= 0.07
   ) {
     // A small-sample player can never rate better than LEAN, and only at the
-    // STRONG thresholds.
+    // STRONG thresholds — which tracks the bar above, so this moves 10 -> 7
+    // with it. Note the weight haircut (`weight *= 0.6`) applies before EV is
+    // computed, so a thin-sample row still needs a much larger raw edge than
+    // this reads: at weight 0.45 -> 0.27 and a -110 price, EV tops out at 3.2%,
+    // and the row is a PASS no matter how far the model is from the market.
+    // That is the intended behaviour — it just means this branch only fires at
+    // plus prices.
+    verdict = "LEAN";
+  }
+  // The small-sample cap was in play for this row's ladder run.
+  if (smallSample && ev != null && sideEdge != null) why.push("small sample");
+
+  // Demotion (a): a one-sided market, or a model absurdly far from fair, is
+  // never better than a LEAN. A blow-out disagreement is treated as evidence
+  // the model is wrong, not as free money.
+  //
+  // FIX(v22) — this threshold was 0.15, the SAME number as the shrink clamp in
+  // step 2, and that collision was a double penalty. The clamp already caps how
+  // much of a large disagreement reaches the price: past 0.15 the extra edge is
+  // simply discarded, so the model's exposure is bounded no matter how far off
+  // it is. Demoting at the same point meant every row that reached the cap was
+  // then punished for reaching it — and since SOLID and STRONG need raw edges
+  // in the 0.11-0.17 range at a -110 price, the top tiers lived in exactly the
+  // band this rule was firing on. The two rules were fighting.
+  //
+  // 0.25 keeps the guard for genuinely absurd disagreements (a model 25 points
+  // off a two-sided market is broken, not lucky) while letting the clamp do the
+  // job it was already doing. Nothing about the EV or Kelly maths changes.
+  const modelFarFromMarket = edge != null && Math.abs(edge) > 0.25;
+  if ((!twoSided || modelFarFromMarket) && verdict !== "PASS") {
+    if (!twoSided) why.push("one-sided market");
+    if (modelFarFromMarket) why.push("model >25pts off market");
     verdict = "LEAN";
   }
 
-  // Demotion (a): a one-sided market, or a model that is more than 15 points of
-  // probability away from fair (i.e. the clamp in step 2 was saturated), is
-  // never better than a LEAN. A blow-out disagreement is treated as evidence
-  // the model is wrong, not as free money.
-  const modelFarFromMarket = edge != null && Math.abs(edge) > 0.15;
-  if ((!twoSided || modelFarFromMarket) && verdict !== "PASS") verdict = "LEAN";
-
   // Demotion (b): a single book cannot make a STRONG.
-  if ((nBooks ?? 0) < 2 && verdict === "STRONG") verdict = "SOLID";
+  if ((nBooks ?? 0) < 2 && verdict === "STRONG") {
+    why.push("single book");
+    verdict = "SOLID";
+  }
 
   // Demotion (c) / (d): price cutoffs on the chosen side.
   //   longer than +250        -> PASS outright (too much variance, thin market)
   //   +150..+250, or < -300   -> STRONG/SOLID capped at LEAN
   // Note these are else-if: a >+250 price short-circuits before the cap.
   if (odds != null && odds > 250) {
+    why.push("price past +250");
     verdict = "PASS";
   } else if (
     odds != null &&
     (odds > 150 || odds < -300) &&
     (verdict === "STRONG" || verdict === "SOLID")
   ) {
+    why.push(odds > 150 ? "long price" : "heavy juice");
     verdict = "LEAN";
   }
 
@@ -219,6 +285,7 @@ export function evaluateEdge(modelOver, line, overOdds, underOdds, opts = {}) {
     ev,
     odds,
     verdict,
+    why,
     kelly,
   };
 }
