@@ -376,11 +376,32 @@ export function projectPitcher(input) {
   //     projection toward a typical start without moving the slate's average.
   const shrinkToMean = (value, anchor, slope) => anchor + slope * (value - anchor);
 
+  // LEVEL CALIBRATION (2026-08-23) — fitted on a lookahead-free replay of
+  // THIS model (exact loadSlate wiring) over Aug 3-22 2026: fit Aug 3-15
+  // (344 starts), holdout Aug 16-22 (190). Harness: /tmp/backtest2/run2.mjs.
+  // Ship rule: directionally consistent in BOTH windows, |fit bias| >= ~3%,
+  // and the fit-window factor must improve the holdout.
+  //
+  //   K    +3.2 / +7.4  -> K_LEVEL 0.969 (fit ratio). Holdout after: +4.0%.
+  //        The K>4.5 reliability gap (+4.0/+5.5pp overconfident on the over)
+  //        agrees with the mean bias, so this is a level error, not shape.
+  //   BB   -2.9 / -6.9  -> BB_LEVEL 1.030. Holdout after: -4.1%.
+  //   outs +1.5 / +2.9  -> left 1.0 (under threshold in the fit window).
+  //   H    +5.1 / +0.4  -> left 1.0 (does not replicate: the fit factor
+  //        would overshoot the holdout to -4.5%, worse than it started).
+  //   ER   +7.5 / -3.7  -> left 1.0 (direction flips).
+  //
+  // Applied AFTER shrinkToMean so the factor reaches the displayed projection
+  // and the distribution mean identically (dist.k re-derives its per-BF rate
+  // from projKAdj; dist.bb reads projBBAdj directly).
+  const K_LEVEL = 0.969;
+  const BB_LEVEL = 1.030;
+
   const projOutsAdj = Math.max(3, shrinkToMean(projOuts, 15.5, 0.89));
   const projHAdj = Math.max(0.2, shrinkToMean(projH, 4.88, 0.89));
-  const projKAdj = Math.max(0.2, shrinkToMean(projK, 4.78, 0.96));
+  const projKAdj = Math.max(0.2, shrinkToMean(projK, 4.78, 0.96) * K_LEVEL);
   const projERAdj = Math.max(0.2, shrinkToMean(projER, 2.44, 0.78));
-  const projBBAdj = Math.max(0.1, shrinkToMean(projBB, 1.72, 0.75));
+  const projBBAdj = Math.max(0.1, shrinkToMean(projBB, 1.72, 0.75) * BB_LEVEL);
 
   // Integer BF used as the binomial trial count for strikeouts.
   const bfTrials = Math.max(1, Math.round(projBF));

@@ -70,6 +70,56 @@ const MIN_CORRECTION = 0.005;
  * Positive entries mean the model reads too high and is pulled down.
  */
 export const CALIBRATION = {
+  // ── RE-DERIVED 2026-08-23 against the LEVEL-CALIBRATED model ─────────────
+  //
+  // The whole table was rebuilt, because the model changed underneath it
+  // twice over: the Aug 3-22 lookahead-free replay (fit Aug 3-15 / holdout
+  // Aug 16-22; /tmp/backtest2 run3.mjs + run3b.mjs) first showed the OLD
+  // table now WORSENED every one of the 8 pitcher lines it touched — the
+  // model had drifted past its patches — and then HR_LEVEL/R_LEVEL/RBI_LEVEL
+  // (batter) and K_LEVEL/BB_LEVEL (pitcher) absorbed most of the remaining
+  // level error into the model itself, which is this file's stated end state.
+  //
+  // What survives is what the fresh replay measured as a consistent SHAPE
+  // residual on the calibrated model, same rule as always (>= 0.5pp in both
+  // windows, same sign, mean not maximum). Gaps (pred - emp, pp, fit/hold):
+  //
+  //     batter_hits@0.5            +2.3 / +1.7   -> +0.0200
+  //     batter_total_bases@1.5     +1.8 / +2.9   -> +0.0235
+  //     batter_hits_runs_rbis@2.5  -0.7 / -0.9   -> -0.0080
+  //     pitcher_strikeouts@4.5     +1.4 / +2.8   -> +0.0210
+  //     pitcher_strikeouts@7.5     -3.0 / -0.5   -> -0.0175
+  //     pitcher_outs@14.5          +0.6 / +3.3   -> +0.0195
+  //
+  // DELETED (measured clean, or the windows disagree — correcting noise just
+  // relocates it): batter_hits@2.5 (unmeasured this round), batter_rbis@1.5
+  // (+0.6/-0.2 flips), batter_total_bases@0.5 (unmeasured), HRR@1.5
+  // (+0.5/-1.1 flips), HR@0.5 (+0.2/+0.2 — the model now prices it
+  // honestly), K@5.5 (-0.7/+0.3), K@6.5 (-2.1/+1.8), outs@16.5 (0.0 fit),
+  // outs@17.5 (-0.5/+4.5), outs@18.5 (-0.1 fit), and the entire old
+  // pitcher_outs negative block, whose sign the fresh window contradicts.
+  batter_hits: {
+    0.5: 0.02,
+  },
+  batter_total_bases: {
+    1.5: 0.0235,
+  },
+  batter_hits_runs_rbis: {
+    2.5: -0.008,
+  },
+  pitcher_strikeouts: {
+    4.5: 0.021,
+    // 7.5 measured -3.0/-0.5 but was REJECTED: the holdout gap sits exactly
+    // at the 0.5pp floor and applying the correction nudged holdout Brier
+    // WORSE (.0852 -> .0854). Ship-only-if-both-windows-improve.
+  },
+  pitcher_outs: {
+    14.5: 0.0195,
+  },
+};
+
+/* ── The superseded 2025/2026-season table, kept for the record ────────────
+export const CALIBRATION_2025 = {
   // ── Batter entries, RE-DERIVED against the v31 model ─────────────────────
   //
   // The previous values were fitted before v31 corrected the contact/power
@@ -158,6 +208,7 @@ export const CALIBRATION = {
   // and -0.2pp. That is a market the model already prices honestly, and adding
   // a correction to it would be inventing one.
 };
+────────────────────────────────────────────────────────────────────────── */
 
 /**
  * Apply the measured correction for a market and line.

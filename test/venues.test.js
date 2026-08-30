@@ -152,30 +152,34 @@ test("the venue-specific builder sits between the feed's links and the brand", (
   assert.equal(fed.granularity, "outcome");
 });
 
-test("novig has nowhere to click and is never reported as exact", () => {
-  // No web product, no deep link — verified, not assumed.
-  assert.equal(VENUES.novig.web, false);
-  assert.equal(VENUES.novig.deepLink, false);
+test("novig links: exact when the feed supplies an outcome link, brand otherwise", () => {
+  // REWRITTEN 2026-08: the old test asserted web:false/deepLink:false — the
+  // "app-only" belief came from secondary sources and the LIVE feed disproved
+  // it (outcome links arrive as novig.com/events/{uuid}/oddsapi/{wager} and
+  // resolve to the order-slip page). venues.js now says so; this test agrees
+  // with the verified behavior instead of the stale assumption.
+  assert.equal(VENUES.novig.web, true);
+  assert.equal(VENUES.novig.deepLink, true);
 
-  const contexts = [
-    {},
-    { link: "https://novig.us/bet/123" },
-    { marketLink: "https://novig.us/market/1" },
-    { eventLink: "https://novig.us/event/1" },
-    { link: "https://novig.us/bet/123", marketLink: "https://novig.us/m" },
-  ];
-  for (const ctx of contexts) {
-    const link = venueLink("novig", ctx);
-    assert.equal(link, null, "novig must not produce a browser destination");
-  }
+  // A feed-supplied outcome link is a real, exact destination.
+  const fed = venueLink("novig", { link: "https://novig.us/bet/123" });
+  assert.equal(fed.exact, true);
+  assert.equal(fed.granularity, "outcome");
 
-  // ...and the row descriptor says so too, rather than omitting the venue.
+  // With nothing from the feed, the brand home page is the fallback — never
+  // null, never claimed exact.
+  const bare = venueLink("novig", {});
+  assert.equal(bare.url, "https://novig.com");
+  assert.equal(bare.exact, false);
+  assert.equal(bare.granularity, "brand");
+
+  // ...and the row descriptor carries the working link.
   const row = rowVenue("novig", { link: "https://novig.us/bet/123" });
   assert.equal(row.key, "novig");
   assert.equal(row.kind, "exchange");
-  assert.equal(row.link, null);
-  assert.equal(row.exact, false);
-  assert.equal(row.granularity, null);
+  assert.equal(row.link, "https://novig.us/bet/123");
+  assert.equal(row.exact, true);
+  assert.equal(row.granularity, "outcome");
 });
 
 test("an unknown venue produces nothing at all", () => {
@@ -309,17 +313,20 @@ test("a DFS venue reaches the row with a multiplier and no two-sided price", () 
   ]);
 });
 
-test("a non-linkable venue is listed with its price but no destination", () => {
+test("a venue with no feed link still lists its price, with the brand fallback", () => {
+  // REWRITTEN 2026-08 alongside the novig-links test above: novig is
+  // web-linkable now, so a priced row without a feed outcome link carries the
+  // brand home page (exact:false) instead of a dead null.
   const odds = parseEventOdds(payload());
   const rows = attachLines(markets, "Pedro Ramirez", odds, projection, false);
   const row = rows.find((r) => r.market === "batter_hits" && !r.alt);
 
   const nv = row.venues.find((v) => v.key === "novig");
-  assert.ok(nv, "novig's price is real even though its link is not");
+  assert.ok(nv, "novig's price is real even without a feed link");
   assert.equal(nv.kind, "exchange");
   assert.equal(nv.over, 135);
   assert.equal(nv.under, -150);
-  assert.equal(nv.link, null);
+  assert.equal(nv.link, "https://novig.com");
   assert.equal(nv.exact, false);
   // And it did not drag the consensus line or the book count with it.
   assert.equal(nv.consensus, false);

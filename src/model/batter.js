@@ -246,6 +246,39 @@ const CONTACT_SHARE = 0.989;
 const POWER_SHARE = 1.022;
 
 /**
+ * LEVEL CALIBRATION (2026-08-23) — fitted on a lookahead-free replay of THIS
+ * model (v32 lineage, exact loadSlate wiring: as-of-date summed game logs,
+ * actual posted lineups, live lg, opposing starter's raw talent rates) over
+ * Aug 3-22 2026: fit window Aug 3-15 (3,085 batter-games), holdout Aug 16-22
+ * (1,707). Harness: /tmp/backtest2/run2b.mjs; rows2b.json.
+ *
+ * A factor ships only when the bias is directionally consistent in BOTH
+ * windows, |fit bias| >= ~3%, and applying the fit-window factor improves the
+ * holdout. Measured bias% (proj/actual - 1), fit / holdout:
+ *
+ *   HR   +5.8 / +9.9  -> HR_LEVEL  0.945 (fit ratio). Holdout after: +3.9%.
+ *   R    +7.2 / +6.3  -> R_LEVEL   0.933.             Holdout after: -0.8%.
+ *   RBI  +3.8 / +3.5  -> RBI_LEVEL 0.963.             Holdout after: -0.3%.
+ *   TB   +4.3 / +5.0  -> no own factor: TB is derived (1B+2·2B+3·3B+4·HR),
+ *        and HR_LEVEL alone takes the holdout to ~+3.0%. A separate TB scale
+ *        would break the identity with the hit-type decomposition.
+ *   H    +3.0 / +1.7  -> left 1.0 (fit at threshold, holdout marginal; the
+ *        HR_LEVEL cut already lowers total hitPA slightly).
+ *   HRR  +4.3 / +3.3  -> no own factor: sum of the three legs above.
+ *   K    +0.3 / -0.5, PA +0.3 / -0.0 -> clean.
+ *   SB   +1.3 / +30.7 -> left 1.0 (fit-window signal absent; the holdout
+ *        number is small-n noise on a rare event).
+ *
+ * HR_LEVEL multiplies the HR rate (inside the clamp, beside POWER_SHARE) so
+ * it propagates coherently to projHR, projTB, the TB pmf, dist.hr and the
+ * H+R+RBI legs. R_LEVEL / RBI_LEVEL multiply the run/RBI means, which feed
+ * dist.runs / dist.rbi / dist.hrr directly.
+ */
+const HR_LEVEL = 0.945;
+const R_LEVEL = 0.933;
+const RBI_LEVEL = 0.963;
+
+/**
  * Stolen bases run ~3.2% high in both seasons. Unlike the split above this is a
  * plain level error, so it gets a plain scale rather than being folded into the
  * contact/power pair — the two have nothing to do with each other.
@@ -576,7 +609,7 @@ export function projectBatter(input) {
   // FIX(v31) — the CONTACT/POWER SPLIT. See the constants below.
   const hrPARaw = clamp(
     rates.hr * (platoon === 1 ? 1 : (platoon - 1) * 1.8 + 1) * spHr * parkHrWeather *
-      POWER_SHARE,
+      POWER_SHARE * HR_LEVEL,
     0.002, 0.1,
   );
 
@@ -651,8 +684,8 @@ export function projectBatter(input) {
   // (`platoon * 0.4 + 0.6` passes through only 40% of the platoon edge because
   // runs/RBI depend as much on teammates as on the batter) x the run context
   // from step 5. RBI keeps the same unexplained 0.975 haircut as hits.
-  const projR = pa * rates.run * (platoon * 0.4 + 0.6) * runContext;
-  const projRBI = pa * rates.rbi * (platoon * 0.4 + 0.6) * runContext * 0.975;
+  const projR = pa * rates.run * (platoon * 0.4 + 0.6) * runContext * R_LEVEL;
+  const projRBI = pa * rates.rbi * (platoon * 0.4 + 0.6) * runContext * 0.975 * RBI_LEVEL;
 
   // H+R+RBI is a plain sum of the three means (correct in expectation: a solo
   // HR contributes 1 + 1 + 1 = 3).

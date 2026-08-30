@@ -7,7 +7,8 @@ import { Fragment } from 'react';
 import { fmt } from '../lib/format.js';
 import { matchesQuery, byConviction } from './rows.js';
 import { explainEmpty } from './filters.js';
-import VerdictChip, { WhyNote } from './VerdictChip.jsx';
+import VerdictChip, { WhyNote, TrackChip } from './VerdictChip.jsx';
+import { trackRank } from '../model/trackRecord.js';
 import VenueLinks, { VenueLegend } from './VenueLinks.jsx';
 import MakerPanel, { useKalshiBooks } from './MakerPanel.jsx';
 import DistributionChart from './DistributionChart.jsx';
@@ -28,9 +29,15 @@ export default function BestBets({
   // stake, then book agreement. See `byConviction` in rows.js for why EV alone
   // was the wrong key. `topCount` is how many plays share the best tier on the
   // board, so the divider below is drawn from the data rather than a guess.
-  const { ordered: sorted, topCount, topTier } = byConviction(
-    rows.filter((row) => matchesQuery(row, query)),
-  );
+  // Split by TRACK RECORD before ordering: markets where the replay measured
+  // no model edge at all ('none' tier) never mix with the playable board —
+  // they render below their own divider, for information only.
+  const matched = rows.filter((row) => matchesQuery(row, query));
+  const playable = matched.filter((row) => trackRank(row.market, row.line) > 0);
+  const noEdge = matched.filter((row) => trackRank(row.market, row.line) === 0);
+  const { ordered: playOrdered, topCount, topTier } = byConviction(playable);
+  const sorted = [...playOrdered, ...byConviction(noEdge).ordered];
+  const noEdgeStart = playOrdered.length;
 
   // Hook order is fixed: this runs before any of the early returns below.
   const books = useKalshiBooks(sorted, priceMode === 'maker');
@@ -93,8 +100,16 @@ export default function BestBets({
           <Fragment key={row.key}>
           {/* First card after the top group gets a full-width rule before it,
               so where conviction drops off is visible rather than inferred. */}
-          {topCount > 0 && i === topCount && (
+          {topCount > 0 && i === topCount && i < noEdgeStart && (
             <div className="rest-divider">Below this line the engine is less sure</div>
+          )}
+          {/* The hard floor: markets the replay measured NO model edge in.
+              These are never "take" candidates at any rank. */}
+          {noEdgeStart > 0 && i === noEdgeStart && (
+            <div className="rest-divider noedge">
+              ✕ No measured edge in these markets — the market's price is the best
+              estimate available. Information only, not bets.
+            </div>
           )}
           <div className={`card ${edge.verdict === 'STRONG' ? 'strong' : ''} ${isTop ? 'top-play' : ''}`}>
             <div className="card-top">
@@ -134,6 +149,7 @@ export default function BestBets({
               </div>
               <div className="vwrap">
                 <VerdictChip edge={edge} />
+                <TrackChip market={row.market} line={row.line} />
                 <WhyNote edge={edge} />
               </div>
             </div>
@@ -216,6 +232,17 @@ export default function BestBets({
     </div>
     {/* ONE degree-mark legend per board, instead of a note per card. */}
     {priceMode !== 'maker' && <VenueLegend rows={sorted} />}
+    {/* Track-record legend: what the chips mean and where the numbers come
+        from, once per board. */}
+    <div className="trlegend">
+      <b>Track record</b> (replayed vs real games, Aug 3–22: 534 starts, 4,792
+      batter-games) — <span className="tchip t-proven">✓ PROVEN</span> model
+      beat naive side-picking outright at this line; take on model probability.{' '}
+      <span className="tchip t-ranked">◆ TOP PICKS ONLY</span> only the model's
+      highest-ranked picks beat the base rate — trust it near the top of this
+      board, not mid-list. <span className="tchip t-none">✕ NO EDGE</span> the
+      market already prices this right.
+    </div>
     </>
   );
 }

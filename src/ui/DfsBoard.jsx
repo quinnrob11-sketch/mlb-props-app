@@ -29,6 +29,7 @@ import {
 } from "./dfsRows.js";
 import DistributionChart from "./DistributionChart.jsx";
 import VenueLinks, { VenueLegend } from "./VenueLinks.jsx";
+import { TrackChip } from "./VerdictChip.jsx";
 
 /** The multipliers are assumptions the user can switch, not gospel. */
 const FORMAT_TITLE = "payout formats change — check the app";
@@ -173,6 +174,7 @@ export default function DfsBoard({
 
               <div className="card-sub">
                 {row.matchup} · {fmt.time(row.gameDate)}
+                <TrackChip market={row.market} line={play.line} />
                 {play.coverage === "single" && (
                   <span className="flag">1 SITE ONLY</span>
                 )}

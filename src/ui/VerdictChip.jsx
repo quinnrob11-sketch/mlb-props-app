@@ -43,3 +43,22 @@ export function WhyNote({ edge }) {
     </span>
   );
 }
+
+/**
+ * The track-record chip: what the model has PROVEN in this market at this
+ * line, from the Aug 3-22 replay (src/model/trackRecord.js). This is the
+ * "is this real?" answer, per row: ✓ PROVEN takes on its own; ◆ TOP PICKS
+ * ONLY earns only near the top of the ranked board; ✕ NO EDGE is shown for
+ * information and should not be bet on model probability.
+ */
+import { trackRecord } from '../model/trackRecord.js';
+
+export function TrackChip({ market, line }) {
+  const tr = trackRecord(market, line);
+  if (!tr) return null;
+  return (
+    <span className={`tchip t-${tr.tier}${tr.measured ? '' : ' t-unmeasured'}`} title={tr.note}>
+      {tr.label}
+    </span>
+  );
+}
