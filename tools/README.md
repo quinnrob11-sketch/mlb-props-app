@@ -21,3 +21,8 @@ They need Playwright, which is deliberately NOT a dependency (it would add
 - `backtest-kalshi.mjs` — the same replay traded against real settled Kalshi
   KXMLBKS / KXMLBOUTS prices with the bot's own decision code. Results and
   method: `docs/KALSHI-BACKTEST.md`.
+- `backtest-kalshi-batters.mjs` — the batter replay (extended to Jul 10)
+  traded against settled KXMLBHIT / TB / HR / RBI / HRR prices, same rules.
+  Method and results: `docs/KALSHI-BATTER-BACKTEST.md`. Kalshi plumbing shared
+  by both Kalshi tools (cached public fetches, doubleheader-aware ticker parse,
+  candle quotes, bootstrap statistics) lives in `kalshi-common.mjs`.

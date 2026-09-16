@@ -130,6 +130,9 @@ const pitcherPeople = await people(starterIds, 'pitching', 'pitchprior');
 
 const leagueBefore = makeLeagueBefore(teamLogs);
 
+// For tools that price real markets off this replay (backtest-kalshi-batters.mjs).
+export { schedule, games, boxes };
+
 // ── rows ────────────────────────────────────────────────────────────────────
 function starterInput(id, date, park, oppTeamId, lg) {
   const logs = pitchLogs.get(id) || [];
