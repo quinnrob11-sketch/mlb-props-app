@@ -4,6 +4,7 @@
 //   node bot/run.mjs --live          places orders ONLY if bot/config.json also
 //                                    has "live": true and API keys are set
 //   node bot/run.mjs --date 2026-09-17 --config path/to/config.json
+//   node bot/run.mjs --state-dir path/to/dir   journal + state somewhere other than bot/state
 //
 // Safety, in the order it is checked:
 //   1. bot/STOP exists            -> exit immediately, nothing fetched
@@ -27,7 +28,7 @@ const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(`--${name}`);
 const opt = (name, dflt) => (argv.includes(`--${name}`) ? argv[argv.indexOf(`--${name}`) + 1] : dflt);
 
-const STATE_DIR = path.join(HERE, 'state');
+const STATE_DIR = path.resolve(opt('state-dir', path.join(HERE, 'state')));
 const STOP_FILE = path.join(HERE, 'STOP');
 const LOCK_FILE = path.join(STATE_DIR, 'run.lock');
 const todayEt = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
@@ -45,7 +46,7 @@ export async function main() {
 
   // Lock: one run at a time; a lock older than 30 minutes is a crashed run.
   if (fs.existsSync(LOCK_FILE) && Date.now() - fs.statSync(LOCK_FILE).mtimeMs < 30 * 60e3) {
-    log('another run is in progress (bot/state/run.lock) — exiting');
+    log(`another run is in progress (${LOCK_FILE}) — exiting`);
     return { locked: true };
   }
   fs.writeFileSync(LOCK_FILE, String(process.pid));
@@ -67,7 +68,7 @@ export async function main() {
     log(`${live ? 'LIVE' : 'DRY RUN'} on Kalshi ${config.env} for ${date}`);
 
     const journalPath = path.join(STATE_DIR, `${date}.jsonl`);
-    const journal = (entry) => fs.appendFileSync(journalPath, JSON.stringify({ ts: new Date().toISOString(), live, env: config.env, ...entry }) + '\n');
+    const journal = (entry) => fs.appendFileSync(journalPath, JSON.stringify({ ts: new Date().toISOString(), live, env: config.env, date, ...entry }) + '\n');
     const statePath = path.join(STATE_DIR, `${date}.json`);
     const state = fs.existsSync(statePath)
       ? JSON.parse(fs.readFileSync(statePath, 'utf8'))

@@ -110,6 +110,29 @@ export function playerKeyOf(ticker) {
   return parts.length >= 4 ? `${parts[1]}:${parts[2]}` : null;
 }
 
+/**
+ * What bot/report.mjs needs to grade a decision as a paper trade without
+ * re-deriving it: the scheduled first pitch (the closing-price cutoff), the
+ * series (the candlestick path), and the book the price was taken from.
+ * Additive only: every existing journal field keeps its meaning. Note that
+ * `model` is the YES probability while `blended` and `market` are on the
+ * chosen side, so `modelSide` states the model on the chosen side explicitly.
+ */
+export function paperFields(market, info, signal, book) {
+  return {
+    series: market.series,
+    eventTicker: market.eventTicker,
+    gamePk: info.game?.gamePk ?? null,
+    firstPitch: info.game?.gameDate ?? null,
+    playerKey: playerKeyOf(market.ticker),
+    player: info.person?.name ?? null,
+    line: info.line ?? (Number.isFinite(Number(market.raw?.floor_strike)) ? Number(market.raw.floor_strike) : null),
+    modelSide: signal.modelProb == null ? null : +signal.modelProb.toFixed(3),
+    yesBid: book?.bestYesBid ?? null,
+    yesAsk: book?.bestYesAsk ?? null,
+  };
+}
+
 /** Correlated rungs (one player's ladder, one game's ladder) collapse to one bet. */
 function groupKey(market, info) {
   if (info.kind === 'prop') return `${market.series}:${info.game.gamePk}:${info.person.id}`;
@@ -265,7 +288,7 @@ export function planOrders({ slate, markets, books, account, state, config, now 
   if (config.screenOnly) {
     return { orders: [], considered, halts, bankroll, screened: ranked.map((c) => c.market.ticker) };
   }
-  for (const { market, info, signal } of ranked) {
+  for (const { market, info, signal, book } of ranked) {
     const entry = { ticker: market.ticker, side: signal.side, priceCents: signal.priceCents, edgePts: +(100 * signal.edge).toFixed(1), evCents: +signal.evCents.toFixed(2), model: +info.prob.toFixed(3), blended: +signal.blendedProb.toFixed(3), market: +signal.marketProb.toFixed(3) };
     if (ordersLeft <= 0) {
       note({ ...entry, skip: 'order count limit reached' });
@@ -285,7 +308,7 @@ export function planOrders({ slate, markets, books, account, state, config, now 
       continue;
     }
     const cost = count * price;
-    orders.push({ ...entry, count, costDollars: +cost.toFixed(2), binding: sizing.binding, kind: info.kind, marketKey: info.marketKey });
+    orders.push({ ...entry, count, costDollars: +cost.toFixed(2), binding: sizing.binding, kind: info.kind, marketKey: info.marketKey, ...paperFields(market, info, signal, book) });
     exposure.total += cost;
     exposure.byGame[gameId] = (exposure.byGame[gameId] || 0) + cost;
     if (playerId) {

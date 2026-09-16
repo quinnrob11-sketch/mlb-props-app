@@ -54,6 +54,36 @@ safety settings, game lines rarely if ever clear the bar; that's intentional.
    ```
    This runs six times a day. Output goes to `bot/state/scheduler.log`.
 
+## Track record
+
+`npm run bot:report` grades every decision in `bot/state/*.jsonl` — dry runs
+and live orders alike — so the scheduled dry runs become a paper-trading record
+before any real money is used. It reads Kalshi's public market data only.
+
+- **One decision per contract per day.** The bot runs several times a day and a
+  dry run re-decides the same contract each time. The first decision of the day
+  for a ticker and side is the entry; later repeats only count as `runs`. Live
+  orders use the actual fill count and average fill price; an order that filled
+  nothing is listed as unfilled and not graded.
+- **Closing price.** The YES bid/ask midpoint as of the last 1-minute candle at
+  or before the *scheduled* first pitch (last trade if the book was one-sided).
+  Kalshi MLB markets keep trading during the game, so the market's own last
+  price is not used. **CLV** = close on the side bought − price paid, in cents.
+  A taker buys at the ask and the close is a mid, so CLV starts about half a
+  spread behind: beating the close means the market actually moved your way.
+- **Settlement.** Once Kalshi finalizes the market: P&L = contracts × (payout −
+  price) − fee (0.07·P·(1−P) per contract). Unsettled decisions stay listed as
+  pending.
+- **Output.** A table in the terminal, `bot/state/report.json`, and
+  `bot/state/report.html` (open it in a browser; no external files). Results
+  are broken down by live/dry run, prop/game, market, side, price and edge
+  bucket, each with 95% intervals. A handful of bets gives wide intervals, and
+  that is the point.
+- Options: `--dir <journals>`, `--out <dir>`, `--no-fetch` (cache only). Settled
+  markets and past closing candles are cached in `bot/state/report-cache/`.
+- `node bot/run.mjs --state-dir <dir>` writes journals somewhere other than
+  `bot/state`, for example to keep an experiment apart from the real record.
+
 ## Limits (`bot/config.json` → `limits`)
 
 | setting | default | meaning |
