@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "node --test \"test/**/*.test.js\" \"src/**/__tests__/*.test.mjs\"",
+    "bot": "node bot/run.mjs",
+    "bot:live": "node bot/run.mjs --live",
     "verify": "node verify.mjs && node test-api.mjs"
   },
   "dependencies": {

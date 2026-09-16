@@ -283,6 +283,10 @@ export async function loadSlate({
   onStatus,
   sharp = true,
   projectLineups = true,
+  // false skips every Odds API request (props, events, sportsbook game lines).
+  // The Kalshi bot prices against the exchange's own book and has no use for
+  // them, so it should not spend metered credits on every scheduled run.
+  odds = true,
 }) {
   const status = (message) => onStatus && onStatus(message);
 
@@ -322,10 +326,12 @@ export async function loadSlate({
   // Same contract as the try/catch this replaces: the odds path may never
   // reject the load, it may only populate `oddsError`. Folding the catch into
   // the promise keeps that true while it is in flight unattended.
-  const oddsEventsPromise = oddsFetch({ endpoint: 'events' }, oddsKey).then(
-    (res) => ({ events: res.body || [], remaining: res.remaining, error: null }),
-    (err) => ({ events: [], remaining: null, error: err.message }),
-  );
+  const oddsEventsPromise = odds
+    ? oddsFetch({ endpoint: 'events' }, oddsKey).then(
+        (res) => ({ events: res.body || [], remaining: res.remaining, error: null }),
+        (err) => ({ events: [], remaining: null, error: err.message }),
+      )
+    : Promise.resolve({ events: [], remaining: null, error: null });
 
   const allGames = (await schedulePromise).dates?.[0]?.games || [];
 
@@ -364,7 +370,7 @@ export async function loadSlate({
   // rejects, so it is safe to leave in flight across the awaits below.
   const weatherPromise = fetchWeather(games);
   // Game lines (sportsbooks + Kalshi) need only `games` too. Never rejects.
-  const teamMarketsPromise = fetchTeamMarketQuotes({ games, date, oddsKey });
+  const teamMarketsPromise = fetchTeamMarketQuotes({ games, date, oddsKey, books: odds });
 
   // ── 2. team batting environment ────────────────────────────────────────────
   status('Fetching team batting environment…');

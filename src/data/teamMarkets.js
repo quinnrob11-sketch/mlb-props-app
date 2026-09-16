@@ -295,9 +295,12 @@ export const GAME_LINES_INFO_ONLY = 'game lines are information only — model i
  * Fetch both price sources for a slate. Never rejects: each source reports its
  * own error and the other still prices the board.
  */
-export async function fetchTeamMarketQuotes({ games, date, oddsKey }) {
+export async function fetchTeamMarketQuotes({ games, date, oddsKey, books: withBooks = true }) {
   const [books, kalshi] = await Promise.all([
-    oddsFetch({ endpoint: 'game-odds', books: 'wide' }, oddsKey).then(
+    (withBooks
+      ? oddsFetch({ endpoint: 'game-odds', books: 'wide' }, oddsKey)
+      : Promise.resolve({ body: [], remaining: null })
+    ).then(
       // An error payload or a changed schema must degrade to "no book lines",
       // never throw: this runs inside the slate load, and a throw here would
       // take the whole board down with it.

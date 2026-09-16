@@ -107,15 +107,12 @@ export const CALIBRATION = {
   batter_hits_runs_rbis: {
     2.5: -0.008,
   },
-  pitcher_strikeouts: {
-    4.5: 0.021,
-    // 7.5 measured -3.0/-0.5 but was REJECTED: the holdout gap sits exactly
-    // at the 0.5pp floor and applying the correction nudged holdout Brier
-    // WORSE (.0852 -> .0854). Ship-only-if-both-windows-improve.
-  },
-  pitcher_outs: {
-    14.5: 0.0195,
-  },
+  // pitcher_strikeouts@4.5 (+0.021) and pitcher_outs@14.5 (+0.0195) DELETED
+  // 2026-09-16: both were measured against the pre-v35.1 pitcher model. The
+  // PITCHER_TUNING refit absorbed them — on the Sep 1-15 holdout of the
+  // 988-start replay (tools/backtest-pitchers.mjs) K@4.5 now reads 48.0% vs
+  // 48.0% observed and outs@14.5 64.4% vs 63.2% — so subtracting them again
+  // would push both lines ~2 points the wrong way.
 };
 
 /* ── The superseded 2025/2026-season table, kept for the record ────────────

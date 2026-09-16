@@ -4,3 +4,11 @@ dist
 .env*.local
 .vercel
 *.png
+
+# Kalshi bot: credentials, per-machine config and trade journals never leave this PC
+bot/config.json
+bot/state/
+bot/STOP
+*.pem
+*.key
+.backtest-cache

@@ -1,0 +1,28 @@
+{
+  "env": "demo",
+  "live": false,
+  "siteUrl": "https://mlb-props-app.vercel.app",
+  "keyId": "",
+  "privateKeyPath": "",
+  "markets": {
+    "playerProps": true,
+    "gameLines": true
+  },
+  "requireConfirmedLineup": true,
+  "minMinutesBeforeStart": 10,
+  "minEdgeAfterFees": 0.02,
+  "limits": {
+    "bankrollDollars": 100,
+    "maxOrderDollars": 5,
+    "maxGameExposureDollars": 10,
+    "maxOpenExposureDollars": 40,
+    "maxDailySpendDollars": 30,
+    "maxDailyLossDollars": 20,
+    "maxOrdersPerRun": 5,
+    "maxOrdersPerDay": 15,
+    "maxContractsPerOrder": 50,
+    "kellyFraction": 0.25,
+    "minPriceCents": 15,
+    "maxPriceCents": 90
+  }
+}
