@@ -32,9 +32,10 @@ export function modelProbability(market, slate, { requireConfirmedLineup = true 
   const series = market.series;
   const parsed = parseKalshiGameTicker(market.eventTicker);
   if (!parsed) return { prob: null, reason: 'unparseable ticker' };
-  const games = slate.games.filter(
+  let games = slate.games.filter(
     (g) => `${g.away.abbr}${g.home.abbr}` === parsed.teams && g.gameDate && sameDay(g, parsed.date),
   );
+  if (games.length > 1 && parsed.gameNumber) games = games.filter((g) => (g.gameNumber ?? 1) === parsed.gameNumber);
   if (!games.length) return { prob: null, reason: 'game not on slate' };
   if (games.length > 1) return { prob: null, reason: 'doubleheader: cannot tell which game' };
   const game = games[0];
@@ -64,9 +65,18 @@ export function modelProbability(market, slate, { requireConfirmedLineup = true 
   if (!marketKey) return { prob: null, reason: 'series not priced' };
   if (market.threshold == null) return { prob: null, reason: 'no threshold' };
   const isPitcher = Boolean(PITCHER_MARKETS[marketKey]);
-  const people = isPitcher ? game.pitchers : game.batters;
+  // FIX(v36): Kalshi disambiguates same-named players with a team tag —
+  // "Max Muncy (LAD): 2+" / "Max Muncy (ATH): 2+". Normalising that produced
+  // "max muncy lad", which matched nobody, so 1,180 markets in the batter
+  // backtest were never priced. The tag is removed from the name and used to
+  // narrow the candidates to that team instead.
+  const rawName = String(playerNameOf(market.raw || market) || market.player || '');
+  const teamTag = /\(([A-Z]{2,3})\)/.exec(rawName)?.[1] || null;
+  const cleanName = rawName.replace(/\([A-Z]{2,3}\)/, '').replace(/:.*$/, '').trim();
+  let people = isPitcher ? game.pitchers : game.batters;
+  if (teamTag) people = people.filter((p) => p.teamAbbr === teamTag);
   const byKey = new Map(people.map((p) => [normalizeName(p.name), p]));
-  const match = matchName(market.playerKey || normalizeName(playerNameOf(market.raw || market)), [...byKey.keys()]);
+  const match = matchName(normalizeName(cleanName) || market.playerKey, [...byKey.keys()]);
   if (match.status !== 'matched') return { prob: null, reason: `player ${match.status}` };
   const person = byKey.get(match.key);
   if (!isPitcher && requireConfirmedLineup && person.lineupSource !== 'confirmed') {

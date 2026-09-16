@@ -129,6 +129,14 @@ test('Kalshi game tickers carry the date, Eastern start and away+home codes', ()
     date: '2026-09-16',
     etMinutes: 13 * 60 + 10,
     teams: 'CWSCLE',
+    gameNumber: null,
+  });
+  // Doubleheaders carry a G1/G2 suffix, which used to be rejected outright.
+  assert.deepEqual(parseKalshiGameTicker('KXMLBKS-26SEP041915DETCLEG2'), {
+    date: '2026-09-04',
+    etMinutes: 19 * 60 + 15,
+    teams: 'DETCLE',
+    gameNumber: 2,
   });
   assert.equal(parseKalshiGameTicker('garbage'), null);
 });

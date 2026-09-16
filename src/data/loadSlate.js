@@ -747,6 +747,8 @@ export async function loadSlate({
 
     const row = {
       gamePk: game.gamePk,
+      // 1 or 2 in a doubleheader; Kalshi tickers carry it as a G1/G2 suffix.
+      gameNumber: game.gameNumber ?? 1,
       venue: park,
       gameDate: game.gameDate,
       isFinal,

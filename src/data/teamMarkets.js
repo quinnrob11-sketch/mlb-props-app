@@ -114,18 +114,24 @@ export function parseGameOdds(event) {
 const MONTHS = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
 
 /**
- * `KXMLBGAME-26SEP161310CWSCLE` -> { date: '2026-09-16', etMinutes: 790, teams: 'CWSCLE' }.
+ * `KXMLBGAME-26SEP161310CWSCLE` -> { date: '2026-09-16', etMinutes: 790, teams: 'CWSCLE', gameNumber: null }.
  * Kalshi writes the start in US Eastern time and the two MLB abbreviations,
  * away first.
+ *
+ * FIX(v36): doubleheader games carry a G1/G2 suffix
+ * (`KXMLBKS-26SEP041915DETCLEG2`). The old pattern rejected it, so neither
+ * game of a doubleheader was ever priced — 161 pitcher and 2,944 batter markets
+ * in the Jul 10-Sep 15 backtests.
  */
 export function parseKalshiGameTicker(eventTicker) {
-  const m = /^[A-Z]+-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})([A-Z]+)$/.exec(String(eventTicker || ''));
+  const m = /^[A-Z]+-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})([A-Z]+?)(?:G(\d))?$/.exec(String(eventTicker || ''));
   if (!m || MONTHS[m[2]] == null) return null;
   const month = String(MONTHS[m[2]] + 1).padStart(2, '0');
   return {
     date: `20${m[1]}-${month}-${m[3]}`,
     etMinutes: Number(m[4]) * 60 + Number(m[5]),
     teams: m[6],
+    gameNumber: m[7] ? Number(m[7]) : null,
   };
 }
 
@@ -177,7 +183,8 @@ export function kalshiGameQuotes(markets, games, date) {
       (g) => `${g.teams.away.team.abbreviation}${g.teams.home.team.abbreviation}` === parsed.teams,
     );
     if (!candidates.length) continue;
-    const game = candidates.reduce((best, g) =>
+    const byNumber = parsed.gameNumber ? candidates.find((g) => g.gameNumber === parsed.gameNumber) : null;
+    const game = byNumber || candidates.reduce((best, g) =>
       Math.abs(etMinutesOf(g.gameDate) - parsed.etMinutes) <
       Math.abs(etMinutesOf(best.gameDate) - parsed.etMinutes)
         ? g

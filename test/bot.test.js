@@ -273,3 +273,28 @@ test('raising maxBetsPerPlayer allows more bets, still under the player dollar c
   const total = orders.reduce((s, o) => s + o.costDollars, 0);
   assert.ok(total <= 5 + 1e-9, `player total $${total}`);
 });
+
+// ── v36: doubleheaders and same-named players ─────────────────────────────
+
+test('a G2 contract prices the second game of a doubleheader', () => {
+  const g1 = { ...game, gamePk: 101, gameNumber: 1, gameDate: '2026-09-16T17:10:00Z', game: { ...game.game, pHome: 0.55, pAway: 0.45 } };
+  const g2 = { ...game, gamePk: 102, gameNumber: 2, gameDate: '2026-09-16T23:10:00Z', game: { ...game.game, pHome: 0.62, pAway: 0.38 } };
+  const dh = { games: [g1, g2] };
+  const p = (ticker) => modelProbability(normalizeMarket(kmarket(ticker)), dh, config);
+  assert.equal(p('KXMLBGAME-26SEP161910DETCLEG2-CLE').prob, 0.62);
+  assert.equal(p('KXMLBGAME-26SEP161310DETCLEG1-CLE').prob, 0.55);
+  assert.equal(p('KXMLBGAME-26SEP161910DETCLE-CLE').reason, 'doubleheader: cannot tell which game');
+});
+
+test('a team-tagged name ("Max Muncy (LAD)") resolves to that team only', () => {
+  const muncyGame = {
+    ...game,
+    batters: [
+      { id: 1, name: 'Max Muncy', teamAbbr: 'DET', lineupSource: 'confirmed', proj: { dist: { hits: () => 0.4 } } },
+      { id: 2, name: 'Max Muncy', teamAbbr: 'CLE', lineupSource: 'confirmed', proj: { dist: { hits: () => 0.7 } } },
+    ],
+  };
+  const m = normalizeMarket(kmarket('KXMLBHIT-26SEP161910DETCLE-CLEMMUNCY13-2', { yes_sub_title: 'Max Muncy (CLE): 2+', floor_strike: 1.5 }));
+  const r = modelProbability(m, { games: [muncyGame] }, config);
+  assert.equal(r.person?.id, 2, r.reason);
+});
