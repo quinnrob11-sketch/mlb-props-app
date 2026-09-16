@@ -153,6 +153,7 @@ test('live orders grade on actual fills: count, YES-leg average price, fee paid'
   assert.equal(g.status, 'unfilled');
   assert.equal(summarize([g]).count, 0);
   assert.equal(summarize([g]).unfilled, 1);
+  assert.equal(summarize([g]).pnlDollars, null, 'nothing settled is not $0');
 });
 
 // ── aggregation ────────────────────────────────────────────────────────────

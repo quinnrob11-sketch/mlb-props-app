@@ -472,9 +472,10 @@ export function summarize(graded) {
     wins,
     winRatePct: settled.length ? pct(wins / settled.length) : null,
     winRateCiPct: wilson(wins, settled.length)?.map(pct) ?? null,
-    stakeDollars: round(stake / 100),
-    pnlDollars: round(pnl / 100),
-    units: round(returns.reduce((s, r) => s + r, 0), 3),
+    // Nothing settled is 'no result yet', not a flat zero.
+    stakeDollars: settled.length ? round(stake / 100) : null,
+    pnlDollars: settled.length ? round(pnl / 100) : null,
+    units: settled.length ? round(returns.reduce((s, r) => s + r, 0), 3) : null,
     roiPct: pct(roi.mean),
     roiCiPct: roi.ci ? roi.ci.map(pct) : null,
     dollarRoiPct: stake > 0 ? pct(pnl / stake) : null,
@@ -544,13 +545,14 @@ export function buildReport(graded, { dir = null, nowMs = Date.now(), entriesRea
 
 const ci = (arr, unit = '') => (arr ? `[${arr[0]}${unit}, ${arr[1]}${unit}]` : '');
 const show = (x, unit = '') => (x == null ? '-' : `${x}${unit}`);
+const money = (x) => (x == null ? '-' : `${x < 0 ? '-' : ''}${Math.abs(x).toFixed(2)}`);
 
 export function summaryRow(label, s) {
   return [
     label, s.count, s.settled, s.pending,
     s.winRatePct == null ? '-' : `${s.winRatePct}% ${ci(s.winRateCiPct)}`,
     show(s.units), s.roiPct == null ? '-' : `${s.roiPct}% ${ci(s.roiCiPct)}`,
-    show(s.pnlDollars == null ? null : `$${s.pnlDollars}`),
+    money(s.pnlDollars),
     s.meanClvCents == null ? '-' : `${s.meanClvCents}c ${ci(s.clvCiCents)}`,
     s.beatClosePct == null ? '-' : `${s.beatClosePct}% ${ci(s.beatCloseCiPct)}`,
   ];
@@ -574,7 +576,7 @@ export function renderText(report) {
   out.push('');
   const drows = [['date', 'mode', 'ticker', 'side', 'n', 'entry', 'edge', 'status', 'close', 'CLV', 'result', 'P&L']];
   for (const d of report.decisions) {
-    drows.push([d.date, d.mode, d.ticker, d.side, d.count, show(d.entryCents, 'c'), show(d.edgePts), d.status + (d.runs > 1 ? ` (x${d.runs})` : ''), show(d.closeSideCents, 'c'), show(d.clvCents, 'c'), show(d.result), d.pnlDollars == null ? '-' : `$${d.pnlDollars}`]);
+    drows.push([d.date, d.mode, d.ticker, d.side, d.count, show(d.entryCents, 'c'), show(d.edgePts), d.status + (d.runs > 1 ? ` (x${d.runs})` : ''), show(d.closeSideCents, 'c'), show(d.clvCents, 'c'), show(d.result), money(d.pnlDollars)]);
   }
   out.push(textTable(drows));
   return out.join('\n');
@@ -591,7 +593,7 @@ export function renderHtml(report) {
   const tiles = [
     ['Decisions', o.count, `${o.settled} settled · ${o.pending} pending`],
     ['Units', show(o.units), `ROI ${show(o.roiPct, '%')} ${ci(o.roiCiPct, '%')}`],
-    ['P&L', o.pnlDollars == null ? '-' : `$${o.pnlDollars}`, `on $${o.stakeDollars ?? 0} staked`],
+    ['P&L', money(o.pnlDollars), o.stakeDollars == null ? 'nothing settled yet' : `on ${money(o.stakeDollars)} staked`],
     ['Mean CLV', show(o.meanClvCents, 'c'), `${ci(o.clvCiCents, 'c')} · n=${o.withClose}`],
     ['Beat close', show(o.beatClosePct, '%'), ci(o.beatCloseCiPct, '%')],
   ];
@@ -599,7 +601,7 @@ export function renderHtml(report) {
     .map(([name, buckets]) => `<h3>By ${esc(name)}</h3>${table(SUMMARY_HEAD, Object.entries(buckets).map(([k, s]) => summaryRow(k, s)))}`)
     .join('');
   const dHead = ['date', 'mode', 'ticker', 'player', 'side', 'n', 'entry', 'edge', 'runs', 'status', 'close', 'CLV', 'result', 'P&L'];
-  const dRows = report.decisions.map((d) => [d.date, d.mode, d.ticker, d.player || '', d.side, d.count, show(d.entryCents, 'c'), show(d.edgePts), d.runs, d.status, show(d.closeSideCents, 'c'), show(d.clvCents, 'c'), show(d.result), d.pnlDollars == null ? '-' : `$${d.pnlDollars}`]);
+  const dRows = report.decisions.map((d) => [d.date, d.mode, d.ticker, d.player || '', d.side, d.count, show(d.entryCents, 'c'), show(d.edgePts), d.runs, d.status, show(d.closeSideCents, 'c'), show(d.clvCents, 'c'), show(d.result), money(d.pnlDollars)]);
   const defs = Object.entries(report.definitions).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
