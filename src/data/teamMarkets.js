@@ -50,11 +50,20 @@ const KALSHI_SERIES = {
  * start time for doubleheaders. Same rule the prop feed uses.
  */
 export function matchOddsEvent(events, game) {
+  const start = new Date(game.gameDate).getTime();
+  // The /odds feed lists every upcoming game, not just this slate's. Mid-series
+  // the same matchup appears on consecutive days, and before tomorrow's lines
+  // post "nearest start time" would hand tomorrow's game today's prices — which
+  // the append-only snapshot would then keep forever. A doubleheader's two games
+  // are hours apart; consecutive days are at least ~18.
+  const MAX_START_GAP_MS = 6 * 3600e3;
   const candidates = (events || []).filter(
-    (ev) => ev.home_team === game.teams.home.team.name && ev.away_team === game.teams.away.team.name,
+    (ev) =>
+      ev.home_team === game.teams.home.team.name &&
+      ev.away_team === game.teams.away.team.name &&
+      Math.abs(new Date(ev.commence_time).getTime() - start) < MAX_START_GAP_MS,
   );
   if (!candidates.length) return null;
-  const start = new Date(game.gameDate).getTime();
   return candidates.reduce((best, ev) =>
     Math.abs(new Date(ev.commence_time) - start) < Math.abs(new Date(best.commence_time) - start)
       ? ev

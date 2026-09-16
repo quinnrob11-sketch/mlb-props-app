@@ -101,7 +101,7 @@ export function saveSnapshot(date, slate) {
         alt: row.alt || undefined,
         side: row.edge.side,
         verdict: row.edge.verdict,
-        proj: Math.round(row.proj * 100) / 100,
+        proj: row.proj == null ? null : Math.round(row.proj * 100) / 100,
         modelOver: Math.round(row.edge.modelOver * 1e3) / 1e3,
         ev: row.edge.ev != null ? Math.round(row.edge.ev * 10) / 10 : null,
         // |probability edge| in points, signed toward the called side where

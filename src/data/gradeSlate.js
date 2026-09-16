@@ -35,6 +35,10 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
     if (away == null || home == null) continue;
     const first = ls?.innings?.[0];
     gameResults.set(game.gamePk, {
+      // Sportsbooks void run lines and totals on a game called before nine
+      // innings (8.5 with the home side ahead, which still shows 9 innings in
+      // the linescore). The moneyline stands once the game is official.
+      fullLength: (ls?.innings?.length ?? 9) >= 9,
       margin: home - away,
       total: home + away,
       firstInning:
@@ -115,6 +119,7 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
       const result = gameResults.get(row.gamePk ?? row.playerId);
       if (!result) return undefined;
       if (row.kind === 'nrfi') return result.firstInning ?? undefined;
+      if (row.market !== 'game_ml' && !result.fullLength) return 'VOID';
       if (row.market === 'game_total') return result.total;
       // Moneyline and run line settle on the home margin. "over" is the home
       // side, so the home side wins when margin > -line (line 0 for ML).
@@ -140,6 +145,10 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
   const graded = [];
   for (const row of snapshot?.rows || []) {
     const actual = actualFor(row);
+    if (actual === 'VOID') {
+      graded.push({ ...row, actual: null, result: 'VOID' });
+      continue;
+    }
 
     if (actual === undefined) {
       graded.push({ ...row, actual: null, result: 'NO DATA' });

@@ -509,12 +509,14 @@ export function leagueRunPrevention(spSplits, rpSplits) {
  * @param {number} fipConstant  from leagueRunPrevention
  * @returns {{ra9: number, ip: number}}
  */
-export function runsAllowedTalent(seasons, leagueRa9, priorInnings, fipConstant = 3.1) {
+export function runsAllowedTalent(seasons, leagueRa9, priorInnings, fipConstant = 3.1, park = 1) {
   const { ip, er, fipNum } = pitchingTotals(seasons);
   if (ip <= 0) return { ra9: leagueRa9, ip: 0 };
   const era = (9 * er) / ip;
   const fip = fipNum / ip + fipConstant;
-  const raw = 0.5 * era + 0.5 * fip;
+  // The pitcher's own line carries his home park; the league prior does not.
+  // Neutralise before blending so only the observed part is adjusted.
+  const raw = (0.5 * era + 0.5 * fip) / park;
   return { ra9: (ip * raw + priorInnings * leagueRa9) / (ip + priorInnings), ip };
 }
 
@@ -559,6 +561,7 @@ export function projectGame({ away, home, league, park, wx }) {
   const ownPark = (side) => 0.5 + 0.5 * parkFactor(side.homePark, 'runs', 0.7);
 
   const pitchingIndex = (side) => {
+    const park = ownPark(side);
     const starter = side.starter
       ? runsAllowedTalent(
           [
@@ -568,15 +571,15 @@ export function projectGame({ away, home, league, park, wx }) {
           league.spRa9,
           60,
           league.fipConstant,
+          park,
         )
       : { ra9: league.spRa9, ip: 0 };
     const bullpen = side.bullpen
-      ? runsAllowedTalent([{ stat: side.bullpen, weight: 1 }], league.rpRa9, 120, league.fipConstant)
+      ? runsAllowedTalent([{ stat: side.bullpen, weight: 1 }], league.rpRa9, 120, league.fipConstant, park)
       : { ra9: league.rpRa9, ip: 0 };
-    const park = ownPark(side);
     return {
-      starter: clamp(starter.ra9 / park / league.allRa9, 0.55, 1.7),
-      bullpen: clamp(bullpen.ra9 / park / league.allRa9, 0.7, 1.4),
+      starter: clamp(starter.ra9 / league.allRa9, 0.55, 1.7),
+      bullpen: clamp(bullpen.ra9 / league.allRa9, 0.7, 1.4),
       starterRa9: starter.ra9,
       bullpenRa9: bullpen.ra9,
       // No probable, or a probable with no workload estimate: assume an

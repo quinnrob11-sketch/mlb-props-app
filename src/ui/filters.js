@@ -555,7 +555,10 @@ export const CRITERION_SPECS = [
     group: GROUPS.data,
     keys: ['minSample'],
     active: (c) => c.minSample != null,
-    test: (row, c) => rowSample(row) >= c.minSample,
+    // A player sample means nothing for a game line or NRFI; those rows have no
+    // player behind them and would otherwise always read as sample 0.
+    test: (row, c) =>
+      row?.kind !== 'pitcher' && row?.kind !== 'batter' ? true : rowSample(row) >= c.minSample,
     label: (c) => `sample ≥ ${c.minSample} PA/BF`,
   },
   {

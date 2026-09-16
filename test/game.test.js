@@ -284,8 +284,8 @@ test('doubleheader props grade against their own game; game lines grade off the 
     '/api/v1/schedule': {
       dates: [{
         games: [
-          { gamePk: 1, status: { abstractGameState: 'Final' }, linescore: { teams: { away: { runs: 2 }, home: { runs: 5 } }, innings: [{ away: { runs: 0 }, home: { runs: 0 } }] } },
-          { gamePk: 2, status: { abstractGameState: 'Final' }, linescore: { teams: { away: { runs: 6 }, home: { runs: 5 } }, innings: [{ away: { runs: 1 }, home: { runs: 0 } }] } },
+          { gamePk: 1, status: { abstractGameState: 'Final' }, linescore: { teams: { away: { runs: 2 }, home: { runs: 5 } }, innings: [{ away: { runs: 0 }, home: { runs: 0 } }, ...Array.from({ length: 8 }, () => ({ away: { runs: 0 }, home: { runs: 0 } }))] } },
+          { gamePk: 2, status: { abstractGameState: 'Final' }, linescore: { teams: { away: { runs: 6 }, home: { runs: 5 } }, innings: [{ away: { runs: 1 }, home: { runs: 0 } }, ...Array.from({ length: 8 }, () => ({ away: { runs: 0 }, home: { runs: 0 } }))] } },
         ],
       }],
     },
@@ -332,4 +332,57 @@ test('ERA and FIP are shrunk, and a non-numeric ERA cannot make projER NaN', () 
   const empty = run({ ...base, inningsPitched: '0.0', era: '-.--', battersFaced: 0 });
   assert.ok(Number.isFinite(empty.projER));
   assert.ok(Number.isFinite(empty.dist.er(2.5)));
+});
+
+// ── v35 review fixes ───────────────────────────────────────────────────────
+
+import { matchOddsEvent } from '../src/data/teamMarkets.js';
+import { applyCriteria } from '../src/ui/filters.js';
+
+test("a sportsbook event from another day never prices this game", () => {
+  const g = { gameDate: '2026-09-17T23:05:00Z', teams: { home: { team: { name: 'H' } }, away: { team: { name: 'A' } } } };
+  const today = { id: 'today', home_team: 'H', away_team: 'A', commence_time: '2026-09-16T23:05:00Z' };
+  const nightcap = { id: 'dh', home_team: 'H', away_team: 'A', commence_time: '2026-09-17T19:05:00Z' };
+  assert.equal(matchOddsEvent([today], g), null);
+  assert.equal(matchOddsEvent([today, nightcap], g)?.id, 'dh');
+});
+
+test('a minimum player sample does not hide game lines or NRFI', () => {
+  const rows = [
+    { key: 'g', kind: 'game', line: 8.5, detailRef: null, flags: [] },
+    { key: 'n', kind: 'nrfi', line: 0.5, detailRef: null, flags: [] },
+    { key: 'b', kind: 'batter', line: 0.5, detailRef: { season: { pa: 10 } }, flags: [] },
+  ];
+  assert.deepEqual(applyCriteria(rows, { hideAlts: false, minSample: 50 }).map((r) => r.key), ['g', 'n']);
+});
+
+test('the home park adjusts a pitcher’s own line, not the league prior', () => {
+  const league = { rpg: 4.49, spRa9: 4.1, rpRa9: 3.9, allRa9: 4.0, fipConstant: 3.1 };
+  const offense = { runs: 675, gamesPlayed: 150, ops: 0.72 };
+  const side = (homePark) => ({ offense, homePark, starter: null, bullpen: null });
+  // No starter and no bullpen line: pitching is pure league prior, so the
+  // team's home park must not change it.
+  const coors = projectGame({ away: side('Target Field'), home: side('Coors Field'), league, park: 'Target Field' });
+  const twins = projectGame({ away: side('Target Field'), home: side('Target Field'), league, park: 'Target Field' });
+  close(coors.inputs.pitching.home.starter, twins.inputs.pitching.home.starter, 1e-12, 'prior-only starter index');
+});
+
+test('a game called before nine innings voids run line and total, keeps the moneyline', async () => {
+  const restore = stubMlb({
+    '/api/v1/schedule': {
+      dates: [{ games: [{ gamePk: 5, status: { abstractGameState: 'Final' }, linescore: { teams: { away: { runs: 1 }, home: { runs: 4 } }, innings: Array.from({ length: 6 }, () => ({ away: { runs: 0 }, home: { runs: 0 } })) } }] }],
+    },
+    '/api/v1/game/5/boxscore': { teams: { away: { players: {} }, home: { players: {} } } },
+  });
+  try {
+    const rows = [
+      { kind: 'game', gamePk: 5, playerId: 5, market: 'game_ml', line: 0, side: 'over' },
+      { kind: 'game', gamePk: 5, playerId: 5, market: 'game_spread', line: -1.5, side: 'over' },
+      { kind: 'game', gamePk: 5, playerId: 5, market: 'game_total', line: 4.5, side: 'over' },
+    ];
+    const graded = await gradeSlate({ date: '2026-09-05', snapshot: { rows } });
+    assert.deepEqual(graded.map((r) => r.result), ['WIN', 'VOID', 'VOID']);
+  } finally {
+    restore();
+  }
 });

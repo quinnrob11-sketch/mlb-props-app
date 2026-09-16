@@ -46,7 +46,7 @@
  *     lineupSource string   "confirmed" | "projected" | "fallback"
  *     flags        string[] player flags, e.g. ["SMALL SAMPLE"]
  *     actual       number   what the player actually did (null when no data)
- *     result       string   "WIN" | "LOSS" | "PUSH" | "NO DATA" | "—"
+ *     result       string   "WIN" | "LOSS" | "PUSH" | "VOID" | "NO DATA" | "—"
  *     closeOdds    number   closing American price on the side taken
  *     clv          number   closing line value, in percent of decimal price
  *
