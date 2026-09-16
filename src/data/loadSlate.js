@@ -51,7 +51,6 @@ import { projectPitcher, parseInningsPitched } from '../model/pitcher.js';
 import { lineupOpponent } from '../model/lineupEnv.js';
 import { lineupHandedness, platoonMultipliers } from '../model/platoon.js';
 import { projectBatter, SB_PER_GAME_PRIOR, PA_BY_LINEUP_SLOT } from '../model/batter.js';
-import { projectNrfi } from '../model/nrfi.js';
 import { evaluateEdge } from '../model/edges.js';
 import { projectGame, leagueRunPrevention } from '../model/game.js';
 import { fetchTeamMarketQuotes, priceTeamMarkets } from './teamMarkets.js';
@@ -931,43 +930,14 @@ export async function loadSlate({
     const awaySp = sp.away;
     const homeSp = sp.home;
     if (awaySp && homeSp) {
-      // Mean OBP of the top three lineup slots, posted or projected. Returns
-      // null only when nothing could be derived for this side (or none of the
-      // top three have a 2026 OBP) — previously that was every unposted game,
-      // which handed projectNrfi a silently league-average lineup.
-      const topOfOrderObp = (side) => {
-        const obps = (lineupBySide.get(sideKey(game.gamePk, side)) || [])
-          .slice(0, 3)
-          .map((player) => player.id)
-          .map((id) =>
-            parseFloat(pickSplit(batters26.get(id), 'hitting', SEASON)?.obp || ''),
-          )
-          .filter((v) => !isNaN(v));
-        return obps.length ? obps.reduce((a, b) => a + b, 0) / obps.length : null;
-      };
-
-      // IP-weighted ERA blend; 2025 counts 0.6. Falls back to 4.2 under 20 IP.
-      const blendedEra = (starter) => {
-        const era26 = parseFloat(starter.s26?.era);
-        const ip26 = parseInningsPitched(starter.s26?.inningsPitched);
-        const era25 = parseFloat(starter.s25?.era);
-        const ip25 = parseInningsPitched(starter.s25?.inningsPitched);
-        const num =
-          (isNaN(era26) ? 0 : era26 * ip26) +
-          (isNaN(era25) ? 0 : era25 * ip25 * 0.6);
-        const den = ip26 + (isNaN(era25) ? 0 : ip25 * 0.6);
-        return den > 20 ? num / den : 4.2;
-      };
-
-      row.nrfi = projectNrfi(
-        blendedEra(awaySp),
-        blendedEra(homeSp),
-        topOfOrderObp('away'),
-        topOfOrderObp('home'),
-        park,
-        lg,
-        wx,
-      );
+      // FIX(v35) — NRFI now comes from the game model's first inning rather than
+      // the separate hand-tuned model in the old model/nrfi.js. That model was
+      // centred on a 54% NRFI rate and a .325 top-of-order OBP; the real 2026
+      // figures are 49.5% and .341, so it leaned NRFI by 3-4 points on every
+      // game. The game model is fitted to the measured first-inning run
+      // distributions for each side (the bottom of the first scores 32% more
+      // than the top) and lands at 50.1% for two average teams.
+      row.nrfi = row.game.nrfi;
 
       const nrfiQuote = bestQuote(gameOdds.totals_1st_1_innings?.__game__);
       if (nrfiQuote && nrfiQuote.point === 0.5) {

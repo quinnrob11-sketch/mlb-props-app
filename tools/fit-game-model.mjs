@@ -1,4 +1,4 @@
-// Fit the four free constants in src/model/game.js — HOME_EDGE, WALKOFF_EXACT,
+// Fit the four free constants in src/model/game.js — HOME_ADJUST, WALKOFF_EXACT,
 // SIGMA_SHARED and SIGMA_TEAM — against league scoring measured from completed
 // games. Usage:
 //
@@ -14,8 +14,8 @@
 // part — see SIGMA_TEAM_TOTAL / EXPLAINED_TEAM_SD in game.js.
 import fs from 'node:fs';
 import {
-  uncertainScoreGrid, summarizeGrid, totalProbs, spreadProbs, INNING_PROFILE,
-  EXTRA_INNING_PMF,
+  uncertainScoreGrid, summarizeGrid, totalProbs, spreadProbs, firstInningScoreless,
+  AWAY_HALF_MEANS, HOME_HALF_MEANS, EXTRA_INNING_PMF,
 } from '../src/model/game.js';
 
 function measure(file) {
@@ -24,12 +24,15 @@ function measure(file) {
   for (const d of s.dates) for (const x of d.games) {
     const ls = x.linescore;
     if (x.status?.codedGameState !== 'F' || !ls?.teams || (ls.scheduledInnings || 9) !== 9) continue;
-    g.push({ a: ls.teams.away.runs, h: ls.teams.home.runs, inn: ls.innings?.length || 0 });
+    const first = ls.innings?.[0];
+    g.push({ a: ls.teams.away.runs, h: ls.teams.home.runs, inn: ls.innings?.length || 0,
+      nrfi: first && first.away?.runs === 0 && first.home?.runs === 0 ? 1 : 0 });
   }
   const m = (f) => g.reduce((s, r) => s + f(r), 0) / g.length;
   const mt = m((r) => r.a + r.h);
   return {
     n: g.length,
+    nrfi: m((r) => r.nrfi),
     homeWin: m((r) => (r.h > r.a ? 1 : 0)), extras: m((r) => (r.inn > 9 ? 1 : 0)),
     homeBy1: m((r) => (r.h - r.a === 1 ? 1 : 0)), awayBy1: m((r) => (r.a - r.h === 1 ? 1 : 0)),
     homeCover15: m((r) => (r.h - r.a >= 2 ? 1 : 0)), awayCover15: m((r) => (r.a - r.h >= 2 ? 1 : 0)),
@@ -41,7 +44,7 @@ function measure(file) {
 }
 
 const TARGET = process.argv[2] ? measure(process.argv[2]) : {
-  n: 2271, homeWin: 0.5288, homeBy1: 0.1686, awayBy1: 0.1088, extras: 0.0872, homeCover15: 0.3602, awayCover15: 0.3624,
+  n: 2271, nrfi: 0.4954, homeWin: 0.5288, homeBy1: 0.1686, awayBy1: 0.1088, extras: 0.0872, homeCover15: 0.3602, awayCover15: 0.3624,
   over75: 0.5711, over85: 0.4910, over95: 0.4011, over105: 0.3338,
   meanAway: 4.456, meanHome: 4.530, totalVarMean: 2.2905,
 };
@@ -50,20 +53,19 @@ const extraBase = EXTRA_INNING_PMF.reduce((s, p, k) => s + p * k, 0);
 
 function run(he, wo, sg, st) {
   let extras = 0;
-  // Neutral half-inning rate: the measured AWAY rate with the away penalty
-  // removed, so away = measured and home = measured * he^2.
-  const neutral = 0.4794 * he;
-  const half = (adv) => INNING_PROFILE.map((p) => neutral * p * adv);
-  const grid = uncertainScoreGrid({
-    awayHalfMeans: half(1 / he), homeHalfMeans: half(he),
-    awayExtraMean: extraBase, homeExtraMean: extraBase * he * he,
+  const scoring = {
+    awayHalfMeans: AWAY_HALF_MEANS, homeHalfMeans: HOME_HALF_MEANS.map((m) => m * he),
+    awayExtraMean: extraBase, homeExtraMean: extraBase * 1.089 * he,
     walkoffExact: wo, onRegulationEnd: (t) => { extras = t; },
-  }, { sigmaShared: sg, sigmaTeam: st });
+  };
+  const grid = uncertainScoreGrid(scoring, { sigmaShared: sg, sigmaTeam: st });
+  const nrfi = firstInningScoreless(scoring, { sigmaShared: sg, sigmaTeam: st });
   const s = summarizeGrid(grid);
   const mt = s.meanAway + s.meanHome;
   let v = 0;
   s.total.forEach((p, t) => { v += p * (t - mt) ** 2; });
   return {
+    nrfi,
     homeWin: s.pHome, extras, homeBy1: s.margin.get(1) || 0, awayBy1: s.margin.get(-1) || 0, homeCover15: spreadProbs(s, -1.5).home,
     awayCover15: spreadProbs(s, 1.5).away,
     over75: totalProbs(s, 7.5).over, over85: totalProbs(s, 8.5).over,
@@ -76,7 +78,7 @@ function run(he, wo, sg, st) {
 // variance ratio scaled to comparable size.
 function loss(r) {
   let l = 0;
-  for (const k of ['homeWin', 'homeBy1', 'awayBy1', 'extras', 'homeCover15', 'awayCover15', 'over75', 'over85', 'over95', 'over105']) {
+  for (const k of ['nrfi', 'homeWin', 'homeBy1', 'awayBy1', 'extras', 'homeCover15', 'awayCover15', 'over75', 'over85', 'over95', 'over105']) {
     const p = TARGET[k];
     l += (r[k] - p) ** 2 / (p * (1 - p) / TARGET.n);
   }
@@ -94,7 +96,7 @@ const consider = (he, wo, sg, st) => {
 };
 for (const sg of [0, 0.05, 0.1, 0.15, 0.2])
   for (const st of [0, 0.1, 0.15, 0.2, 0.25, 0.3])
-    for (const he of [1.0, 1.01, 1.02, 1.03, 1.04])
+    for (const he of [0.96, 0.98, 1.0, 1.02, 1.04])
       for (const wo of [0.3, 0.45, 0.6, 0.75, 0.9]) consider(he, wo, sg, st);
 // Refine around the coarse optimum.
 const c = { ...best };
@@ -104,7 +106,7 @@ for (let sg = Math.max(0, c.sg - 0.04); sg <= c.sg + 0.04; sg += 0.02)
       for (let wo = Math.max(0.1, c.wo - 0.1); wo <= Math.min(1, c.wo + 0.1); wo += 0.05) consider(he, wo, sg, st);
 
 console.log(`games ${TARGET.n}`);
-console.log(`HOME_EDGE ${best.he.toFixed(3)}  WALKOFF_EXACT ${best.wo.toFixed(2)}  ` +
+console.log(`HOME_ADJUST ${best.he.toFixed(3)}  WALKOFF_EXACT ${best.wo.toFixed(2)}  ` +
   `SIGMA_SHARED ${best.sg.toFixed(2)}  SIGMA_TEAM ${best.st.toFixed(2)}  loss ${best.l.toFixed(1)}`);
 for (const k of Object.keys(best.r)) {
   console.log(`  ${k.padEnd(13)} model ${best.r[k].toFixed(4)}   actual ${TARGET[k].toFixed(4)}`);

@@ -32,8 +32,8 @@
  * WHERE EVERY NUMBER COMES FROM
  *
  * The per-half-inning run distributions and the inning profile are measured
- * from 2026 regular-season linescores (tools/fit-game-model.mjs re-derives
- * them). The team inputs are ordinary season stats, shrunk toward league
+ * from 2026 regular-season linescores; the four free constants are fitted by
+ * tools/fit-game-model.mjs. The team inputs are ordinary season stats, shrunk toward league
  * average. Nothing here is fitted against betting prices.
  */
 
@@ -57,6 +57,21 @@ export const HALF_INNING_PMF = [
 ];
 
 /**
+ * The first inning has its own shape, not just its own mean: the top of the
+ * order reaches base more often but strings fewer big innings together than a
+ * tilted regulation distribution implies. Tilting HALF_INNING_PMF to the
+ * first-inning means put P(scoreless) 1.0pt too high for the away half and
+ * 2.2pts too high for the home half, which compounds to +2.5pts on NRFI. So
+ * each first half is tilted from its own measured distribution (2,271 games).
+ */
+export const FIRST_INNING_AWAY_PMF = [
+  0.7345, 0.155, 0.0647, 0.0269, 0.0119, 0.004, 0.0018, 0.0004, 0.0004, 0.0004, 0,
+];
+export const FIRST_INNING_HOME_PMF = [
+  0.6742, 0.166, 0.0903, 0.0432, 0.0159, 0.0057, 0.0035, 0.0004, 0.0004, 0.0004, 0,
+];
+
+/**
  * Runs scored in one EXTRA half-inning, which starts with a runner on second.
  * 267 away extra halves, 2026. Mean 1.21. The tail beyond 6 is sparse in the
  * sample and is smoothed geometrically rather than taken at face value.
@@ -67,42 +82,58 @@ export const EXTRA_INNING_PMF = [
 ];
 
 /**
- * Mean runs per half-inning by inning, relative to the regulation average. The
- * first time through the order and the second-inning bottom of the lineup
- * show up as a dip; the third time through (innings 4-5) as a peak.
+ * League mean runs per half-inning, innings 1-9, measured separately for each
+ * side on 2026 linescores.
+ *
+ * Home and away are NOT one profile times a home-field constant. The bottom of
+ * the first is worth 32% more than the top of it — the visiting starter is
+ * throwing his first pitches in a road park to the top of the order — while the
+ * home edge in innings 2-8 averages about 6%. A single multiplier put the
+ * extra first-inning runs everywhere, which is why the old NRFI model sat about
+ * four points too high on NRFI (actual 2026 rate: 49.5%).
+ *
+ *               1     2     3     4     5     6     7     8     9
+ *     away    .454  .438  .466  .499  .526  .491  .483  .491  .468
+ *     home    .600  .480  .516  .483  .552  .523  .471  .557  (.510)
+ *
+ * The home ninth is only played when home is not ahead and can end early, so
+ * its raw mean is biased; it is set to the away ninth times the innings 1-8
+ * home/away ratio (1.089).
  */
-export const INNING_PROFILE = [0.454, 0.438, 0.466, 0.499, 0.526, 0.491, 0.483, 0.491, 0.468].map(
-  (m) => m / 0.4794,
-);
+export const AWAY_HALF_MEANS = [0.454, 0.438, 0.466, 0.499, 0.526, 0.491, 0.483, 0.491, 0.468];
+export const HOME_HALF_MEANS = [0.6, 0.48, 0.516, 0.483, 0.552, 0.523, 0.471, 0.557, 0.51];
+const HOME_EXTRA_RATIO = 1.089;
 
 /** League runs per team per game when the tables above were measured. */
 export const CALIBRATION_RPG = 4.4932;
 
 /**
- * Home-field advantage, as a multiplier on a neutral scoring rate: the home
- * offence gets x HOME_EDGE, the away offence / HOME_EDGE.
+ * Small correction on the measured home scoring rates. The measured home means
+ * already contain home-field advantage; this only absorbs what the simulation's
+ * structure (skipped ninth, walk-offs) does to them. Near 1 by construction.
  *
- * The four constants HOME_EDGE, WALKOFF_EXACT, SIGMA_SHARED and SIGMA_TEAM_TOTAL
+ * The four constants HOME_ADJUST, WALKOFF_EXACT, SIGMA_SHARED and SIGMA_TEAM_TOTAL
  * are fitted JOINTLY by tools/fit-game-model.mjs against 2,271 completed 2026
  * games. Two league-average teams in a neutral park then reproduce:
  *
  *                        model    actual
- *     home win           52.83%   52.88%
- *     home wins by 1     16.84%   16.86%
+ *     no run in the 1st  50.12%   49.54%
+ *     home win           52.94%   52.88%
+ *     home wins by 1     16.90%   16.86%
  *     away wins by 1     11.50%   10.88%
- *     home -1.5 covers   35.98%   36.02%
- *     away -1.5 covers   35.67%   36.24%
+ *     home -1.5 covers   36.04%   36.02%
+ *     away -1.5 covers   35.55%   36.24%
  *     over 7.5           57.23%   57.11%
- *     over 8.5           49.66%   49.10%
- *     over 9.5           39.87%   40.11%
- *     over 10.5          33.37%   33.38%
- *     goes to extras      9.78%    8.72%   <- the one visible misfit
+ *     over 8.5           49.65%   49.10%
+ *     over 9.5           39.83%   40.11%
+ *     over 10.5          33.34%   33.38%
+ *     goes to extras      9.80%    8.72%   <- the one visible misfit
  *
  * The extras rate runs a point high: the model still produces slightly too
  * many level games after nine. Its effect on the totals above is already
  * inside the fit.
  */
-export const HOME_EDGE = 1.036;
+export const HOME_ADJUST = 0.988;
 
 /**
  * Share of walk-offs that stop at exactly the winning run. The rest are home
@@ -215,8 +246,10 @@ export function finalScoreGrid({
   const final = new Float64Array(SIZE * SIZE);
 
   for (let inning = 0; inning < 8; inning++) {
-    grid = scoreHalf(grid, tiltPmf(HALF_INNING_PMF, awayHalfMeans[inning]), false);
-    grid = scoreHalf(grid, tiltPmf(HALF_INNING_PMF, homeHalfMeans[inning]), true);
+    const awayBase = inning === 0 ? FIRST_INNING_AWAY_PMF : HALF_INNING_PMF;
+    const homeBase = inning === 0 ? FIRST_INNING_HOME_PMF : HALF_INNING_PMF;
+    grid = scoreHalf(grid, tiltPmf(awayBase, awayHalfMeans[inning]), false);
+    grid = scoreHalf(grid, tiltPmf(homeBase, homeHalfMeans[inning]), true);
   }
   grid = scoreHalf(grid, tiltPmf(HALF_INNING_PMF, awayHalfMeans[8]), false);
   grid = walkoffHalf(grid, tiltPmf(HALF_INNING_PMF, homeHalfMeans[8]), final, walkoffExact);
@@ -257,10 +290,10 @@ export function finalScoreGrid({
  * Both are modelled as mean-one lognormal multipliers and integrated exactly
  * with three-point Gauss-Hermite quadrature per factor (27 grids per game,
  * about 30ms). Their sizes are fitted to the league scoring data in
- * tools/fit-game-model.mjs, jointly with HOME_EDGE and WALKOFF_EXACT.
+ * tools/fit-game-model.mjs, jointly with HOME_ADJUST and WALKOFF_EXACT.
  */
 export const SIGMA_SHARED = 0;
-export const SIGMA_TEAM_TOTAL = 0.23;
+export const SIGMA_TEAM_TOTAL = 0.24;
 
 /**
  * How much of that 0.23 the per-game inputs already explain.
@@ -269,8 +302,9 @@ export const SIGMA_TEAM_TOTAL = 0.23;
  * of game-to-game variation, including team quality, starters and parks — which
  * `projectGame` models explicitly. Counting that spread twice would make every
  * game look closer to a coin flip than it is. The standard deviation of the log
- * scoring rate the inputs produce across a slate is measured by
- * tools/fit-game-model.mjs --explained; only the remainder is integrated here.
+ * projected team runs across a slate measured 0.116 (2026-09-16, 30 sides) and
+ * 0.121 (2026-09-17, 18 sides) — `node tools/run-slate.mjs <date> --json` —
+ * so only the remainder is integrated here.
  */
 export const EXPLAINED_TEAM_SD = 0.12;
 export const SIGMA_TEAM = Math.sqrt(SIGMA_TEAM_TOTAL ** 2 - EXPLAINED_TEAM_SD ** 2);
@@ -311,6 +345,33 @@ export function uncertainScoreGrid(input, options = {}) {
   }
   if (input.onRegulationEnd) input.onRegulationEnd(tied);
   return out;
+}
+
+/**
+ * P(no run in the first inning), integrated over the same game-level
+ * uncertainty as `uncertainScoreGrid`. Each half is that side's measured
+ * first-inning distribution tilted to the game's inning-one mean.
+ *
+ * Checked against 2026: two league-average teams give 49.4% against 49.5%
+ * actual (tools/fit-game-model.mjs reports it).
+ */
+export function firstInningScoreless(input, options = {}) {
+  const sigmaShared = options.sigmaShared ?? SIGMA_SHARED;
+  const sigmaTeam = options.sigmaTeam ?? SIGMA_TEAM;
+  const nodes = (sigma) => (sigma > 0 ? GAUSS_HERMITE_3 : [[0, 1]]);
+  const factor = (sigma, z) => Math.exp(sigma * z - (sigma * sigma) / 2);
+  let p = 0;
+  for (const [zg, wg] of nodes(sigmaShared)) {
+    for (const [za, wa] of nodes(sigmaTeam)) {
+      for (const [zh, wh] of nodes(sigmaTeam)) {
+        const shared = factor(sigmaShared, zg);
+        const away = tiltPmf(FIRST_INNING_AWAY_PMF, input.awayHalfMeans[0] * shared * factor(sigmaTeam, za))[0];
+        const home = tiltPmf(FIRST_INNING_HOME_PMF, input.homeHalfMeans[0] * shared * factor(sigmaTeam, zh))[0];
+        p += wg * wa * wh * away * home;
+      }
+    }
+  }
+  return p;
 }
 
 /** Summaries of a final-score grid. */
@@ -527,19 +588,18 @@ export function projectGame({ away, home, league, park, wx }) {
   const off = { away: offenseIndex(away), home: offenseIndex(home) };
   const pit = { away: pitchingIndex(away), home: pitchingIndex(home) };
 
-  // Neutral half-inning rate. The measured 0.4794 is an AWAY rate, so the away
-  // penalty is taken back out; the league's current scoring level scales it.
-  const perHalf = (league.rpg / CALIBRATION_RPG) * 0.4794 * HOME_EDGE;
+  // The measured league rates, scaled to this season's scoring level.
+  const level = league.rpg / CALIBRATION_RPG;
 
-  const halfMeans = (batting, fielding, homeAdv) =>
-    INNING_PROFILE.map((profile, i) => {
+  const halfMeans = (base, batting, fielding) =>
+    base.map((leagueMean, i) => {
       const starterShare = clamp(fielding.projIP - i, 0, 1);
       const pitching = starterShare * fielding.starter + (1 - starterShare) * fielding.bullpen;
-      return perHalf * profile * batting.value * pitching * env * homeAdv;
+      return leagueMean * level * batting.value * pitching * env;
     });
 
-  const awayHalfMeans = halfMeans(off.away, pit.home, 1 / HOME_EDGE);
-  const homeHalfMeans = halfMeans(off.home, pit.away, HOME_EDGE);
+  const awayHalfMeans = halfMeans(AWAY_HALF_MEANS, off.away, pit.home);
+  const homeHalfMeans = halfMeans(HOME_HALF_MEANS, off.home, pit.away).map((m) => m * HOME_ADJUST);
   const extraBase = EXTRA_INNING_PMF.reduce((s, p, k) => s + p * k, 0);
   const scoring = {
     awayHalfMeans,
@@ -547,10 +607,11 @@ export function projectGame({ away, home, league, park, wx }) {
     // EXTRA_INNING_PMF was also measured on away halves, so away is taken as
     // measured and home carries the full home-to-away ratio.
     awayExtraMean: extraBase * off.away.value * pit.home.bullpen * env,
-    homeExtraMean: extraBase * off.home.value * pit.away.bullpen * env * HOME_EDGE ** 2,
+    homeExtraMean: extraBase * off.home.value * pit.away.bullpen * env * HOME_EXTRA_RATIO * HOME_ADJUST,
   };
   const grid = uncertainScoreGrid(scoring);
   const summary = summarizeGrid(grid);
+  const nrfiProb = firstInningScoreless(scoring);
 
   const flags = [];
   if (!away.starter || !home.starter) flags.push('NO PROBABLE');
@@ -568,6 +629,14 @@ export function projectGame({ away, home, league, park, wx }) {
     spread: (homeSpread) => spreadProbs(summary, homeSpread),
     // The number where the model's over and under are closest to 50/50.
     fairTotal: medianLine(summary),
+    // First inning, from the same inning-one scoring rates and the same
+    // uncertainty as the full game, so NRFI can never contradict the total.
+    nrfi: {
+      nrfiProb,
+      yrfiProb: 1 - nrfiProb,
+      fairNrfiOdds: probToAmerican(nrfiProb),
+      fairYrfiOdds: probToAmerican(1 - nrfiProb),
+    },
     inputs: {
       env,
       offense: { away: off.away, home: off.home },
