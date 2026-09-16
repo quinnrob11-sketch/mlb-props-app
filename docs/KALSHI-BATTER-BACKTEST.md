@@ -131,7 +131,8 @@ under `--kcache`: `settled_<SERIES>.json` and `candles-bat/<game>.json`.
   - Closing-line value was 0.00c.
 - **The market is the better forecaster.** Kalshi's own price beat the model on
   Brier score in every series and every window. The interval excludes zero
-  everywhere except the Sep 1–15 holdout, where it still points the same way.
+  everywhere except the Sep 1–15 holdout and HR in Aug 10–31, where it still
+  points the same way.
 - **The best weight on the model is low.** The Brier-optimal weight is 0–0.25,
   against the bot's `MARKET_WEIGHT` of 0.35–0.5.
 - **No series passes the pre-registered edge test.** That holds at T−120 and at
