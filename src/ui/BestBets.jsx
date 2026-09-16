@@ -5,7 +5,7 @@
 
 import { Fragment } from 'react';
 import { fmt } from '../lib/format.js';
-import { matchesQuery, byConviction } from './rows.js';
+import { matchesQuery, byConviction, pickText } from './rows.js';
 import { explainEmpty } from './filters.js';
 import VerdictChip, { WhyNote, TrackChip } from './VerdictChip.jsx';
 import { trackRank } from '../model/trackRecord.js';
@@ -77,6 +77,14 @@ export default function BestBets({
 
   return (
     <>
+    <div className="trlegend unvalidated top">
+      <b>Unproven — read before betting.</b> Player props: on 2026-08-31 the model was a median
+      7.1 points away from the no-vig sportsbook price. Game lines: on 2026-09-16 it was 3.1 points
+      from Kalshi on moneylines and 3.2 on totals. Both are further from the market than a
+      winning model would be, so disagreements past 12 points (props) or 8 points (game lines) are
+      treated as model error and never shown as plays. Nothing here has yet been shown to beat
+      closing prices — track it in Results before sizing up.
+    </div>
     {topCount > 0 && (
       <div className="conviction-head">
         <b>Take these first</b>
@@ -118,15 +126,14 @@ export default function BestBets({
                   <span className={`rank ${isTop ? 'rank-top' : ''}`}>{rank}</span>
                   {row.name}
                   {' — '}
-                  {row.label} {edge.side === 'over' ? 'OVER' : 'UNDER'} {row.line}
+                  {pickText(row)}
                   {row.alt && <span className="book altb">ALT</span>}
                 </div>
                 <div className="card-sub">
                   {row.matchup}
                   {' · '}
                   {fmt.time(row.gameDate)}
-                  {' · vs '}
-                  {row.opp}
+                  {row.opp ? ` · vs ${row.opp}` : row.sub ? ` · ${row.sub}` : ''}
                   {row.game?.wx && !row.game.wx.indoor && row.game.wx.tempF != null && (
                     <span>
                       {' · '}
@@ -148,22 +155,33 @@ export default function BestBets({
                 </div>
               </div>
               <div className="vwrap">
-                <VerdictChip edge={edge} />
+                <VerdictChip edge={edge} row={row} />
                 <TrackChip market={row.market} line={row.line} />
                 <WhyNote edge={edge} />
               </div>
             </div>
 
             <div className="card-nums">
-              <div className="stat">
-                <span className="v">{fmt.n1(row.proj)}</span>
-                <span className="l">Model proj</span>
-              </div>
+              {row.proj != null && (
+                <div className="stat">
+                  <span className="v">
+                    {row.kind === 'game' && row.market !== 'game_total' && row.proj > 0 ? '+' : ''}
+                    {fmt.n1(row.proj)}
+                  </span>
+                  <span className="l">
+                    {row.kind === 'game'
+                      ? row.market === 'game_total'
+                        ? 'Proj total'
+                        : `Proj ${row.game?.home?.abbr || 'home'} margin`
+                      : 'Model proj'}
+                  </span>
+                </div>
+              )}
               <div className="stat">
                 <span className="v">
                   {fmt.pct(edge.side === 'over' ? edge.modelOver : 1 - edge.modelOver)}
                 </span>
-                <span className="l">Model {edge.side}%</span>
+                <span className="l">Model chance</span>
               </div>
               <div className="stat">
                 <span className="v">
@@ -175,7 +193,7 @@ export default function BestBets({
                       : null,
                   )}
                 </span>
-                <span className="l">Consensus fair%</span>
+                <span className="l">Market chance</span>
               </div>
               <div className="stat">
                 {/* A PASS never wears green — the engine refuses this price. */}
@@ -234,16 +252,6 @@ export default function BestBets({
     {priceMode !== 'maker' && <VenueLegend rows={sorted} />}
     {/* Track-record legend: what the chips mean and where the numbers come
         from, once per board. */}
-    <div className="trlegend unvalidated">
-      <b>Not validated against market prices.</b> Measured on 2026-08-31 against
-      real posted odds (FanDuel, DraftKings, Pinnacle), this model differs from
-      the vig-free market consensus by a median of 7.1 points, with a systematic
-      lean to the UNDER — which means it is less accurate than the market it is
-      betting into. Plays more than 12 points off consensus are now suppressed
-      as model error rather than shown as edge. <b>No measurement yet shows
-      these picks are profitable at the prices you pay.</b> Treat everything
-      below as unproven until the closing-line test is done.
-    </div>
     <div className="trlegend">
       <b>Track record</b> (replayed vs real games, Aug 3–22: 534 starts, 4,792
       batter-games) — these tiers grade the model against OUTCOMES versus naive

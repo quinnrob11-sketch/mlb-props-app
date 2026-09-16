@@ -5,6 +5,34 @@
 export default function MethodologyView() {
   return (
     <div className="doc">
+      <h3>Game lines: moneyline, run line, total, first inning</h3>
+      <p>
+        The game model plays the game out inning by inning and returns the chance of every
+        possible final score, so the moneyline, run line, total and NRFI all come from one
+        consistent picture rather than four separate guesses. Each half-inning's scoring is
+        set by the batting team's offence (season runs per game, park-neutral, adjusted for
+        tonight's lineup), the pitcher on the mound (the starter for his projected innings,
+        then the bullpen — both ERA/FIP blends shrunk toward league average) and the park and
+        temperature.
+      </p>
+      <p>
+        It handles the parts of baseball that simple run models get wrong: the home team skips
+        the bottom of the ninth when it leads, walk-offs end the game on the winning run,
+        extra innings start with a runner on second, and the bottom of the first scores about
+        a third more than the top. Fitted to 2,271 completed 2026 games, two average teams come
+        out at a 52.9% home win rate (actual 52.9%), 36.0% home −1.5 cover (36.0%), 49.7% over
+        8.5 (49.1%) and 50.1% NRFI (49.5%).
+      </p>
+      <p>
+        <b>How far to trust it:</b> matching league averages is the easy part. Against live
+        Kalshi prices on 2026-09-16 the model was a median 3.1 points away on moneylines and
+        3.2 on totals, with no lean in either direction — close to the market, but not sharper
+        than it. So game lines carry a low market weight, and any disagreement bigger than 8
+        points is treated as the model being wrong. Prices come from DraftKings, FanDuel,
+        BetMGM, Caesars and Pinnacle when the Odds API key works, and from Kalshi (fees
+        included) always.
+      </p>
+
       <h3>What the engine does</h3>
       <p>
         Every projection is built from live MLB Stats API data at load time — no

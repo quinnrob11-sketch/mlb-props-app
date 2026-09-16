@@ -15,3 +15,93 @@
 .trlegend.unvalidated b{color:#f87171}
 .rest-divider.noedge{color:#7a849c;border-color:#262d3d}
 @media (max-width:640px){.tchip{font-size:10px;padding:2px 7px}}
+
+/* ── v35: game lines, data sources, clearer navigation ───────────────────── */
+
+/* Data sources: one line each, green or red dot, what it costs you. */
+.sources{list-style:none;margin:0 0 14px;padding:10px 14px;display:grid;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r)}
+.sources li{display:flex;align-items:baseline;gap:8px;font-size:12.5px;line-height:1.45}
+.sources .dot{width:8px;height:8px;border-radius:50%;flex:none;align-self:center;background:var(--green)}
+.sources li.bad .dot{background:var(--red)}
+.sources b{white-space:nowrap;font-weight:700}
+.sources .src-detail{color:var(--muted)}
+.sources li.bad .src-detail{color:var(--ink)}
+
+/* Tabs: primary boards first, venue boards after a separator, quieter. */
+.tab{letter-spacing:.01em;font-size:13px}
+.tab .n{margin-left:7px;padding:1px 7px;border-radius:999px;background:#ffffff14;opacity:1}
+.tab.on .n{background:#ffffff2e}
+.tab.minor{background:transparent;font-weight:600}
+.tabs-sep{width:1px;align-self:stretch;margin:4px 4px;background:var(--border)}
+
+/* Empty state before the first load. */
+.notice.welcome{padding:44px 20px}
+.notice .steps{max-width:460px;margin:18px auto 0;padding-left:22px;text-align:left;color:var(--muted);font-size:13px;line-height:1.9}
+.notice .steps b{color:var(--ink)}
+
+/* Games board. */
+.glegend{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 18px;margin:0 2px 14px;color:var(--muted);font-size:12.5px;line-height:1.55}
+.glegend details{max-width:760px}
+.glegend summary{cursor:pointer;color:var(--muted);font-weight:600;list-style-position:inside}
+.glegend summary:hover{color:var(--ink)}
+.glegend details[open] summary{margin-bottom:6px}
+.glegend b{color:var(--ink)}
+.gcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:14px}
+.gcard{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow-card);padding:16px 18px;min-width:0}
+.gcard-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.gcard-title{margin:0;font-size:17px;font-weight:800;letter-spacing:-.01em}
+.gcard-title .at{color:var(--faint);font-weight:600;margin:0 2px}
+.gcard-meta{color:var(--muted);font-size:12px;margin-top:2px}
+.gcard-meta .flag{margin-left:8px}
+.gcard-score{display:flex;flex-direction:column;align-items:flex-end;text-align:right;white-space:nowrap}
+.gcard-score .dim{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em}
+.gcard-score b{font-size:15px;font-family:var(--mono)}
+.gcard-starters{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin:10px 0 4px;font-size:13px}
+.gcard-starters .vs{color:var(--faint);font-size:11.5px}
+.starter .dim{font-size:12px}
+
+.winbar{margin:10px 0 12px}
+.winbar-labels{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;font-family:var(--mono);margin-bottom:4px}
+.winbar-labels .dim{font-family:var(--sans);font-size:10.5px;text-transform:uppercase;letter-spacing:.07em}
+.winbar-track{height:8px;border-radius:999px;background:var(--surface3);overflow:hidden}
+.winbar-away{display:block;height:100%;background:var(--violet)}
+
+.gtable{min-width:0;width:100%;border-collapse:collapse}
+.gtable th{position:static;background:transparent;padding:6px 8px;font-size:10px}
+.gtable td{padding:8px;font-size:13px;border-bottom:1px solid var(--border-soft);white-space:nowrap}
+.gtable tr:last-child td{border-bottom:none}
+.gtable th:first-child,.gtable td:first-child{padding-left:0}
+.gtable th:last-child,.gtable td:last-child{padding-right:0}
+.gtable td.num{font-size:12.5px}
+.gtable .gmarket{color:var(--muted);font-size:12px}
+.gtable .gpick{font-weight:700;white-space:normal}
+.gtable tr.callable td{background:#8b5cf60d}
+.gtable tr.noline td{color:var(--faint)}
+.gtable .gap{margin-left:6px;font-size:10.5px}
+.gtable .gcall{display:flex;align-items:center;gap:6px}
+.addbtn.mini{padding:2px 9px;font-size:12px;line-height:1.4}
+.gnote{margin:10px 0 0;color:var(--faint);font-size:11.5px;line-height:1.45}
+
+/* The unproven warning sits ABOVE the picks it qualifies. */
+.trlegend.top{margin:0 0 14px;line-height:1.6}
+
+@media (width<=720px){
+  .gcards{grid-template-columns:1fr}
+  .gcard{padding:13px 12px}
+  .gcard-head{flex-direction:column;gap:6px}
+  .gcard-score{align-items:flex-start;text-align:left}
+  .gtable thead{display:none}
+  .gtable tr{display:grid;grid-template-columns:1fr auto;grid-template-areas:"mkt call" "pick price" "model fair";gap:2px 10px;padding:9px 0;border-bottom:1px solid var(--border-soft)}
+  .gtable tr:last-child{border-bottom:none}
+  .gtable td{border:none;padding:0}
+  .gtable td:nth-child(1){grid-area:mkt}
+  .gtable td:nth-child(2){grid-area:pick}
+  .gtable td:nth-child(3){grid-area:model;text-align:left}
+  .gtable td:nth-child(3):before{content:"Model ";color:var(--faint);font-family:var(--sans)}
+  .gtable td:nth-child(4){grid-area:fair;text-align:right}
+  .gtable td:nth-child(4):before{content:"Market ";color:var(--faint);font-family:var(--sans)}
+  .gtable td:nth-child(5){grid-area:price;text-align:right}
+  .gtable td:nth-child(6){grid-area:call;justify-self:end}
+  .sources li{flex-wrap:wrap}
+  .tabs-sep{display:none}
+}

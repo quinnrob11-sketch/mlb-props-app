@@ -23,7 +23,7 @@ import KalshiBoard from './KalshiBoard.jsx';
 // TODO(recon): the shared pitcher/batter table (minified `Wa`, app.js:2158) is
 // reconstructed outside this region; file name assumed.
 import PropTable from './PropTable.jsx';
-import SlateView from './SlateView.jsx';
+import GamesBoard from './GamesBoard.jsx';
 import ResultsView from './ResultsView.jsx';
 import MethodologyView from './MethodologyView.jsx';
 import BetSlip from './BetSlip.jsx';
@@ -37,7 +37,60 @@ const CACHE_TTL_MS = 20 * 60 * 1000;
 // terms, the shrunk pitcher fields). Rehydrating a v19 slate into a v22
 // component tree crashed the whole app rather than one card. Bumping the key
 // makes a stale slate simply absent, which the UI already handles.
-const CACHE_KEY = 'slateCacheV22';
+// Bumped V22 -> V35: slates now carry `game`, `teamLines` and a game-model
+// NRFI, and an older cached slate would render game cards with no data.
+const CACHE_KEY = 'slateCacheV35';
+
+/**
+ * Where today's numbers came from, in one line each. Replaces a raw upstream
+ * error string in an amber banner, which told the user something was wrong
+ * but not what it cost them or what to do.
+ */
+function SourceStatus({ slate }) {
+  const keyProblem = (msg) =>
+    /deactivated|not configured|invalid|401|unauthori[sz]ed|quota|usage/i.test(msg || '');
+  const bookError = slate.oddsError || slate.gameLinesError;
+  const sources = [
+    { name: 'MLB stats & lineups', ok: true, detail: lineupDetail(slate) },
+    {
+      name: 'Sportsbooks',
+      ok: !bookError,
+      detail: !bookError
+        ? 'DraftKings, FanDuel, BetMGM, Caesars, Pinnacle'
+        : keyProblem(bookError)
+          ? 'Odds API key missing or deactivated — player props and sportsbook game lines are unavailable. Set a working ODDS_API_KEY in Vercel, or add your own key in Settings.'
+          : `Unavailable right now (${bookError}).`,
+    },
+    {
+      name: 'Kalshi',
+      ok: !slate.kalshiGameError,
+      detail: slate.kalshiGameError
+        ? `Unavailable right now (${slate.kalshiGameError}).`
+        : 'Moneyline, run line and total — free, no key needed',
+    },
+  ];
+  return (
+    <ul className="sources" aria-label="Data sources">
+      {sources.map((s) => (
+        <li key={s.name} className={s.ok ? 'ok' : 'bad'}>
+          <span className="dot" aria-hidden="true" />
+          <b>{s.name}</b>
+          <span className="src-detail">{s.detail}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function lineupDetail(slate) {
+  const c = slate.lineupCounts;
+  if (!c) return 'loaded';
+  const parts = [];
+  if (c.confirmed) parts.push(`${c.confirmed} confirmed`);
+  if (c.projected) parts.push(`${c.projected} projected`);
+  if (c.none) parts.push(`${c.none} not out`);
+  return parts.length ? `lineups: ${parts.join(', ')}` : 'loaded';
+}
 
 export default function App() {
   const [date, setDate] = useState(slateDate());
@@ -45,7 +98,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState(null);
-  const [tab, setTab] = useState('best');
+  const [tab, setTab] = useState('games');
   const [query, setQuery] = useState('');
   const [slip, setSlip] = useState({});
   const [showSettings, setShowSettings] = useState(false);
@@ -76,6 +129,7 @@ export default function App() {
     try {
       // Drop the pre-v19 cache key if it is still hanging around.
       localStorage.removeItem('slateCache');
+      localStorage.removeItem('slateCacheV22');
       const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
       if (
         cached &&
@@ -86,7 +140,7 @@ export default function App() {
       ) {
         setSlate(reviveSlate(cached));
         setStatus(
-          `Restored cached slate from ${fmt.time(cached.loadedAt)} — hit REFRESH SLATE for current odds.`,
+          `Showing games loaded at ${fmt.time(cached.loadedAt)} — press Refresh odds for current prices.`,
         );
       }
     } catch {}
@@ -166,8 +220,8 @@ export default function App() {
   // Tab counts track the filtered set. PITCHERS/BATTERS keep their original
   // "distinct players" meaning rather than switching to a prop-row count.
   const players = (list) => new Set(list.map((r) => r.playerId)).size;
-  const nrfiGames = slate ? slate.games.filter((g) => g.nrfi).length : 0;
-  const nrfiOn = criteria.kinds.includes('nrfi');
+  const propRows = priced.filter((r) => r.kind === 'pitcher' || r.kind === 'batter');
+  const gameLineCount = allRows.filter((r) => r.kind === 'game').length;
 
   // On a phone the tab row is a single horizontally-scrollable strip rather
   // than two wrapped lines, so the selected tab has to be scrolled into view.
@@ -197,10 +251,8 @@ export default function App() {
       <header className="hdr">
         <div className="hdr-brand">
           <span className="hdr-logo">MLB</span>
-          <span className="hdr-title">PROP ENGINE</span>
-          <span className="hdr-sub">
-            v22 · backtested calibration · PIN-anchored consensus · CLV · weather · ¼-Kelly
-          </span>
+          <span className="hdr-title">Edge Board</span>
+          <span className="hdr-sub">Model vs. market on game lines and player props</span>
         </div>
         <div className="hdr-spacer" />
         <input
@@ -221,13 +273,13 @@ export default function App() {
         </button>
         <button className="btn btn-primary" disabled={loading} onClick={load}>
           {loading ? (
-            'LOADING…'
+            'Loading…'
           ) : slate ? (
             <>
-              ↻ REFRESH <span className="lbl">SLATE</span>
+              ↻ Refresh <span className="lbl">odds</span>
             </>
           ) : (
-            'LOAD SLATE'
+            'Load games'
           )}
         </button>
       </header>
@@ -246,19 +298,16 @@ export default function App() {
             <b>{slate.games.length}</b> games
           </div>
           <div className="cell">
-            <b>{slate.games.reduce((n, g) => n + g.pitchers.length, 0)}</b> starters
+            <b>{gameLineCount}</b> game lines priced
           </div>
           <div className="cell">
-            <b>{slate.games.reduce((n, g) => n + g.batters.length, 0)}</b> lineup bats
-          </div>
-          <div className="cell">
-            <b>{priced.length}</b> props w/ lines
+            <b>{propRows.length}</b> props priced
           </div>
           {/* `.key` carries no desktop styling — at phone widths it pulls the
               two numbers the board is actually read for to the head of the
               single-row strip. */}
           <div className="cell key">
-            <b className="pos">{callable.length}</b> callable edges
+            <b className="pos">{callable.length}</b> plays
           </div>
           <div className="cell key">
             <b className="pos">{strong.length}</b> strong
@@ -271,6 +320,8 @@ export default function App() {
         </div>
       )}
 
+      {slate && <SourceStatus slate={slate} />}
+
       {slate && slate.skipped > 0 && (
         <div className="banner">
           {slate.skipped} game{slate.skipped > 1 ? 's' : ''} on this date already started or
@@ -278,47 +329,69 @@ export default function App() {
         </div>
       )}
 
-      {slate?.oddsError && (
-        <div className="banner">
-          Odds feed issue: {slate.oddsError} — projections still computed; lines may be missing.
-          Check the API key in Settings.
-        </div>
-      )}
 
       {slate && slate.games.length > 0 && slate.games.every((g) => g.batters.length === 0) && (
         <div className="banner">
-          Lineups not posted yet — the batter board fills in automatically once lineups drop
-          (usually 2–4 hours before first pitch). Hit REFRESH closer to game time.
+          Lineups aren't posted yet — batter props fill in once they are (usually 2–4 hours
+          before first pitch). Refresh closer to game time.
         </div>
       )}
 
-      <nav className="tabs" ref={tabsRef}>
+      <nav className="tabs" ref={tabsRef} aria-label="Boards">
         {[
-          ['best', 'BEST BETS', bestRows.length],
-          ['pitchers', 'PITCHERS', players(pitcherRows)],
-          ['batters', 'BATTERS', players(batterRows)],
-          ['dfs', 'DFS', dfsCount],
-          ['kalshi', 'KALSHI', kalshiCount],
-          ['nrfi', 'NRFI', nrfiOn ? nrfiGames : 0],
-          ['results', 'RESULTS', null],
-          ['method', 'METHOD', null],
-        ].map(([key, label, count]) => (
+          ['games', 'Games', slate ? slate.games.length : null, 'Every game: model vs. market on moneyline, run line, total and first inning'],
+          ['best', 'Best Bets', bestRows.length, 'Every play the engine would take, most confident first'],
+          ['pitchers', 'Pitcher Props', players(pitcherRows), 'Starting pitcher props'],
+          ['batters', 'Batter Props', players(batterRows), 'Batter props'],
+          ['results', 'Results', null, 'Grade past slates and see what has actually made money'],
+          ['method', 'How It Works', null, 'What the models do and how far to trust them'],
+        ].map(([key, label, count, hint]) => (
           <button
             key={key}
             className={`tab ${tab === key ? 'on' : ''}`}
             onClick={() => setTab(key)}
+            title={hint}
+            aria-current={tab === key ? 'page' : undefined}
           >
             {label}
-            {count != null && <span className="n">({count})</span>}
+            {count != null && <span className="n">{count}</span>}
+          </button>
+        ))}
+        <span className="tabs-sep" aria-hidden="true" />
+        {[
+          ['dfs', 'DFS', dfsCount, 'The same plays, shopped across DFS pick’em apps'],
+          ['kalshi', 'Kalshi Props', kalshiCount, 'Player props listed on Kalshi'],
+        ].map(([key, label, count, hint]) => (
+          <button
+            key={key}
+            className={`tab minor ${tab === key ? 'on' : ''}`}
+            onClick={() => setTab(key)}
+            title={hint}
+            aria-current={tab === key ? 'page' : undefined}
+          >
+            {label}
+            {count != null && <span className="n">{count}</span>}
           </button>
         ))}
       </nav>
+
+      {slate && tab === 'games' && (
+        <div className="toolbar">
+          <input
+            className="search"
+            placeholder="Search team or park…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label="Search games"
+          />
+        </div>
+      )}
 
       {(tab === 'best' || tab === 'pitchers' || tab === 'batters' || tab === 'dfs') && (
         <div className="toolbar">
           <input
             className="search"
-            placeholder="🔍 Search player, team, matchup…"
+            placeholder="Search player, team, matchup…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             aria-label="Search"
@@ -362,13 +435,24 @@ export default function App() {
       )}
 
       {!slate && !loading && (
-        <div className="notice">
-          <b>No slate loaded.</b>
+        <div className="notice welcome">
+          <b>Pick a date and press Load games.</b>
           <div className="sub">
-            Pick a date and hit LOAD SLATE — the engine pulls probables, lineups, season +
-            recent-form stats, park factors, weather and live sportsbook lines (incl. Pinnacle),
-            then prices every prop with a real probability distribution.
+            The app pulls probable pitchers, lineups, season stats, park and weather, then prices
+            every game's moneyline, run line, total and first inning — and every player prop —
+            against live sportsbook and Kalshi prices.
           </div>
+          <ol className="steps">
+            <li>
+              <b>Games</b> — start here. One card per game, model next to market.
+            </li>
+            <li>
+              <b>Best Bets</b> — only the plays the engine would actually take.
+            </li>
+            <li>
+              <b>Results</b> — grade past days to see what is really making money.
+            </li>
+          </ol>
         </div>
       )}
 
@@ -426,15 +510,14 @@ export default function App() {
         />
       )}
 
-      {slate && tab === 'nrfi' && nrfiOn && <SlateView slate={slate} />}
-      {slate && tab === 'nrfi' && !nrfiOn && (
-        <div className="notice">
-          <b>NRFI is switched off in your filters.</b>
-          <div className="sub">
-            The “Board” criterion under Slate &amp; market has NRFI deselected, so the
-            first-inning board is hidden. Re-select it in Filters, or hit Reset.
-          </div>
-        </div>
+      {slate && tab === 'games' && (
+        <GamesBoard
+          slate={slate}
+          rows={allRows}
+          query={query}
+          slip={slip}
+          toggleSlip={toggleSlip}
+        />
       )}
       {tab === 'results' && <ResultsView />}
       {tab === 'method' && <MethodologyView />}

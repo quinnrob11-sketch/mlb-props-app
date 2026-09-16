@@ -1,5 +1,6 @@
 import { fmt } from "../lib/format.js";
 import { probToAmerican } from "../lib/odds.js";
+import { pickText } from "./rows.js";
 
 /**
  * Parlay slip (bundle: `ph`).
@@ -35,8 +36,9 @@ export default function BetSlip({ slip, toggleSlip, clear, bankroll }) {
       {legs.map((leg) => (
         <div className="slip-row" key={leg.key}>
           <span>
-            {leg.name} {leg.short} {leg.edge.side === "over" ? "O" : "U"}
-            {leg.line}{" "}
+            {leg.kind === "game" || leg.kind === "nrfi"
+              ? `${leg.name} · ${pickText(leg)}`
+              : `${leg.name} ${leg.short} ${leg.edge.side === "over" ? "O" : "U"}${leg.line}`}{" "}
             <span className="dim">
               ({fmt.odds(leg.edge.odds)}
               {leg.book ? ` ${leg.book}` : ""}

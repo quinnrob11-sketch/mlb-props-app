@@ -1,6 +1,8 @@
 // The verdict pill shown on every prop row/card (minified: `Co`), plus its
 // class-name helper (`od`).
 
+import { pickText } from './rows.js';
+
 /**
  * CSS class for a verdict/side pair.
  *
@@ -14,13 +16,21 @@ export function verdictClass(verdict, side) {
   return verdict === 'STRONG' ? `${base} fill` : base;
 }
 
-export default function VerdictChip({ edge }) {
+/**
+ * @param {object} props
+ * @param {object} props.edge
+ * @param {object} [props.row]  When given, the chip names the pick in words
+ *   ("LEAN · Blue Jays -1.5") instead of "LEAN OVER", which means nothing on a
+ *   moneyline or run line.
+ */
+export default function VerdictChip({ edge, row }) {
   if (!edge || edge.verdict === 'PASS' || !edge.side)
     return <span className="vchip v-pass">PASS</span>;
 
+  const words = row && (row.kind === 'game' || row.kind === 'nrfi') ? pickText(row, edge.side) : null;
   return (
     <span className={`vchip ${verdictClass(edge.verdict, edge.side)}`}>
-      {edge.verdict} {edge.side.toUpperCase()}
+      {edge.verdict} {words ? `· ${words.replace(/ — .*/, '')}` : edge.side.toUpperCase()}
     </span>
   );
 }

@@ -231,6 +231,15 @@ export function pairMarketLines(rows) {
   return { ordered, pairing };
 }
 
+/** Two-word club names that the last word alone would make ambiguous. */
+const TWO_WORD_NICKNAMES = ['Red Sox', 'White Sox', 'Blue Jays'];
+
+/** "Chicago White Sox" -> "White Sox", "Toronto Blue Jays" -> "Blue Jays". */
+export function teamNickname(team) {
+  const name = team?.name || '';
+  return TWO_WORD_NICKNAMES.find((n) => name.endsWith(n)) || name.split(' ').pop() || team?.abbr || '';
+}
+
 /**
  * The bet in plain words, for either side of a row.
  *
@@ -248,8 +257,8 @@ export function pickText(row, side = row?.edge?.side) {
   if (!row || !side) return row?.label || '';
   const over = side === 'over';
   const g = row.game;
-  const home = g?.home?.name?.split(' ').pop() || g?.home?.abbr || 'Home';
-  const away = g?.away?.name?.split(' ').pop() || g?.away?.abbr || 'Away';
+  const home = teamNickname(g?.home) || 'Home';
+  const away = teamNickname(g?.away) || 'Away';
   const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
   switch (row.market) {
     case 'game_ml':

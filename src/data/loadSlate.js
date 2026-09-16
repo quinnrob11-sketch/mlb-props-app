@@ -823,7 +823,18 @@ export async function loadSlate({
       // Pitcher-specific platoon adjustment. A blanket league coefficient was
       // measured and rejected (see model/lineupEnv.js); splits are strongly
       // pitcher-specific, so this uses each starter's own.
-      const platoonSplits = platoonByPitcher.get(probable.id);
+      //
+      // v35: only against a POSTED lineup. This adjustment never ran before v35
+      // (its API route was missing), and switching it on against projected
+      // lineups moved projections one way: strikeouts up and walks down for
+      // nearly every starter on the 2026-09-16 slate. A projected lineup is
+      // copied from recent batting orders with no regard to tonight's starter,
+      // but managers stack opposite-handed bats against him — so the projected
+      // card systematically understates his platoon disadvantage. A posted card
+      // has no such bias.
+      const oppLineup = lineupBySide.get(sideKey(game.gamePk, oppSide)) || [];
+      const platoonSplits =
+        sideLineupStatus(oppLineup) === 'confirmed' ? platoonByPitcher.get(probable.id) : undefined;
       const handComp = lineupHandedness({
         lineup: lineupBySide.get(sideKey(game.gamePk, oppSide)),
         batSideFor: (id) => batters26.get(id)?.batSide?.code,

@@ -25,6 +25,10 @@ const ROUTES = [
   [/^\/api\/v1\/schedule$/, 60, 300],
   // Season aggregates: safe to hold for minutes.
   [/^\/api\/v1\/people$/, 600, 1800],
+  // Per-pitcher vs-LHB / vs-RHB splits (statSplits). FIX(v35): this route was
+  // missing, so every platoon request was rejected with a 400 that loadSlate
+  // swallows — the pitcher platoon adjustment in model/platoon.js never ran.
+  [/^\/api\/v1\/people\/\d+\/stats$/, 900, 3600],
   [/^\/api\/v1\/teams\/stats$/, 900, 3600],
   [/^\/api\/v1\/teams\/\d+\/roster$/, 900, 3600],
   // Essentially static reference data.

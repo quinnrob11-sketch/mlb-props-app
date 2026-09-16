@@ -243,6 +243,7 @@ test('game lines and NRFI flatten into ordinary rows with plain-English picks', 
   const byMarket = Object.fromEntries(rows.map((r) => [r.market, r]));
   assert.equal(rows.length, 4);
   assert.equal(pickText(byMarket.game_ml), 'Tigers win');
+  assert.equal(pickText({ ...byMarket.game_ml, game: { ...slateGame, away: { name: 'Chicago White Sox' } } }), 'White Sox win');
   assert.equal(pickText(byMarket.game_ml, 'over'), 'Guardians win');
   assert.equal(pickText(byMarket.game_spread), 'Guardians -1.5');
   assert.equal(pickText(byMarket.game_spread, 'under'), 'Tigers +1.5');

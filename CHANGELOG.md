@@ -1,3 +1,86 @@
+# MLB Edge Board — v35
+
+Game lines, a projection audit, and a clearer app.
+
+## Added — moneyline, run line, total
+
+`src/model/game.js` plays each game out inning by inning and returns the full
+distribution of final scores, so every team market reads off one picture. It
+simulates the skipped bottom of the ninth, walk-offs, and extra innings with a
+runner on second. Each half-inning is driven by the batting team's
+park-neutral offense, adjusted for tonight's lineup. The pitching side is the
+starter for his projected innings, then the bullpen (ERA/FIP blends shrunk to
+league average), with park and temperature on top. Scoring distributions are
+measured from 2,271 completed 2026 games, and four constants are fitted jointly
+(`tools/fit-game-model.mjs`):
+
+|                   | model  | actual |
+|-------------------|--------|--------|
+| home win          | 52.9%  | 52.9%  |
+| home −1.5 covers  | 36.0%  | 36.0%  |
+| over 8.5          | 49.7%  | 49.1%  |
+| NRFI              | 50.1%  | 49.5%  |
+| extra innings     | 9.8%   | 8.7%   |
+
+Prices come from two sources through the same consensus and edge engine. The
+Odds API provides DK, FD, MGM, CZR and PIN in one 3-credit call per slate.
+**Kalshi** provides KXMLBGAME, KXMLBSPREAD and KXMLBTOTAL, fees included. Kalshi
+is free and needs no key, so game lines still price when the Odds API key is
+dead.
+
+**How good is it:** on 2026-09-16 the model sat a median 3.1 points from Kalshi
+on moneylines and 3.2 on totals, with no directional lean (signed mean −0.2 and
+−0.3). That's close to the market but not sharper than it. Game lines carry a
+0.3 market weight, and anything more than 8 points off the market is a PASS.
+
+## Fixed — projections
+
+- **NRFI leaned NRFI by 3–4 points on every game.** The old model was centred on
+  54% NRFI and a .325 top-of-order OBP; the 2026 figures are 49.5% and .341.
+  NRFI now comes from the game model's first inning, which uses measured
+  first-inning run distributions per side. The bottom of the first scores 32%
+  more than the top.
+- **The pitcher platoon adjustment never ran.** `/api/v1/people/{id}/stats` was
+  not allowlisted in `api/mlb.js`, so every split request got a 400 that was
+  swallowed. The route is added, and the adjustment is applied only against a
+  posted lineup. Against projected lineups it moved strikeouts up and walks down
+  for nearly every starter, because projected cards ignore how managers stack
+  opposite-handed bats.
+- **Dodger Stadium had no park factors all season.** The 2026 schedule calls it
+  "UNIQLO Field at Dodger Stadium". An alias is added.
+- **ERA and FIP were used raw.** A 20-IP call-up with a 7.20 ERA leaned +10.6
+  points OVER on earned runs. Both now carry a 15-IP league prior, and a
+  non-numeric ERA can no longer turn projER into NaN.
+- **Doubleheaders were graded against the wrong game,** and game-2 props were
+  never snapshotted. Actuals and snapshot keys now carry the gamePk.
+- **Six bullpens were missing.** The team pitching-splits endpoint pages at 50
+  rows, and there are 60.
+
+## Changed — the app
+
+- **Games** is the landing tab: one card per game with starters, projected
+  score, win chance, and moneyline / run line / total / first inning. Each line
+  shows the side in plain words, model % vs market %, the gap, the best price
+  and the call.
+- A **data sources** panel replaces the raw error banner. It shows which feeds
+  worked, and when the odds key is dead it says what that costs and how to fix it.
+- Game lines and NRFI are ordinary rows, so they appear in Best Bets, the slip,
+  Results grading (settled off the linescore) and the profit breakdown.
+- Picks read as words ("Blue Jays −1.5", "Under 8.5 runs", "NRFI") rather than
+  OVER/UNDER.
+- The "unproven" warning sits above Best Bets instead of below every card.
+- Tabs are renamed and reordered. DFS and Kalshi Props are grouped as secondary.
+  NRFI lives on the game cards.
+- Prop boards show projections when no lines exist, instead of an empty table.
+
+## Open
+
+- The Odds API key in production is deactivated. Player props and sportsbook
+  game lines are empty until `ODDS_API_KEY` is replaced in Vercel.
+- Nothing has been shown to beat closing prices yet. Grade in Results.
+
+---
+
 # MLB Prop Engine — v20
 
 Recovered, repaired and extended. v19's source was lost; this tree was

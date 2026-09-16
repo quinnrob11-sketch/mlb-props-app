@@ -209,7 +209,9 @@ export default function PropTable({
   const [market, setMarket] = useState("ALL");
   const [sort, setSort] = useState("ev");
   const [expanded, setExpanded] = useState(null);
-  const [linesOnly, setLinesOnly] = useState(true);
+  // On by default — except when nothing on the slate has a line at all (the
+  // odds feed is down), where it would open every prop board on an empty table.
+  const [linesOnly, setLinesOnly] = useState(() => unfilteredRows.some((r) => r.line != null));
   const narrow = useIsNarrow();
 
   const visible = rows
