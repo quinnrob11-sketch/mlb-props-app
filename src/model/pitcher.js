@@ -81,6 +81,30 @@ export function parseInningsPitched(ip) {
  *     rather than 5, which tracks the late-season shortening of starters; it
  *     still leaves September about 3% high, so treat outs overs with care.
  *   - Hits allowed were calibrated in shape and ~3% high in level.
+ *
+ * TRIED(v35.2), NOT SHIPPED — measured on the same replay extended to Jun 1
+ * 2026 (fit Jun 1-Aug 31, holdouts Sep 1-15 and Aug 16-31) plus a full 2025
+ * replay; none improved log loss consistently across those samples:
+ *   - Recent-form K rate (last 3/5/8 starts vs the shrunk season rate): no
+ *     out-of-sample gain in corr or error. Neither was a wider or narrower K
+ *     shrinkage (strength 30/70, prior-season weight 0.3/0.6, spread x1.1-1.3).
+ *   - Season swinging-strike rate (whiffs per pitch, from play-by-play) blended
+ *     into the K rate: per-BF corr +-0.01, no gain on the count.
+ *   - Opponent K% over the last 14/30 days instead of season: +0.008 corr in
+ *     the regression, too small to justify a new live data feed.
+ *   - K rate uncertainty in dist.k (p x 0.75/1/1.25 mixture, bfSpread 3):
+ *     better on both fit windows and 2025, WORSE on Aug 16-31 (2.1130 ->
+ *     2.1167). Worth re-testing with more data.
+ *   - kLevel 0.96-0.97 after the reliever fix: better on fit and 2025, flat or
+ *     worse on Aug 16-31. Left at 0.95; strikeouts now run ~1.5% low.
+ *   - Workload: long rest (>=12/15/20 days) or <3 starts budget cuts, recency-
+ *     weighted pitch counts, keeping short outings, opponent pitches per PA,
+ *     bullpen outs over the last 1-3 days, a team starter-depth effect, and
+ *     re-fitting budgetSpread/hook constants — each <=0.001 or mixed.
+ *   - Late season: the best September budget cut on 2025 September moved outs
+ *     log loss only 2.5257 -> 2.5249 and made strikeouts worse; an outs-only
+ *     September level did no better. The ~2% September outs shortfall is
+ *     real in both seasons but too small next to outcome noise to fix this way.
  */
 export const PITCHER_TUNING = {
   kLevel: 0.95,
