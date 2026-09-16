@@ -1,5 +1,15 @@
 # Kalshi bot
 
+> **Evidence so far (v36):** backtested against real settled Kalshi prices from
+> Jul 10 to Sep 15 2026, the model showed **no edge** in any of the seven prop
+> series it can trade. Kalshi's own price was the better forecast in every one
+> (`docs/KALSHI-BACKTEST.md`, `docs/KALSHI-BATTER-BACKTEST.md`). So `liveSeries`
+> is empty by default: even with `"live": true` and `--live`, every order is
+> **paper traded**. It is decided and journaled exactly as it would be placed,
+> but never sent. Add a series (e.g. `"KXMLBOUTS"`) to `liveSeries` only once
+> `npm run bot:report` shows it beating the closing price over a meaningful
+> sample.
+
 Runs the MLB model against live Kalshi order books and places small orders
 within hard limits. It runs on this PC, never on the website, and your Kalshi
 key never leaves this machine.
@@ -101,6 +111,8 @@ before any real money is used. It reads Kalshi's public market data only.
 | `minEdgeAfterFees` | 0.02 | required edge beyond the fee |
 
 `markets.playerProps` and `markets.gameLines` switch each group on or off.
+`liveSeries` (default `[]`) lists the Kalshi series allowed to use real money;
+everything else is paper traded.
 
 ## Stopping
 

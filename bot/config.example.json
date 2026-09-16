@@ -1,6 +1,7 @@
 {
   "env": "demo",
   "live": false,
+  "liveSeries": [],
   "siteUrl": "https://mlb-props-app.vercel.app",
   "keyId": "",
   "privateKeyPath": "",

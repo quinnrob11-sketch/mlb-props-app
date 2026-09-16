@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installFetch } from '../tools/local-api.mjs';
 import { createClient, clientOrderId } from './kalshiClient.mjs';
+import { feePerContractCents } from '../src/trade/fees.js';
 import { planOrders, modelProbability, topOfBook, ALL_SERIES } from './plan.mjs';
 import { normalizeMarket } from '../src/lib/kalshi.js';
 import { parseKalshiGameTicker } from '../src/data/teamMarkets.js';
@@ -32,6 +33,24 @@ const STATE_DIR = path.resolve(opt('state-dir', path.join(HERE, 'state')));
 const STOP_FILE = path.join(HERE, 'STOP');
 const LOCK_FILE = path.join(STATE_DIR, 'run.lock');
 const todayEt = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+/**
+ * Whether an order may use real money.
+ *
+ * v36: live trading is opt-in PER SERIES through `liveSeries` in the config.
+ * Two lookahead-free backtests against real settled Kalshi prices (Jul 10 -
+ * Sep 15 2026, docs/KALSHI-BACKTEST.md and docs/KALSHI-BATTER-BACKTEST.md)
+ * found no edge in any of the seven prop series: the exchange price was the
+ * better forecast in every one, and bot-rule returns were negative or not
+ * distinguishable from zero. So the default list is empty, and a live run
+ * PAPER-TRADES everything — decides, sizes and journals each order exactly as
+ * it would place it, without sending it — so the track record keeps building
+ * (npm run bot:report) until a series earns its place on the list.
+ */
+export function isLiveSeries(order, config) {
+  const series = order.series || String(order.ticker).split('-')[0];
+  return Array.isArray(config.liveSeries) && config.liveSeries.includes(series);
+}
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
@@ -149,9 +168,10 @@ export async function main() {
         continue;
       }
       const line = `${order.side.toUpperCase()} ${order.count} x ${order.ticker} @ ${order.priceCents}c ($${order.costDollars}) edge ${order.edgePts}pts`;
-      if (!live) {
-        log(`would place: ${line}`);
-        journal({ type: 'dry-run', ...order, clientOrderId: id });
+      if (!live || !isLiveSeries(order, config)) {
+        const why = live ? 'series not in liveSeries (paper trade)' : 'dry run';
+        log(`would place (${why}): ${line}`);
+        journal({ type: 'dry-run', ...order, clientOrderId: id, paperReason: why });
         continue;
       }
       try {
@@ -159,7 +179,9 @@ export async function main() {
         state.sentClientIds.push(id);
         state.ordersToday += 1;
         const filled = Number(res.fill_count || 0);
-        state.spentTodayDollars += filled * (order.priceCents / 100);
+        // Count what the fills can have cost: our limit price is the most a
+        // taker fill pays, plus the fee. (Was price only — fees were left out.)
+        state.spentTodayDollars += filled * ((order.priceCents + feePerContractCents(order.priceCents)) / 100);
         saveState();
         placed += 1;
         log(`PLACED ${line} -> filled ${filled}, remaining ${res.remaining_count}`);

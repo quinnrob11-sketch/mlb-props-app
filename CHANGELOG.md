@@ -1,3 +1,51 @@
+# v36 — backtests against real Kalshi prices, model refits, paper-trading tracker
+
+## The answer to "does it make money?" (measured)
+Two lookahead-free backtests traded the model against **real settled Kalshi
+prices** from Jul 10 to Sep 15 2026, using the bot's own decision code:
+
+| | trades (bot rules) | ROI | model vs market Brier |
+|---|---|---|---|
+| Pitcher strikeouts + outs | 623 | −4.0% [−10.1, +2.3]; strikeouts −7.8% [−14.5, −1.0] | market better in every slice |
+| Batter hits / TB / HR / RBI / H+R+RBI | 609 | −3.4% [−11.0, +4.4] | market better in all five series |
+
+After v36's pitcher improvements, the pitcher replay is still −10.1% in Aug 10–Sep 15,
+and the market still has the better Brier score in both windows. No series met the
+edge rule, which was written down before any profit and loss was computed. Details:
+`docs/KALSHI-BACKTEST.md`, `docs/KALSHI-BATTER-BACKTEST.md`.
+
+## Bot: real money is opt-in per series
+- New `liveSeries` setting, empty by default. Even a `--live` run paper-trades every
+  series not on the list: each order is decided, sized and journaled exactly, but never sent.
+- `npm run bot:report` (`bot/report.mjs`) grades every journaled decision against
+  Kalshi's price at first pitch (CLV) and the settlement. It reports P&L after fees
+  with 95% intervals, split by market, side, price and edge, and also writes
+  `report.json` and `report.html`.
+- Doubleheaders (G1/G2 tickers) and team-tagged duplicate names like
+  "Max Muncy (LAD)" are now priced. Before, 4,285 markets were silently skipped.
+- Daily spend now includes fees.
+
+## Model
+- **Batter** (`BATTER_TUNING`; replay of 8,892 batter-games):
+  - Plate-appearance and hit-rate spread widened to match reality.
+  - HR shrinkage raised from 100 to 300.
+  - Holdout log loss improved in every Kalshi-listed batter market.
+  - All three batter calibration patches were absorbed or rejected.
+- **Pitcher:**
+  - Openers and bullpen games had been projected as full starts. They now get a
+    reliever-sized leash.
+  - Home/away strikeout and leash terms added.
+  - Holdout log loss: strikeouts 2.1897 → 2.1595, outs 2.4927 → 2.4411.
+  - Correlation with the actual result: strikeouts 0.46 → 0.50, outs 0.53 → 0.59.
+
+## Open decision
+The backtests put the best model weight at 0–0.25 in every prop series. The engine
+uses 0.35–0.55, so the board's EVs and verdicts still trust the model more than the
+evidence does. Lowering the weights to that range would remove nearly every play
+from both the board and the bot. That choice is left to the owner.
+
+---
+
 # v35.1 — board policy and pitcher refit
 
 ## Board policy (`PLAY_RULES`, src/lib/constants.js)

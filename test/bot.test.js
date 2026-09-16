@@ -298,3 +298,16 @@ test('a team-tagged name ("Max Muncy (LAD)") resolves to that team only', () => 
   const r = modelProbability(m, { games: [muncyGame] }, config);
   assert.equal(r.person?.id, 2, r.reason);
 });
+
+// ── v36: real money is opt-in per series ───────────────────────────────────
+
+import { isLiveSeries } from '../bot/run.mjs';
+
+test('no series trades real money unless it is listed in liveSeries', () => {
+  const order = { ticker: 'KXMLBOUTS-26SEP162140MIAAZ-AZMKELLY29-16' };
+  assert.equal(isLiveSeries(order, {}), false, 'missing list = paper');
+  assert.equal(isLiveSeries(order, { liveSeries: [] }), false, 'empty list = paper');
+  assert.equal(isLiveSeries(order, { liveSeries: ['KXMLBKS'] }), false, 'other series = paper');
+  assert.equal(isLiveSeries(order, { liveSeries: ['KXMLBOUTS'] }), true);
+  assert.equal(isLiveSeries({ ...order, series: 'KXMLBHIT' }, { liveSeries: ['KXMLBOUTS'] }), false, 'explicit series wins');
+});
