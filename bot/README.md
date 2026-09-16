@@ -61,6 +61,8 @@ safety settings, game lines rarely if ever clear the bar; that's intentional.
 | `bankrollDollars` | 100 | the most of your balance it will size against |
 | `maxOrderDollars` | 5 | cap on any single order |
 | `maxGameExposureDollars` | 10 | cap across all positions in one game |
+| `maxPlayerExposureDollars` | 5 | cap across all bets on one player (hits, total bases, H+R+RBI… count together) |
+| `maxBetsPerPlayer` | 1 | how many different bets on one player, including ones already held |
 | `maxOpenExposureDollars` | 40 | cap across everything open |
 | `maxDailySpendDollars` | 30 | cap on new money per day |
 | `maxDailyLossDollars` | 20 | halts for the day once account value is down this much |

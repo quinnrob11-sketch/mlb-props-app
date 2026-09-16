@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 
 import { signingString, sign, orderBody, clientOrderId } from '../bot/kalshiClient.mjs';
-import { planOrders, modelProbability, topOfBook } from '../bot/plan.mjs';
+import { planOrders, modelProbability, topOfBook, playerKeyOf } from '../bot/plan.mjs';
 import { normalizeMarket } from '../src/lib/kalshi.js';
 
 // ── signing ────────────────────────────────────────────────────────────────
@@ -213,4 +213,63 @@ test('top-of-book screening reads a market listing', () => {
   assert.deepEqual(b.orderbook.yes[0], [41, 1e6]);
   assert.deepEqual(b.orderbook.no[0], [57, 1e6]);
   assert.equal(topOfBook(kmarket('X-26SEP161910DETCLE-CLE', {})), null);
+});
+
+// ── per-player limits ──────────────────────────────────────────────────────
+
+test('hits and total bases on the same player share one player key', () => {
+  assert.equal(
+    playerKeyOf('KXMLBHIT-26SEP161310CWSCLE-CWSRGRICHUK34-2'),
+    playerKeyOf('KXMLBTB-26SEP161310CWSCLE-CWSRGRICHUK34-2'),
+  );
+  assert.notEqual(
+    playerKeyOf('KXMLBTB-26SEP161310CWSCLE-CWSRGRICHUK34-2'),
+    playerKeyOf('KXMLBTB-26SEP161310CWSCLE-CWSOTHER12-2'),
+  );
+  assert.equal(playerKeyOf('KXMLBGAME-26SEP161310CWSCLE-CLE'), null, 'game lines have no player');
+});
+
+const HIT = 'KXMLBHIT-26SEP161910DETCLE-CLETBAT20-2';
+const TB = 'KXMLBTB-26SEP161910DETCLE-CLETBAT20-2';
+const batGame = {
+  ...game,
+  batters: [{ id: 20, name: 'Test Bat', lineupSource: 'confirmed', proj: { dist: { hits: () => 0.6, tb: () => 0.65 } } }], // tb carries a -2.35pt calibration at 1.5
+};
+const batPlan = (overrides = {}) =>
+  planOrders({
+    slate: { games: [batGame] },
+    markets: [
+      kmarket(HIT, { yes_sub_title: 'Test Bat: 2+', floor_strike: 1.5 }),
+      kmarket(TB, { yes_sub_title: 'Test Bat: 2+', floor_strike: 1.5 }),
+    ],
+    books: new Map([
+      [HIT, book(49, 50)],
+      [TB, book(52, 53)], // both contracts clear fee + 2pts on their own, after calibration
+    ]),
+    account: emptyAccount,
+    state: freshState,
+    config,
+    now: NOW,
+    ...overrides,
+  });
+
+test('two bet types on one player place one order, not two', () => {
+  const { orders, considered } = batPlan();
+  assert.equal(orders.length, 1, JSON.stringify(orders));
+  assert.ok(considered.some((c) => /bet\(s\) on this player/.test(c.skip)), JSON.stringify(considered));
+});
+
+test('a player already held is not bet on again in another series', () => {
+  const { orders } = batPlan({
+    account: { ...emptyAccount, positions: [{ ticker: 'KXMLBHR-26SEP161910DETCLE-CLETBAT20-1', position: 5, exposureDollars: 1 }] },
+  });
+  assert.equal(orders.length, 0);
+});
+
+test('raising maxBetsPerPlayer allows more bets, still under the player dollar cap', () => {
+  const loose = { ...config, limits: { ...config.limits, maxBetsPerPlayer: 2, maxPlayerExposureDollars: 5 } };
+  const { orders } = batPlan({ config: loose });
+  assert.equal(orders.length, 2);
+  const total = orders.reduce((s, o) => s + o.costDollars, 0);
+  assert.ok(total <= 5 + 1e-9, `player total $${total}`);
 });

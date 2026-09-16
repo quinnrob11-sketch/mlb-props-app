@@ -88,6 +88,18 @@ function sameDay(game, date) {
   return et === date;
 }
 
+/**
+ * The player a prop ticker settles on, as "<game>:<player>", or null for game
+ * lines. Kalshi uses the same player segment in every series —
+ * KXMLBHIT-26SEP161310CWSCLE-CWSRGRICHUK34-2 and
+ * KXMLBTB-26SEP161310CWSCLE-CWSRGRICHUK34-2 are the same hitter — so this is
+ * what ties a hits contract and a total-bases contract to one person.
+ */
+export function playerKeyOf(ticker) {
+  const parts = String(ticker).split('-');
+  return parts.length >= 4 ? `${parts[1]}:${parts[2]}` : null;
+}
+
 /** Correlated rungs (one player's ladder, one game's ladder) collapse to one bet. */
 function groupKey(market, info) {
   if (info.kind === 'prop') return `${market.series}:${info.game.gamePk}:${info.person.id}`;
@@ -199,18 +211,36 @@ export function planOrders({ slate, markets, books, account, state, config, now 
   // ── size, best first, within every limit ────────────────────────────────
   const gameOf = (ticker) => String(ticker).split('-')[1] || ticker;
   const exposure = { total: 0, byGame: {}, byPlayer: {}, realisedToday: -Math.max(0, lossToday) };
+  // FIX: player exposure. Hits, total bases, H+R+RBI and home runs on the same
+  // hitter are close to one bet — a two-hit night wins all of them and an 0-for-4
+  // loses all of them — but they are different series, so the one-rung-per-
+  // ladder rule never saw them together. An earlier version also passed the
+  // contract ticker as the "player", so the per-player cap never bound either.
+  // Now every prop is keyed to its player, held positions and resting orders
+  // count, and both a dollar cap and a bet count apply per player.
+  const betsByPlayer = {};
   for (const p of account.positions || []) {
     const cost = Math.abs(Number(p.exposureDollars) || 0);
     exposure.total += cost;
     exposure.byGame[gameOf(p.ticker)] = (exposure.byGame[gameOf(p.ticker)] || 0) + cost;
+    const pk = playerKeyOf(p.ticker);
+    if (pk && Number(p.position) !== 0) {
+      exposure.byPlayer[pk] = (exposure.byPlayer[pk] || 0) + cost;
+      betsByPlayer[pk] = (betsByPlayer[pk] || 0) + 1;
+    }
   }
+  for (const ticker of account.restingTickers || []) {
+    const pk = playerKeyOf(ticker);
+    if (pk) betsByPlayer[pk] = (betsByPlayer[pk] || 0) + 1;
+  }
+  const maxBetsPerPlayer = L.maxBetsPerPlayer ?? 1;
 
   const riskLimits = {
     kellyFraction: L.kellyFraction,
     maxPositionFraction: L.maxOrderDollars / bankroll,
     maxTotalExposureFraction: L.maxOpenExposureDollars / bankroll,
     maxGameExposureFraction: L.maxGameExposureDollars / bankroll,
-    maxPlayerExposureFraction: L.maxOrderDollars / bankroll,
+    maxPlayerExposureFraction: (L.maxPlayerExposureDollars ?? L.maxOrderDollars) / bankroll,
     dailyLossLimitFraction: L.maxDailyLossDollars / bankroll,
     maxDepthShare: 0.5,
     maxContractsPerOrder: L.maxContractsPerOrder,
@@ -232,7 +262,12 @@ export function planOrders({ slate, markets, books, account, state, config, now 
       continue;
     }
     const gameId = gameOf(market.ticker);
-    const sizing = sizeOrder({ signal, bankroll, exposure, gameId, playerId: market.ticker, limits: riskLimits });
+    const playerId = playerKeyOf(market.ticker);
+    if (playerId && (betsByPlayer[playerId] || 0) >= maxBetsPerPlayer) {
+      note({ ...entry, skip: `already ${betsByPlayer[playerId]} bet(s) on this player (limit ${maxBetsPerPlayer})` });
+      continue;
+    }
+    const sizing = sizeOrder({ signal, bankroll, exposure, gameId, playerId, limits: riskLimits });
     const price = signal.priceCents / 100;
     const count = Math.floor(Math.min(sizing.costDollars, spendLeft) / price);
     if (count < 1) {
@@ -243,6 +278,10 @@ export function planOrders({ slate, markets, books, account, state, config, now 
     orders.push({ ...entry, count, costDollars: +cost.toFixed(2), binding: sizing.binding, kind: info.kind, marketKey: info.marketKey });
     exposure.total += cost;
     exposure.byGame[gameId] = (exposure.byGame[gameId] || 0) + cost;
+    if (playerId) {
+      exposure.byPlayer[playerId] = (exposure.byPlayer[playerId] || 0) + cost;
+      betsByPlayer[playerId] = (betsByPlayer[playerId] || 0) + 1;
+    }
     spendLeft -= cost;
     ordersLeft -= 1;
   }

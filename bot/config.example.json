@@ -15,6 +15,8 @@
     "bankrollDollars": 100,
     "maxOrderDollars": 5,
     "maxGameExposureDollars": 10,
+    "maxPlayerExposureDollars": 5,
+    "maxBetsPerPlayer": 1,
     "maxOpenExposureDollars": 40,
     "maxDailySpendDollars": 30,
     "maxDailyLossDollars": 20,
