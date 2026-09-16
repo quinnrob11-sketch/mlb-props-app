@@ -135,20 +135,23 @@ test("a lone book's alt ladder does not drag the main line off the base market",
 // ─────────────────────────────────────────────────────────────────────────────
 
 test("a book quoting the same point in both feeds is counted once", () => {
+  // Batter hits (weight 0.45, same as pitcher strikeouts): pitcher props now
+  // need 2+ books to be a play at all (PLAY_RULES), which would mask the
+  // single-book demotion this test is about.
   const dk = quote("DK", 5.5, 150, -180);
   const odds = {
-    pitcher_strikeouts: { "test player": [dk] },
-    pitcher_strikeouts_alternate: { "test player": [{ ...dk }] },
+    batter_hits: { "test player": [dk] },
+    batter_hits_alternate: { "test player": [{ ...dk }] },
   };
 
   // Model sits 0.119 above the market's fair price (inside the 0.12
   // implausibility limit, so the row stays callable): without the
   // demotion this is a STRONG.
   const rows = attachLines(
-    only(PITCHER_MARKETS, "pitcher_strikeouts"),
+    only(BATTER_MARKETS, "batter_hits"),
     "test player",
     odds,
-    projection("k", { 5.5: 0.495 }),
+    projection("hits", { 5.5: 0.495 }, 0.5, "projH"),
     false,
   );
   const main = rows[0];
@@ -240,9 +243,10 @@ test("a point-less quote cannot win the modal vote against a real one", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 test("a base-market outlier is an alternate LINE, not an alternate MARKET", () => {
-  // pitcher_outs has no alternate ladder at all.
+  // batter_singles has no alternate ladder at all (and, unlike a pitcher prop,
+  // is not subject to the 2-book / +150 play rules).
   const odds = {
-    pitcher_outs: {
+    batter_singles: {
       "test player": [
         quote("DK", 17.5, -110, -110),
         quote("FD", 17.5, -110, -110),
@@ -253,10 +257,10 @@ test("a base-market outlier is an alternate LINE, not an alternate MARKET", () =
   };
 
   const rows = attachLines(
-    only(PITCHER_MARKETS, "pitcher_outs"),
+    only(BATTER_MARKETS, "batter_singles"),
     "test player",
     odds,
-    projection("outs", { 15.5: 0.64 }, 0.5, "projOuts"),
+    projection("singles", { 15.5: 0.64 }, 0.5, "proj1B"),
     false,
   );
 

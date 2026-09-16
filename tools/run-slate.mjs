@@ -1,14 +1,17 @@
 // Load a real slate in Node through this branch's own API handlers and print
 // the game-line board: model vs market for every moneyline, run line and total.
 //
-//   node tools/run-slate.mjs [YYYY-MM-DD] [--json out.json]
+//   node tools/run-slate.mjs [YYYY-MM-DD] [--json out.json] [--live]
+//
+// --live routes /api/* through the production deployment (its odds key, its
+// CDN cache) instead of this branch's handlers.
 //
 // Also reports how far the model sits from the market, the number that decides
 // whether a disagreement is believable (IMPLAUSIBLE_TEAM_EDGE).
 import fs from 'node:fs';
 import { installFetch } from './local-api.mjs';
 
-installFetch();
+installFetch(process.argv.includes('--live') ? 'https://mlb-props-app.vercel.app' : undefined);
 const { loadSlate } = await import('../src/data/loadSlate.js');
 
 const date = process.argv.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a)) ||

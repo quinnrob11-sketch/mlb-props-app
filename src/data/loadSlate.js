@@ -44,7 +44,7 @@ import {
   marketsParam,
   DOMED_PARKS,
 } from '../lib/markets.js';
-import { MARKET_WEIGHT } from '../lib/constants.js';
+import { MARKET_WEIGHT, PLAY_RULES } from '../lib/constants.js';
 import { parseEventOdds, bestQuote, attachLines } from '../model/lines.js';
 import { LEAGUE_AVG } from '../model/league.js';
 import { projectPitcher, parseInningsPitched } from '../model/pitcher.js';
@@ -53,7 +53,7 @@ import { lineupHandedness, platoonMultipliers } from '../model/platoon.js';
 import { projectBatter, SB_PER_GAME_PRIOR, PA_BY_LINEUP_SLOT } from '../model/batter.js';
 import { evaluateEdge } from '../model/edges.js';
 import { projectGame, leagueRunPrevention } from '../model/game.js';
-import { fetchTeamMarketQuotes, priceTeamMarkets } from './teamMarkets.js';
+import { fetchTeamMarketQuotes, priceTeamMarkets, GAME_LINES_INFO_ONLY } from './teamMarkets.js';
 import { createLineupProjector, PROJ_LINEUP_FLAG } from './projectedLineup.js';
 
 /**
@@ -965,7 +965,11 @@ export async function loadSlate({
           0.5,
           nrfiQuote.over,
           nrfiQuote.under,
-          { weight: MARKET_WEIGHT.nrfi, quotes: nrfiQuote.quotes },
+          {
+            weight: MARKET_WEIGHT.nrfi,
+            quotes: nrfiQuote.quotes,
+            informationOnly: PLAY_RULES.gameLinesInformationOnly ? GAME_LINES_INFO_ONLY : undefined,
+          },
         );
       }
     }

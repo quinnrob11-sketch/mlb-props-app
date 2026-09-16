@@ -26,7 +26,7 @@ import { probToAmerican } from '../lib/odds.js';
 import { bestQuote } from '../model/lines.js';
 import { evaluateEdge } from '../model/edges.js';
 import { noPush } from '../model/game.js';
-import { MARKET_WEIGHT } from '../lib/constants.js';
+import { MARKET_WEIGHT, PLAY_RULES } from '../lib/constants.js';
 
 export const TEAM_MARKETS = {
   game_ml: { label: 'Moneyline', short: 'ML' },
@@ -253,6 +253,7 @@ export function priceTeamMarkets(model, books, kalshi) {
       quotes: best.quotes,
       weight: MARKET_WEIGHT[key],
       implausibleEdge: IMPLAUSIBLE_TEAM_EDGE,
+      informationOnly: PLAY_RULES.gameLinesInformationOnly ? GAME_LINES_INFO_ONLY : undefined,
     });
 
     rows.push({
@@ -286,6 +287,9 @@ const impliedOver = (q) => {
  * CHANGELOG (v35) for how this was set against live Kalshi prices.
  */
 export const IMPLAUSIBLE_TEAM_EDGE = 0.08;
+
+/** Reason shown on every game-line and NRFI row while PLAY_RULES keeps them off the board. */
+export const GAME_LINES_INFO_ONLY = 'game lines are information only — model is noisier than the market';
 
 /**
  * Fetch both price sources for a slate. Never rejects: each source reports its

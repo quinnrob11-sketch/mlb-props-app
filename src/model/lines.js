@@ -61,6 +61,7 @@ import {
 import { americanToDecimal } from "../lib/odds.js";
 import { isDfs, rowVenue, venue as venueInfo, venueKeyByShort } from "../lib/venues.js";
 import { MARKET_WEIGHT, evaluateEdge } from "./edges.js";
+import { PLAY_RULES } from "../lib/constants.js";
 
 /** Player key used for team markets, which carry no `description`. */
 const GAME_KEY = "__game__";
@@ -1250,6 +1251,11 @@ function venuesForLine(quotes, line, book, side) {
   };
 }
 
+/** Board policy for a market key; see PLAY_RULES in lib/constants.js. */
+function playRulesFor(marketKey) {
+  return String(marketKey).startsWith("pitcher_") ? PLAY_RULES.pitcher : {};
+}
+
 /**
  * Build the priced rows for one player across a table of markets.
  *
@@ -1341,6 +1347,7 @@ export function attachLines(markets, player, odds, projection, smallSample) {
       line != null
         ? evaluateEdge(modelOver, line, main.over, main.under, {
             smallSample,
+            ...playRulesFor(marketKey),
             weight: MARKET_WEIGHT[marketKey],
             // Deduplicated: the engine's nBooks and the row's nBooks are two
             // views of the same book set now, not two different countings.
@@ -1393,6 +1400,7 @@ export function attachLines(markets, player, odds, projection, smallSample) {
       const modelOverAlt = projection.dist[spec.distKey](point);
       const edgeAlt = evaluateEdge(modelOverAlt, point, sub.over, sub.under, {
         smallSample,
+        ...playRulesFor(marketKey),
         weight: MARKET_WEIGHT[marketKey],
         quotes: sub.quotes,
       });

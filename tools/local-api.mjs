@@ -43,7 +43,14 @@ export async function apiFetch(url, init = {}) {
   });
 }
 
-export function installFetch() {
-  globalThis.fetch = (url, init) =>
-    typeof url === 'string' && url.startsWith('/api/') ? apiFetch(url, init) : realFetch(url, init);
+/**
+ * @param {string} [liveBase] e.g. 'https://mlb-props-app.vercel.app' — send
+ *   '/api/...' to that deployment instead, so its server-side ODDS_API_KEY is
+ *   used and no key ever has to exist locally.
+ */
+export function installFetch(liveBase) {
+  globalThis.fetch = (url, init) => {
+    if (typeof url !== 'string' || !url.startsWith('/api/')) return realFetch(url, init);
+    return liveBase ? realFetch(liveBase + url, init) : apiFetch(url, init);
+  };
 }

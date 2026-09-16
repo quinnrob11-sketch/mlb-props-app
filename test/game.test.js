@@ -386,3 +386,43 @@ test('a game called before nine innings voids run line and total, keeps the mone
     restore();
   }
 });
+
+// ── v35.1 board policy ─────────────────────────────────────────────────────
+
+import { attachLines } from '../src/model/lines.js';
+import { PITCHER_MARKETS } from '../src/lib/markets.js';
+
+const pitcherOdds = (quotes) => ({ pitcher_strikeouts: { 'test arm': quotes } });
+const kProjection = (p) => ({ projK: 6, dist: { k: () => p } });
+const kRow = (quotes, p) =>
+  attachLines({ pitcher_strikeouts: PITCHER_MARKETS.pitcher_strikeouts }, 'test arm', pitcherOdds(quotes), kProjection(p), false)[0];
+
+test('a pitcher prop priced by one book is never a play', () => {
+  const row = kRow([{ book: 'DK', point: 5.5, over: 110, under: -130, w: 1 }], 0.55);
+  assert.equal(row.edge.verdict, 'PASS');
+  assert.ok(row.edge.why.includes('needs 2+ books'), row.edge.why.join());
+});
+
+test('a pitcher prop longer than +150 is never a play', () => {
+  const q = (book) => ({ book, point: 5.5, over: 190, under: -240, w: 1 });
+  // Model 42% vs a 31% market: a LEAN on price alone before the +150 rule.
+  const row = kRow([q('DK'), q('FD')], 0.42);
+  assert.equal(row.edge.verdict, 'PASS');
+  assert.ok(row.edge.why.includes('price longer than +150'), row.edge.why.join());
+});
+
+test('a two-book pitcher prop at a normal price can still be a play', () => {
+  const q = (book) => ({ book, point: 5.5, over: 105, under: -125, w: 1 });
+  const row = kRow([q('DK'), q('FD')], 0.55);
+  assert.notEqual(row.edge.verdict, 'PASS', row.edge.why.join());
+});
+
+test('game lines are information only', () => {
+  // 56% vs a 49% low-margin market (+105/-105): a LEAN before the information-only rule.
+  const model = { pHome: 0.56, pAway: 0.44, spread: () => ({ home: 0.5, away: 0.5, push: 0 }), total: () => ({ over: 0.5, under: 0.5, push: 0 }) };
+  const q = (book) => ({ book, point: 0, over: 105, under: -105, w: 1 });
+  const [ml] = priceTeamMarkets(model, { game_ml: [q('DK'), q('FD')], game_spread: [], game_total: [] }, null);
+  assert.equal(ml.edge.verdict, 'PASS');
+  assert.ok(ml.edge.why.some((w) => w.startsWith('game lines are information only')), ml.edge.why.join());
+  assert.ok(ml.edge.ev > 0, 'the number is still shown');
+});

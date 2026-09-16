@@ -78,6 +78,10 @@ export { MARKET_WEIGHT };
  * @param {boolean} [opts.smallSample] - Player has thin playing-time data.
  * @param {number} [opts.implausibleEdge=0.12] - Disagreement with the market
  *   past which the model is assumed wrong and the row is a PASS.
+ * @param {string} [opts.informationOnly] - When set, the row can never be a
+ *   play; the string is the reason shown.
+ * @param {number} [opts.minBooks] - Fewest books that must price the row.
+ * @param {number} [opts.maxOdds] - Longest American price a play may carry.
  * @returns {EdgeResult|null} null when `modelOver` or `line` is null.
  */
 export function evaluateEdge(modelOver, line, overOdds, underOdds, opts = {}) {
@@ -297,6 +301,21 @@ export function evaluateEdge(modelOver, line, overOdds, underOdds, opts = {}) {
   ) {
     why.push(odds > 150 ? "long price" : "heavy juice");
     verdict = "LEAN";
+  }
+
+  // Board policy gates (v35.1) — see PLAY_RULES in lib/constants.js. Applied
+  // last so every other reason is still recorded, and only ever demote.
+  if (verdict !== "PASS" && opts.maxOdds != null && odds != null && odds > opts.maxOdds) {
+    why.push(`price longer than +${opts.maxOdds}`);
+    verdict = "PASS";
+  }
+  if (verdict !== "PASS" && opts.minBooks != null && (nBooks ?? 0) < opts.minBooks) {
+    why.push(`needs ${opts.minBooks}+ books`);
+    verdict = "PASS";
+  }
+  if (verdict !== "PASS" && opts.informationOnly) {
+    why.push(opts.informationOnly);
+    verdict = "PASS";
   }
 
   // ── 5. staking ────────────────────────────────────────────────────────────
