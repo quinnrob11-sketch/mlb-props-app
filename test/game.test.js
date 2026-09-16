@@ -426,3 +426,21 @@ test('game lines are information only', () => {
   assert.ok(ml.edge.why.some((w) => w.startsWith('game lines are information only')), ml.edge.why.join());
   assert.ok(ml.edge.ev > 0, 'the number is still shown');
 });
+
+// ── v35.2 pitcher leash ────────────────────────────────────────────────────
+
+test('a reliever handed a start gets a reliever-sized leash, not 82 pitches', () => {
+  // 30 relief appearances at ~22 pitches, no start this season, a starter last year.
+  const reliever = { gamesStarted: 0, gamesPlayed: 30, numberOfPitches: 660, battersFaced: 170, strikeOuts: 45, baseOnBalls: 15, hits: 35, homeRuns: 4, inningsPitched: '40.0', era: '3.60' };
+  const lastYearStarter = { gamesStarted: 28, gamesPlayed: 28, numberOfPitches: 2500, battersFaced: 640, strikeOuts: 150, baseOnBalls: 50, hits: 140, homeRuns: 18, inningsPitched: '150.0', era: '4.10' };
+  const opener = projectPitcher({ season26: reliever, season25: lastYearStarter, gameLog: [], park: 'Target Field' });
+  assert.ok(opener.workload.budget < 45, `budget ${opener.workload.budget}`);
+  assert.ok(opener.projOuts < 10, `projOuts ${opener.projOuts}`);
+  // The old behaviour is still one tuning override away.
+  const old = projectPitcher({ season26: reliever, season25: lastYearStarter, gameLog: [], park: 'Target Field', tuning: { reliefBudget: null, budgetFloor: 45 } });
+  assert.ok(old.workload.budget > 75, `old budget ${old.workload.budget}`);
+  // A pitcher with starts in his log is untouched by the relief rule.
+  const starterLog = [1, 2, 3].map((i) => ({ ip: 6, pitches: 95, bf: 24, k: 6, date: `2026-08-0${i}` }));
+  const starter = projectPitcher({ season26: { ...lastYearStarter, gamesStarted: 3, gamesPlayed: 3, numberOfPitches: 285 }, season25: null, gameLog: starterLog, park: 'Target Field' });
+  assert.ok(starter.workload.budget > 90, `starter budget ${starter.workload.budget}`);
+});
