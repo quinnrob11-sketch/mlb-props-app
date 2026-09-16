@@ -43,9 +43,28 @@ function edgePointsOf(edge) {
     : null;
 }
 
-/** Stable identity for a snapshot row. Alternate lines get their own row. */
+/**
+ * Stable identity for a snapshot row. Alternate lines get their own row.
+ *
+ * FIX(v35) — the key carries the gamePk. Without it, the second game of a
+ * doubleheader produced the same key as the first and its rows were silently
+ * dropped, so a player's game-2 props were never recorded. Rows saved before
+ * v35 have no gamePk and keep their old key.
+ */
 export function snapshotRowKey(row) {
-  return `${row.kind}:${row.playerId}:${row.market}${row.alt ? ":alt" + row.line : ""}`;
+  const game = row.gamePk != null ? `${row.gamePk}:` : "";
+  return `${row.kind}:${game}${row.playerId}:${row.market}${row.alt ? ":alt" + row.line : ""}`;
+}
+
+/** The pre-v35 key, used only to avoid re-recording rows saved under it. */
+function legacyRowKey(row) {
+  return snapshotRowKey({ ...row, gamePk: undefined });
+}
+
+/** Closing-line key; see snapshotRowKey for why the gamePk is in it. */
+export function closingLineKey(row) {
+  const game = row.gamePk != null ? `${row.gamePk}:` : "";
+  return `${row.kind}:${game}${row.playerId}:${row.market}:${row.line}`;
 }
 
 /**
@@ -60,10 +79,16 @@ export function saveSnapshot(date, slate) {
     const seen = new Set(rows.map(snapshotRowKey));
 
     for (const row of flattenRows(slate)) {
-      if (row.line == null || !row.edge || seen.has(snapshotRowKey(row)))
+      if (
+        row.line == null ||
+        !row.edge ||
+        seen.has(snapshotRowKey(row)) ||
+        seen.has(legacyRowKey(row))
+      )
         continue;
       seen.add(snapshotRowKey(row));
       rows.push({
+        gamePk: row.gamePk,
         playerId: row.playerId,
         name: row.name,
         kind: row.kind,
@@ -116,7 +141,7 @@ export function saveClosingLines(date, slate) {
     const store = JSON.parse(localStorage.getItem(storeKey) || "{}");
     for (const row of flattenRows(slate)) {
       if (row.line == null) continue;
-      store[`${row.kind}:${row.playerId}:${row.market}:${row.line}`] = {
+      store[closingLineKey(row)] = {
         over: row.over,
         under: row.under,
         ts: Date.now(),

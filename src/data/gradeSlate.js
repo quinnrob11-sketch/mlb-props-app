@@ -13,12 +13,36 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
 
   status('Fetching final boxscores…');
   const finals = (
-    (await mlbFetch(`/api/v1/schedule?sportId=1&date=${date}`)).dates?.[0]
+    (await mlbFetch(`/api/v1/schedule?sportId=1&date=${date}&hydrate=linescore`)).dates?.[0]
       ?.games || []
   ).filter((game) => game.status?.abstractGameState === 'Final');
 
-  // playerId -> { pitching?, batting? }
-  const actualsByPlayer = new Map();
+  // FIX(v35) — actuals are keyed by GAME and player. Keyed by player alone, the
+  // second game of a doubleheader overwrote the first, so every doubleheader
+  // prop was graded against whichever boxscore happened to be read last
+  // (2026-09-04 DET@CLE: 13 batters had different hit totals across the two
+  // games). `gamesByPlayer` lets a pre-v35 row with no gamePk be graded only
+  // when the player appeared in exactly one game that day.
+  const actuals = new Map(); // `${gamePk}:${playerId}` -> { pitching?, batting? }
+  const gamesByPlayer = new Map(); // playerId -> Set<gamePk>
+
+  // Game-line results straight from the linescore: final score and first inning.
+  const gameResults = new Map();
+  for (const game of finals) {
+    const ls = game.linescore;
+    const away = ls?.teams?.away?.runs ?? game.teams?.away?.score;
+    const home = ls?.teams?.home?.runs ?? game.teams?.home?.score;
+    if (away == null || home == null) continue;
+    const first = ls?.innings?.[0];
+    gameResults.set(game.gamePk, {
+      margin: home - away,
+      total: home + away,
+      firstInning:
+        first && first.away?.runs != null && first.home?.runs != null
+          ? first.away.runs + first.home.runs
+          : null,
+    });
+  }
 
   // Boxscores are fetched concurrently. This used to be a sequential loop so
   // that each game could get its own status line, which cost one full round
@@ -33,7 +57,8 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
     }),
   );
 
-  for (const box of boxes) {
+  boxes.forEach((box, boxIndex) => {
+    const gamePk = finals[boxIndex].gamePk;
     for (const side of ['away', 'home']) {
       const players = box.teams?.[side]?.players || {};
       for (const key of Object.keys(players)) {
@@ -41,7 +66,7 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
         const playerId = entry.person?.id;
         if (!playerId) continue;
 
-        const rec = actualsByPlayer.get(playerId) || {};
+        const rec = actuals.get(`${gamePk}:${playerId}`) || {};
         const pitching = entry.stats?.pitching;
         const batting = entry.stats?.batting;
 
@@ -77,16 +102,44 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
             hrr: (batting.hits || 0) + (batting.runs || 0) + (batting.rbi || 0),
           };
 
-        actualsByPlayer.set(playerId, rec);
+        actuals.set(`${gamePk}:${playerId}`, rec);
+        if (!gamesByPlayer.has(playerId)) gamesByPlayer.set(playerId, new Set());
+        gamesByPlayer.get(playerId).add(gamePk);
       }
     }
-  }
+  });
+
+  /** The actual value a snapshot row settles on, or undefined. */
+  const actualFor = (row) => {
+    if (row.kind === 'game' || row.kind === 'nrfi') {
+      const result = gameResults.get(row.gamePk ?? row.playerId);
+      if (!result) return undefined;
+      if (row.kind === 'nrfi') return result.firstInning ?? undefined;
+      if (row.market === 'game_total') return result.total;
+      // Moneyline and run line settle on the home margin. "over" is the home
+      // side, so the home side wins when margin > -line (line 0 for ML).
+      return result.margin;
+    }
+    let gamePk = row.gamePk;
+    if (gamePk == null) {
+      const games = gamesByPlayer.get(row.playerId);
+      // A legacy row for a player who played twice cannot be placed: say so
+      // rather than grade it against a guess.
+      if (!games || games.size !== 1) return undefined;
+      gamePk = [...games][0];
+    }
+    const rec = actuals.get(`${gamePk}:${row.playerId}`);
+    const line = row.kind === 'pitcher' ? rec?.pitching : rec?.batting;
+    return line ? line[row.distKey] : undefined;
+  };
+
+  /** The number `actual` is compared against for "over". */
+  const settleLine = (row) =>
+    row.kind === 'game' && row.market !== 'game_total' ? -(row.line ?? 0) : row.line;
 
   const graded = [];
   for (const row of snapshot?.rows || []) {
-    const rec = actualsByPlayer.get(row.playerId);
-    const line = row.kind === 'pitcher' ? rec?.pitching : rec?.batting;
-    const actual = line ? line[row.distKey] : undefined;
+    const actual = actualFor(row);
 
     if (actual === undefined) {
       graded.push({ ...row, actual: null, result: 'NO DATA' });
@@ -95,8 +148,9 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
 
     // Book lines are usually half-points, so PUSH only happens on integer lines.
     let over = 'PUSH';
-    if (actual > row.line) over = 'over';
-    else if (actual < row.line) over = 'under';
+    const against = settleLine(row);
+    if (actual > against) over = 'over';
+    else if (actual < against) over = 'under';
 
     const result =
       row.side && over !== 'PUSH'

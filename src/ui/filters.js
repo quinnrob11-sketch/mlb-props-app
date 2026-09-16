@@ -18,6 +18,7 @@
  */
 
 import { PITCHER_MARKETS, BATTER_MARKETS } from '../lib/markets.js';
+import { TEAM_MARKETS } from '../data/teamMarkets.js';
 
 // ── 1. vocabulary ──────────────────────────────────────────────────────────
 
@@ -27,10 +28,17 @@ export const VERDICT_TIERS = ['STRONG', 'SOLID', 'LEAN', 'PASS'];
 /** Book short labels, matching `BOOK_LABEL` in lib/markets.js. */
 export const BOOK_CHOICES = ['DK', 'FD', 'MGM', 'CZR', 'PIN'];
 
-/** Row kinds. `nrfi` has no rows today; the criterion is wired for when it does. */
-export const KIND_CHOICES = ['pitcher', 'batter', 'nrfi'];
+/** Row kinds. `game` is moneyline / run line / total (v35). */
+export const KIND_CHOICES = ['pitcher', 'batter', 'game', 'nrfi'];
 
-export const KIND_LABEL = { pitcher: 'Pitchers', batter: 'Batters', nrfi: 'NRFI' };
+export const KIND_LABEL = { pitcher: 'Pitchers', batter: 'Batters', game: 'Game lines', nrfi: 'NRFI' };
+
+/**
+ * The full kind set before game lines existed. A saved filter holding exactly
+ * this set meant "everything" when it was saved, so it is read as everything
+ * now — otherwise every existing user would open v35 with game lines hidden.
+ */
+const LEGACY_ALL_KINDS = ['pitcher', 'batter', 'nrfi'];
 
 /** Flags the data-quality group can exclude on. */
 export const FLAG_SMALL_SAMPLE = 'SMALL SAMPLE';
@@ -56,6 +64,13 @@ export const MARKET_CHOICES = [
     label: def.label,
     short: def.short,
   })),
+  ...Object.entries(TEAM_MARKETS).map(([key, def]) => ({
+    key,
+    kind: 'game',
+    label: def.label,
+    short: def.short,
+  })),
+  { key: 'nrfi', kind: 'nrfi', label: 'NRFI / YRFI', short: 'NRFI' },
 ];
 
 const MARKET_BY_KEY = new Map(MARKET_CHOICES.map((m) => [m.key, m]));
@@ -359,7 +374,14 @@ export function normalizeCriteria(raw) {
   const c = raw && typeof raw === 'object' ? raw : {};
   const bool = (k) => (typeof c[k] === 'boolean' ? c[k] : DEFAULT_CRITERIA[k]);
   const verdicts = cleanList(c.verdicts, VERDICT_TIERS);
-  const kinds = cleanList(c.kinds, KIND_CHOICES);
+  let kinds = cleanList(c.kinds, KIND_CHOICES);
+  if (
+    kinds &&
+    kinds.length === LEGACY_ALL_KINDS.length &&
+    LEGACY_ALL_KINDS.every((k) => kinds.includes(k))
+  ) {
+    kinds = [...KIND_CHOICES];
+  }
   const markets = cleanList(c.markets, MARKET_CHOICES.map((m) => m.key));
   const teams = cleanList(c.teams);
   const games = cleanList(c.games);

@@ -99,6 +99,22 @@ export const PARK_FACTORS = {
  * @returns {number} Multiplier to scale an expected count by (dimensionless).
  */
 /**
+ * Venue names the schedule uses that are the same ballpark as a table entry.
+ *
+ * FIX(v35) — the 2026 schedule names the Dodgers' park "UNIQLO Field at Dodger
+ * Stadium" for all 81 home games. The table only knew "Dodger Stadium", and an
+ * unknown venue silently returns a neutral 1.0, so no Dodgers home game had a
+ * park adjustment all season: hits allowed ran ~2% high for both starters and
+ * HR ~1.8% low for every hitter, on about 5% of the schedule.
+ *
+ * Aliases live here rather than as duplicate rows so they cannot shift the
+ * column means below.
+ */
+export const PARK_ALIASES = {
+  "UNIQLO Field at Dodger Stadium": "Dodger Stadium",
+};
+
+/**
  * Column means of PARK_FACTORS, computed once at module load.
  *
  * A park factor is a RELATIVE quantity: 110 means "10% more than an average
@@ -131,7 +147,7 @@ const PARK_FACTOR_MEANS = (() => {
 })();
 
 export function parkFactor(park, key, weight = 0.7) {
-  const factors = PARK_FACTORS[park];
+  const factors = PARK_FACTORS[park] ?? PARK_FACTORS[PARK_ALIASES[park]];
   if (!factors || factors[key] == null) return 1;
   // Re-centre on the league mean first, so an average park returns exactly 1.0
   // and the adjustment redistributes rather than inflates.

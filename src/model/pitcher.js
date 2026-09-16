@@ -304,24 +304,43 @@ export function projectPitcher(input) {
   const ip26 = parseInningsPitched(s26.inningsPitched);
   const ip25 = parseInningsPitched(s25.inningsPitched);
 
-  // IP-weighted ERA blend, prior season again at 0.6. Note the numerator
-  // weights 2025 by `ip25 * 0.6` while the denominator uses `ip25 * 0.6` too,
-  // so this is a consistent weighted mean. Default 4.20 with no innings.
-  const eraBlend = ip26 + ip25 > 0
-    ? (parseFloat(s26.era || 0) * ip26 + parseFloat(s25.era || 0) * ip25 * 0.6) /
-      (ip26 + ip25 * 0.6)
-    : 4.2;
+  // IP-weighted ERA blend, prior season again at 0.6, and FIP with the classic
+  // 13/3/-2 weights and a 3.12 constant.
+  //
+  // FIX(v35) — both were used RAW, with no prior, while every other rate in
+  // this model goes through shrinkage. A call-up with 20 IP and a 7.20 ERA got
+  // projER 3.25 and P(ER > 2.5) 55.5%, against 44.8% for a league-average line
+  // — a 10.6-point over lean on a pitcher who is not flagged SMALL SAMPLE (90 BF
+  // clears the 80 BF bar). At 0.1 IP and a 54.00 ERA it projected 14.3 earned
+  // runs. Both now carry ERA_PRIOR_IP innings of a league-average line. At a
+  // full season's ~180 weighted innings that moves a projection by under 8% of
+  // its distance from 4.20, so established starters are barely touched; it is
+  // the thin samples it exists for.
+  //
+  // Also: an ERA string that is not a number ("-.--" at 0 IP) used to make
+  // eraBlend NaN, and Math.max(0.2, NaN) is NaN, so projER, dist.er and the
+  // Kelly stake all went NaN.
+  const ERA_PRIOR = 4.2;
+  const ERA_PRIOR_IP = 15;
+  const eraOf = (season) => {
+    const era = parseFloat(season.era);
+    return Number.isFinite(era) ? era : ERA_PRIOR;
+  };
+  const weightedIp = ip26 + ip25 * 0.6;
+  const eraBlend =
+    (eraOf(s26) * ip26 + eraOf(s25) * ip25 * 0.6 + ERA_PRIOR * ERA_PRIOR_IP) /
+    (weightedIp + ERA_PRIOR_IP);
 
-  // FIP with the classic 13/3/-2 weights and a 3.12 constant. Defence-
-  // independent, so it pulls the ER projection toward "true talent" and away
-  // from the batted-ball luck baked into ERA.
-  const fip = ip26 + ip25 > 0
+  // FIP is defence-independent, so it pulls the ER projection toward "true
+  // talent" and away from the batted-ball luck baked into ERA.
+  const rawFip = weightedIp > 0
     ? (13 * ((s26.homeRuns || 0) + 0.6 * (s25.homeRuns || 0)) +
         3 * ((s26.baseOnBalls || 0) + 0.6 * (s25.baseOnBalls || 0)) -
         2 * ((s26.strikeOuts || 0) + 0.6 * (s25.strikeOuts || 0))) /
-       (ip26 + 0.6 * ip25) +
+       weightedIp +
       3.12
-    : 4.2;
+    : ERA_PRIOR;
+  const fip = (rawFip * weightedIp + ERA_PRIOR * ERA_PRIOR_IP) / (weightedIp + ERA_PRIOR_IP);
 
   // Bottom-up run estimate from this start's projected events: each non-HR hit
   // is worth 0.47 runs, each HR 1.4, each walk 0.33, then the whole thing is

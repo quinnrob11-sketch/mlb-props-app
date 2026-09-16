@@ -10,6 +10,7 @@ import {
   loadSnapshot,
   saveGradedDay,
   ungradedDates,
+  closingLineKey,
 } from "./snapshotStore.js";
 import ProfitBreakdown from "./ProfitBreakdown.jsx";
 
@@ -37,7 +38,9 @@ function withClosingLines(rows, date) {
     closes = JSON.parse(localStorage.getItem(`close:${date}`) || "{}");
   } catch {}
   return rows.map((row) => {
-    const close = closes[`${row.kind}:${row.playerId}:${row.market}:${row.line}`];
+    const close =
+      closes[closingLineKey(row)] ??
+      closes[`${row.kind}:${row.playerId}:${row.market}:${row.line}`];
     const closeOdds = row.side === "over" ? close?.over : close?.under;
     // CLV: how much better your price was than the closing price.
     const clv =

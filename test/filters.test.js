@@ -365,7 +365,9 @@ test('confirmed-lineup filter: pitchers exempt, unknown source passes', () => {
 // ── group 4: slate & market ────────────────────────────────────────────────
 
 test('market multi-select uses the market keys behind PITCHER/BATTER_MARKETS', () => {
-  assert.equal(MARKET_CHOICES.length, 14);
+  // 5 pitcher + 9 batter + 3 game lines + NRFI.
+  assert.equal(MARKET_CHOICES.length, 18);
+  assert.equal(marketLabel('game_spread'), 'Run Line');
   assert.equal(marketLabel('batter_total_bases'), 'Total Bases');
   assert.equal(marketLabel('unknown_market'), 'unknown_market');
 
@@ -383,18 +385,27 @@ test('market multi-select uses the market keys behind PITCHER/BATTER_MARKETS', (
   );
 });
 
-test('kind filter covers pitcher / batter / nrfi', () => {
+test('kind filter covers pitcher / batter / game / nrfi', () => {
   const rows = [
     makeRow({ key: 'p', kind: 'pitcher' }),
     makeRow({ key: 'b', kind: 'batter' }),
+    makeRow({ key: 'g', kind: 'game' }),
     makeRow({ key: 'n', kind: 'nrfi' }),
   ];
-  assert.deepEqual(KIND_CHOICES, ['pitcher', 'batter', 'nrfi']);
-  assert.equal(applyCriteria(rows, { hideAlts: false }).length, 3);
+  assert.deepEqual(KIND_CHOICES, ['pitcher', 'batter', 'game', 'nrfi']);
+  assert.equal(applyCriteria(rows, { hideAlts: false }).length, 4);
   assert.deepEqual(
     applyCriteria(rows, { hideAlts: false, kinds: ['batter', 'nrfi'] }).map((r) => r.key),
     ['b', 'n'],
   );
+});
+
+test('a filter saved before game lines existed does not hide them', () => {
+  // ['pitcher', 'batter', 'nrfi'] was "everything" when it was saved.
+  const legacy = normalizeCriteria({ kinds: ['pitcher', 'batter', 'nrfi'] });
+  assert.deepEqual(legacy.kinds, KIND_CHOICES);
+  // A deliberate narrower choice is kept as is.
+  assert.deepEqual(normalizeCriteria({ kinds: ['pitcher', 'batter'] }).kinds, ['pitcher', 'batter']);
 });
 
 test('game-time window compares local wall clock', () => {

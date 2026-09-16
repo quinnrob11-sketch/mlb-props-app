@@ -25,10 +25,88 @@ export function flattenRows(slate) {
   for (const game of slate.games || []) {
     const matchup = `${game.away?.abbr || '?'} @ ${game.home?.abbr || '?'}`;
 
+    // Game lines (v35): moneyline, run line, total — one row each, same shape
+    // as a prop row so Best Bets, the slip, snapshots, grading and the profit
+    // breakdown all handle them without special cases. "over" is always the
+    // HOME side (moneyline, run line) or the over (total).
+    for (const line of game.teamLines || [])
+      rows.push({
+        kind: 'game',
+        key: `g:${game.gamePk}:${line.market}`,
+        alt: false,
+        playerId: game.gamePk,
+        gamePk: game.gamePk,
+        name: matchup,
+        sub: game.venue,
+        team: '',
+        teamName: `${game.away?.name || ''} ${game.home?.name || ''}`,
+        matchup,
+        gameDate: game.gameDate,
+        opp: '',
+        market: line.market,
+        short: line.label,
+        label: line.label,
+        distKey: line.market,
+        line: line.line,
+        book: line.edge?.side === 'under' ? line.underBook : line.overBook,
+        overBook: line.overBook,
+        underBook: line.underBook,
+        nBooks: line.nBooks,
+        over: line.over,
+        under: line.under,
+        proj:
+          line.market === 'game_total'
+            ? game.game?.projTotal
+            : game.game
+              ? game.game.projHome - game.game.projAway
+              : null,
+        edge: line.edge,
+        venue: null,
+        venues: [],
+        flags: game.game?.flags || [],
+        detailRef: null,
+        game,
+      });
+
+    if (game.nrfiEdge && game.nrfiLine)
+      rows.push({
+        kind: 'nrfi',
+        key: `n:${game.gamePk}`,
+        alt: false,
+        playerId: game.gamePk,
+        gamePk: game.gamePk,
+        name: matchup,
+        sub: game.venue,
+        team: '',
+        teamName: `${game.away?.name || ''} ${game.home?.name || ''}`,
+        matchup,
+        gameDate: game.gameDate,
+        opp: '',
+        market: 'nrfi',
+        short: '1st Inn',
+        label: 'First-Inning Runs',
+        distKey: 'nrfi',
+        line: 0.5,
+        book: game.nrfiEdge.side === 'under' ? game.nrfiLine.nrfiBook : game.nrfiLine.yrfiBook,
+        overBook: game.nrfiLine.yrfiBook,
+        underBook: game.nrfiLine.nrfiBook,
+        nBooks: game.nrfiLine.nBooks,
+        over: game.nrfiLine.yrfiOdds,
+        under: game.nrfiLine.nrfiOdds,
+        proj: null,
+        edge: game.nrfiEdge,
+        venue: null,
+        venues: [],
+        flags: [],
+        detailRef: null,
+        game,
+      });
+
     for (const pitcher of game.pitchers || [])
       for (const prop of pitcher.props || [])
         rows.push({
           kind: 'pitcher',
+          gamePk: game.gamePk,
           key: propKey('p', pitcher.id, prop.market) + (prop.alt ? `:alt${prop.line}` : ''),
           alt: !!prop.alt,
           playerId: pitcher.id,
@@ -65,6 +143,7 @@ export function flattenRows(slate) {
       for (const prop of batter.props || [])
         rows.push({
           kind: 'batter',
+          gamePk: game.gamePk,
           key: propKey('b', batter.id, prop.market) + (prop.alt ? `:alt${prop.line}` : ''),
           alt: !!prop.alt,
           playerId: batter.id,
@@ -150,6 +229,40 @@ export function pairMarketLines(rows) {
   }
 
   return { ordered, pairing };
+}
+
+/**
+ * The bet in plain words, for either side of a row.
+ *
+ *   pitcher / batter   "Over 5.5 Strikeouts"
+ *   moneyline          "Guardians win"          (team name, not "over 0")
+ *   run line           "Guardians -1.5"
+ *   total              "Over 7.5 runs"
+ *   first inning       "NRFI — no run in the 1st"
+ *
+ * @param {object} row
+ * @param {'over'|'under'} [side]  defaults to the side the engine called
+ * @returns {string}
+ */
+export function pickText(row, side = row?.edge?.side) {
+  if (!row || !side) return row?.label || '';
+  const over = side === 'over';
+  const g = row.game;
+  const home = g?.home?.name?.split(' ').pop() || g?.home?.abbr || 'Home';
+  const away = g?.away?.name?.split(' ').pop() || g?.away?.abbr || 'Away';
+  const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
+  switch (row.market) {
+    case 'game_ml':
+      return `${over ? home : away} win`;
+    case 'game_spread':
+      return over ? `${home} ${signed(row.line)}` : `${away} ${signed(-row.line)}`;
+    case 'game_total':
+      return `${over ? 'Over' : 'Under'} ${row.line} runs`;
+    case 'nrfi':
+      return over ? 'YRFI — a run in the 1st' : 'NRFI — no run in the 1st';
+    default:
+      return `${over ? 'Over' : 'Under'} ${row.line} ${row.label}`;
+  }
 }
 
 /**
