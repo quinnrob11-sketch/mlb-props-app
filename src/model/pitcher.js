@@ -50,7 +50,57 @@ export function parseInningsPitched(ip) {
  * @param {string}   input.park      venue name (keys PARK_FACTORS)
  * @param {object}   input.lg        league overrides merged onto LEAGUE_AVG
  */
+/**
+ * The pitcher model's calibration settings in one place, so the backtest can
+ * try alternatives without editing the model. Pass `input.tuning` to override
+ * any of them for one call.
+ *
+ * REFIT(v35.1, 2026-09-16) with tools/tune-pitchers.mjs on a lookahead-free
+ * replay of 988 real starts (tools/backtest-pitchers.mjs): every setting was
+ * chosen on Aug 10-31 (586 starts) by log loss, then checked on Sep 1-15 (402
+ * starts) it never saw. Holdout, before -> after:
+ *
+ *                 bias            spread ratio     log loss
+ *     strikeouts  -5.1% -> +0.3%  1.20 -> 1.12     2.2040 -> 2.1897
+ *     outs        -5.2% -> -3.0%  1.40 -> 0.98     2.5606 -> 2.4927
+ *     hits        -3.9% -> -0.6%  0.95 -> 0.97     2.1764 -> 2.1704
+ *
+ * ("bias" is actual minus projected; a spread ratio above 1 means real outcomes
+ * were wider than the model's distribution — i.e. it was overconfident.)
+ *
+ * What was wrong, and what each change does:
+ *   - Strikeouts were projected ~5% high in both windows, and in the same
+ *     direction as today's sportsbook prices, so the level trim retired in v34
+ *     (it then disagreed with the market) is back at 0.95, and the batters-faced
+ *     mixture is wider (+-5) because K outcomes spread 13% wider than modelled.
+ *   - Outs were far too concentrated: a +-6 pitch leash put too much mass on
+ *     15 and 18 outs and made every 14.5/17.5 over look 3-5 points too likely.
+ *     +-18 matches the real spread. Recent workload now reads the last 3 starts
+ *     rather than 5, which tracks the late-season shortening of starters; it
+ *     still leaves September about 3% high, so treat outs overs with care.
+ *   - Hits allowed were calibrated in shape and ~3% high in level.
+ */
+export const PITCHER_TUNING = {
+  kLevel: 0.95,
+  bbLevel: 1.0,
+  outsLevel: 0.98,
+  hLevel: 0.97,
+  /** Batters-faced spread of the three-point strikeout mixture. */
+  bfSpread: 5,
+  /** Pitch-budget spread of the three-point outs mixture. */
+  budgetSpread: 18,
+  hookBaseHazard: 0.005,
+  hookBudgetScale: 10,
+  /** Starts in the "recent" workload window. */
+  recentStarts: 3,
+  /** Weight of recent pitch counts vs season pitches/start in the budget. */
+  recentBudgetWeight: 0.55,
+  /** Weight of recent innings vs budget-implied innings in projIP. */
+  recentIpWeight: 0.4,
+};
+
 export function projectPitcher(input) {
+  const T = { ...PITCHER_TUNING, ...(input.tuning || {}) };
   const {
     season26,
     season25,
@@ -161,7 +211,7 @@ export function projectPitcher(input) {
   // ---------------------------------------------------------------------
   // 3. Pitch-count budget — how deep the manager will let him go.
   // ---------------------------------------------------------------------
-  const recent = gameLog.slice(-5);
+  const recent = gameLog.slice(-T.recentStarts);
 
   // Median pitch count over the last five starts, used only as a yardstick.
   const medianPitches = (() => {
@@ -198,7 +248,7 @@ export function projectPitcher(input) {
   // 45 is opener territory, 112 is a workhorse ceiling.
   let pitchBudget;
   if (recentPitchAvg != null && seasonPitchesPerStart != null) {
-    pitchBudget = 0.55 * recentPitchAvg + 0.45 * seasonPitchesPerStart;
+    pitchBudget = T.recentBudgetWeight * recentPitchAvg + (1 - T.recentBudgetWeight) * seasonPitchesPerStart;
   } else {
     pitchBudget = recentPitchAvg ?? seasonPitchesPerStart ?? 82;
   }
@@ -250,7 +300,7 @@ export function projectPitcher(input) {
     : ipBudget;
 
   // 60% budget / 40% observed. Clamped 1.5-7.4 IP.
-  const projIP = clamp(0.6 * ipBudget + 0.4 * recentIp, 1.5, 7.4);
+  const projIP = clamp((1 - T.recentIpWeight) * ipBudget + T.recentIpWeight * recentIp, 1.5, 7.4);
 
   const projBF = projIP * bfPerInning;
   const projPitches = projBF * pitchesPerBF;
@@ -422,11 +472,13 @@ export function projectPitcher(input) {
   // disagree — outcome-bias said trim, market-bias says the opposite — and
   // until the CLV test settles which one predicts profit, the honest setting is
   // the one that adds no untested adjustment at all.
-  const K_LEVEL = 1.0;
-  const BB_LEVEL = 1.0;
+  // Superseded 2026-09-16: see PITCHER_TUNING. The retirement note above was
+  // right for the market evidence at the time; outcomes and prices now agree.
+  const K_LEVEL = T.kLevel;
+  const BB_LEVEL = T.bbLevel;
 
-  const projOutsAdj = Math.max(3, shrinkToMean(projOuts, 15.5, 0.89));
-  const projHAdj = Math.max(0.2, shrinkToMean(projH, 4.88, 0.89));
+  const projOutsAdj = Math.max(3, shrinkToMean(projOuts, 15.5, 0.89) * T.outsLevel);
+  const projHAdj = Math.max(0.2, shrinkToMean(projH, 4.88, 0.89) * T.hLevel);
   const projKAdj = Math.max(0.2, shrinkToMean(projK, 4.78, 0.96) * K_LEVEL);
   const projERAdj = Math.max(0.2, shrinkToMean(projER, 2.44, 0.78));
   const projBBAdj = Math.max(0.1, shrinkToMean(projBB, 1.72, 0.75) * BB_LEVEL);
@@ -483,7 +535,7 @@ export function projectPitcher(input) {
    * Baseline per-inning chance of being pulled with the pitch budget still
    * untouched — the "he simply got hit" hazard, independent of workload.
    */
-  const HOOK_BASE_HAZARD = 0.005;
+  const HOOK_BASE_HAZARD = T.hookBaseHazard;
   /**
    * Pitches of slack over which the hook probability swings from low to high.
    *
@@ -498,7 +550,7 @@ export function projectPitcher(input) {
    * 15.9pp to 3.1pp and improves Brier at the same time. Re-fit with `tools/backtest.mjs` if the league's usage patterns
    * shift — bullpen games and the pitch clock both move this curve.
    */
-  const HOOK_BUDGET_SCALE = 10;
+  const HOOK_BUDGET_SCALE = T.hookBudgetScale;
   /**
    * Probability a start ends exactly ON the inning boundary, by how many full
    * innings the starter completed. Indexed 0-9.
@@ -591,7 +643,7 @@ export function projectPitcher(input) {
    * The mean is still pinned by the solve below, which now solves against the
    * MIXTURE, so the displayed projection and the distribution cannot disagree.
    */
-  const BUDGET_SPREAD = 6;
+  const BUDGET_SPREAD = T.budgetSpread;
   const BUDGET_MIX = [
     [-BUDGET_SPREAD, 0.25],
     [0, 0.5],
@@ -636,10 +688,11 @@ export function projectPitcher(input) {
     // re-derived from projK/bfTrials and re-clamped 0.02-0.60.
     k: (line) => {
       const p = clamp(projKAdj / bfTrials, 0.02, 0.6);
+      const s = Math.round(T.bfSpread);
       return (
-        binomTailOver(line, Math.max(1, bfTrials - 3), p) +
+        binomTailOver(line, Math.max(1, bfTrials - s), p) +
         binomTailOver(line, bfTrials, p) +
-        binomTailOver(line, bfTrials + 3, p)
+        binomTailOver(line, bfTrials + s, p)
       ) / 3;
     },
 

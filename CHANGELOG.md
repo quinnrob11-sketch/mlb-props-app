@@ -1,3 +1,33 @@
+# v35.1 — board policy and pitcher refit
+
+## Board policy (`PLAY_RULES`, src/lib/constants.js)
+Measured against live sportsbook prices on 2026-09-16. The sportsbook consensus
+and Kalshi agreed with each other to a median 0.3 points; the model was 3.2–3.7
+points off on game lines and 7–9 points off on pitcher props.
+- Game lines and NRFI are **information only**. Model numbers are shown, but a
+  play is never called.
+- Pitcher props need **2+ sportsbooks** and a price **no longer than +150**.
+
+## Pitcher model refit (`PITCHER_TUNING`, src/model/pitcher.js)
+New tools: `tools/backtest-pitchers.mjs` replays 988 real starts (Aug 10–Sep 15)
+without lookahead, and `tools/tune-pitchers.mjs` fits the tuning settings on
+August and checks them on September.
+
+| Sep holdout   | bias           | spread ratio | log loss        |
+|---------------|----------------|--------------|-----------------|
+| strikeouts    | −5.1% → +0.3%  | 1.20 → 1.12  | 2.2040 → 2.1897 |
+| outs          | −5.2% → −3.0%  | 1.40 → 0.98  | 2.5606 → 2.4927 |
+| hits allowed  | −3.9% → −0.6%  | 0.95 → 0.97  | 2.1764 → 2.1704 |
+
+Median gap to live sportsbook prices on 2026-09-16 moved from 7.1 to 5.3 points
+on outs and from 9.1 to 6.3 on hits allowed. Strikeouts stayed near 7.5, but the
+model's lean flipped from +1.5 to −2.9, so it now prices strikeouts below the
+market. Outcomes over 988 starts back the lower level; one slate of prices does
+not. Watch strikeout unders in Results before trusting them. Outs remain about
+3% high in September.
+
+---
+
 # MLB Edge Board — v35
 
 Game lines, a projection audit, and a clearer app.
