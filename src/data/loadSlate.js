@@ -864,6 +864,8 @@ export async function loadSlate({
         park,
         lg,
         platoon,
+        // Home/away terms in the pitcher model (PITCHER_TUNING.homeK/homeBudget).
+        isHome: side === 'home',
       });
 
       sp[side] = {

@@ -49,6 +49,8 @@ export function parseInningsPitched(ip) {
  * @param {object}   input.opp       opposing team rates {kRate, bbRate, avg}
  * @param {string}   input.park      venue name (keys PARK_FACTORS)
  * @param {object}   input.lg        league overrides merged onto LEAGUE_AVG
+ * @param {boolean}  [input.isHome]  starter pitches at home (home/away terms
+ *                                   are skipped when absent)
  */
 /**
  * The pitcher model's calibration settings in one place, so the backtest can
@@ -130,6 +132,40 @@ export const PITCHER_TUNING = {
   reliefBudget: [10, 1.2],
   /** Lowest pitch budget the leash model will accept. */
   budgetFloor: 25,
+  /**
+   * Home/away. `homeK` scales the per-BF strikeout rate by 1 + homeK at home
+   * and 1 - homeK on the road; `homeBudget` moves the pitch budget by that
+   * many pitches either way. Both need `input.isHome` and are neutral without.
+   *
+   * ADDED(v35.2). In the replay, with level and opponent already applied,
+   * strikeouts ran +6.1% vs projection at home and -2.1% away in 2026 (2,765
+   * starts), +7.1% / +0.1% in 2025 (4,370); outs +0.5% / -2.6% and
+   * +1.0% / -1.2%. Fitted on Jun 1-Aug 31 2026 by log loss (homeK 0.03-0.04
+   * and homeBudget 1-2 tie; 2025 agrees). Added on top of `reliefBudget`,
+   * holdout Sep 1-15 2026 (402 starts), second holdout Aug 16-31 in brackets:
+   *
+   *     homeK 0 -> 0.03       K log loss  2.1676 -> 2.1607 (2.1179 -> 2.1130)
+   *                           K Brier     0.1675 -> 0.1660
+   *                           K corr      0.487 -> 0.498 (0.467 -> 0.476)
+   *                           K mean|err| 1.750 -> 1.734
+   *                           bias/spread +1.6% -> +1.6%, 1.09 -> 1.07
+   *                           2025 replay K log loss 2.2116 -> 2.2088
+   *                           (other markets unchanged: it only moves adjK)
+   *
+   *     homeBudget 0 -> 1     outs log loss 2.4431 -> 2.4411 (2.4770 -> 2.4759)
+   *                           outs Brier    0.1848 -> 0.1845
+   *                           outs corr     0.591 -> 0.593 (0.545 -> 0.547)
+   *                           outs mean|err| 2.860 -> 2.857
+   *                           K log loss    2.1607 -> 2.1595 (2.1130 -> 2.1122)
+   *                           hits 2.1531 -> 2.1515 (2.1617 -> 2.1619),
+   *                           walks/ER within +-0.0006 in both windows
+   *                           2025 replay outs 2.4771 -> 2.4764, K unchanged
+   *
+   * The budget term is small; it is kept because it moves the right way in all
+   * three samples, not because it is large.
+   */
+  homeK: 0.03,
+  homeBudget: 1,
 };
 
 export function projectPitcher(input) {
@@ -223,8 +259,12 @@ export function projectPitcher(input) {
   // regression to the mean) each moved it and none removed it.
   const K_CONTACT_SPLIT = 0.98;
 
+  // Home/away (see `homeK` in PITCHER_TUNING): starters strike out more at
+  // home. Neutral when the caller does not say which side he is on.
+  const homeKFactor = input.isHome == null ? 1 : input.isHome ? 1 + T.homeK : 1 - T.homeK;
+
   const adjK = clamp(
-    kRate * (1 + 0.4 * (oppK / lg.kRate - 1)) * parkFactor(park, 'so', 0.5) * K_CONTACT_SPLIT * plK,
+    kRate * (1 + 0.4 * (oppK / lg.kRate - 1)) * parkFactor(park, 'so', 0.5) * K_CONTACT_SPLIT * plK * homeKFactor,
     0.05, 0.45,
   );
   const adjBB = clamp(
@@ -298,6 +338,8 @@ export function projectPitcher(input) {
   } else {
     pitchBudget = recentPitchAvg ?? reliefPitchesPerStart ?? seasonPitchesPerStart ?? 82;
   }
+  // Home starters are left in slightly longer (see `homeBudget`).
+  if (input.isHome != null) pitchBudget += input.isHome ? T.homeBudget : -T.homeBudget;
   pitchBudget = clamp(pitchBudget, T.budgetFloor, 112);
 
   // ---------------------------------------------------------------------

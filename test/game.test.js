@@ -444,3 +444,13 @@ test('a reliever handed a start gets a reliever-sized leash, not 82 pitches', ()
   const starter = projectPitcher({ season26: { ...lastYearStarter, gamesStarted: 3, gamesPlayed: 3, numberOfPitches: 285 }, season25: null, gameLog: starterLog, park: 'Target Field' });
   assert.ok(starter.workload.budget > 90, `starter budget ${starter.workload.budget}`);
 });
+
+test('home/away terms are neutral unless the caller says which side', () => {
+  const s26 = { gamesStarted: 20, gamesPlayed: 20, numberOfPitches: 1800, battersFaced: 480, strikeOuts: 110, baseOnBalls: 35, hits: 105, homeRuns: 12, inningsPitched: '115.0', era: '3.90' };
+  const gameLog = [1, 2, 3].map((i) => ({ ip: 6, pitches: 92, bf: 24, k: 6, date: `2026-08-0${i}` }));
+  const run = (isHome) => projectPitcher({ season26: s26, season25: null, gameLog, park: 'Target Field', isHome });
+  const neutral = run(undefined), home = run(true), away = run(false);
+  assert.ok(home.projK > neutral.projK && neutral.projK > away.projK);
+  assert.ok(home.projOuts > neutral.projOuts && neutral.projOuts > away.projOuts);
+  assert.equal(projectPitcher({ season26: s26, season25: null, gameLog, park: 'Target Field', isHome: true, tuning: { homeK: 0, homeBudget: 0 } }).projK, neutral.projK);
+});
