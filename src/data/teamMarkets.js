@@ -285,16 +285,28 @@ export const IMPLAUSIBLE_TEAM_EDGE = 0.08;
 export async function fetchTeamMarketQuotes({ games, date, oddsKey }) {
   const [books, kalshi] = await Promise.all([
     oddsFetch({ endpoint: 'game-odds', books: 'wide' }, oddsKey).then(
-      (res) => ({ events: res.body || [], remaining: res.remaining, error: null }),
+      // An error payload or a changed schema must degrade to "no book lines",
+      // never throw: this runs inside the slate load, and a throw here would
+      // take the whole board down with it.
+      (res) => ({
+        events: Array.isArray(res.body) ? res.body : [],
+        remaining: res.remaining,
+        error: Array.isArray(res.body) ? null : 'Odds API: unexpected game-odds response',
+      }),
       (err) => ({ events: [], remaining: null, error: err.message }),
     ),
     fetchKalshiMarkets({ seriesTickers: Object.keys(KALSHI_SERIES) }).then(
-      (res) => ({ markets: res.markets, error: res.errors[0]?.error || null }),
+      (res) => ({ markets: Array.isArray(res.markets) ? res.markets : [], error: res.errors?.[0]?.error || null }),
       (err) => ({ markets: [], error: err.message }),
     ),
   ]);
 
-  const kalshiByGame = kalshiGameQuotes(kalshi.markets, games, date);
+  let kalshiByGame = new Map();
+  try {
+    kalshiByGame = kalshiGameQuotes(kalshi.markets, games, date);
+  } catch (err) {
+    kalshi.error = kalshi.error || `Kalshi: ${err.message}`;
+  }
   const quotesByGame = new Map();
   for (const game of games) {
     quotesByGame.set(game.gamePk, {
