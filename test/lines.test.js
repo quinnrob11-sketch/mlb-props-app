@@ -141,13 +141,14 @@ test("a book quoting the same point in both feeds is counted once", () => {
     pitcher_strikeouts_alternate: { "test player": [{ ...dk }] },
   };
 
-  // Model sits exactly 0.15 above the market's fair price: without the
+  // Model sits 0.119 above the market's fair price (inside the 0.12
+  // implausibility limit, so the row stays callable): without the
   // demotion this is a STRONG.
   const rows = attachLines(
     only(PITCHER_MARKETS, "pitcher_strikeouts"),
     "test player",
     odds,
-    projection("k", { 5.5: 0.5335 }),
+    projection("k", { 5.5: 0.495 }),
     false,
   );
   const main = rows[0];
@@ -161,7 +162,7 @@ test("a book quoting the same point in both feeds is counted once", () => {
   assert.equal(main.edge.verdict, "SOLID");
   // Proof that the pre-fix input really did defeat the demotion - the same
   // engine call with the duplicated quote list still returns STRONG.
-  const doubled = evaluateEdge(0.5335, 5.5, 150, -180, {
+  const doubled = evaluateEdge(0.495, 5.5, 150, -180, {
     weight: 0.45,
     quotes: [dk, { ...dk }],
   });
@@ -255,7 +256,7 @@ test("a base-market outlier is an alternate LINE, not an alternate MARKET", () =
     only(PITCHER_MARKETS, "pitcher_outs"),
     "test player",
     odds,
-    projection("outs", { 15.5: 0.7 }, 0.5, "projOuts"),
+    projection("outs", { 15.5: 0.64 }, 0.5, "projOuts"),
     false,
   );
 
