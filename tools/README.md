@@ -10,7 +10,7 @@ They need Playwright, which is deliberately NOT a dependency (it would add
 
     npm i -D playwright && node tools/e2e.mjs
 
-## Backtests (read-only, statsapi only)
+## Backtests (read-only; statsapi and public Kalshi data only)
 
 - `backtest-pitchers.mjs` / `tune-pitchers.mjs` — lookahead-free starter replay
   and PITCHER_TUNING search.
@@ -18,3 +18,6 @@ They need Playwright, which is deliberately NOT a dependency (it would add
   starters and BATTER_TUNING; see `docs/BATTER-BACKTEST.md`. Shared plumbing
   (cache, pool, as-of aggregation, league object) lives in
   `backtest-common.mjs`.
+- `backtest-kalshi.mjs` — the same replay traded against real settled Kalshi
+  KXMLBKS / KXMLBOUTS prices with the bot's own decision code. Results and
+  method: `docs/KALSHI-BACKTEST.md`.
