@@ -35,4 +35,9 @@ export const MARKET_WEIGHT = {
   batter_rbis: 0.35,
   batter_stolen_bases: 0.3,
   nrfi: 0.5,
+  // Game lines (v35). Low on purpose: these are the sharpest prices in the
+  // sport, and the game model is new and has no track record against them.
+  game_ml: 0.3,
+  game_spread: 0.3,
+  game_total: 0.3,
 };

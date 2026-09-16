@@ -76,6 +76,8 @@ export { MARKET_WEIGHT };
  *   uses the two prices passed in).
  * @param {number} [opts.weight=0.55] - Fraction of model/market disagreement to keep.
  * @param {boolean} [opts.smallSample] - Player has thin playing-time data.
+ * @param {number} [opts.implausibleEdge=0.12] - Disagreement with the market
+ *   past which the model is assumed wrong and the row is a PASS.
  * @returns {EdgeResult|null} null when `modelOver` or `line` is null.
  */
 export function evaluateEdge(modelOver, line, overOdds, underOdds, opts = {}) {
@@ -262,9 +264,16 @@ export function evaluateEdge(modelOver, line, overOdds, underOdds, opts = {}) {
   // suppresses the tail without silencing the whole board. It is a safety
   // limit, NOT a fitted parameter — nothing here has been validated as
   // profitable, and see trackRecord.js for what has and has not been measured.
-  const modelImplausible = edge != null && Math.abs(edge) > 0.12;
+  //
+  // v35: the limit is a per-call option. Team markets (moneyline, run line,
+  // total) are priced far more efficiently than props, so they pass a tighter
+  // one — see IMPLAUSIBLE_TEAM_EDGE in data/teamMarkets.js.
+  const implausibleEdge = opts.implausibleEdge ?? 0.12;
+  const modelImplausible = edge != null && Math.abs(edge) > implausibleEdge;
   if (modelImplausible && verdict !== "PASS") {
-    why.push("model >12pts off market — treated as model error, not edge");
+    why.push(
+      `model >${Math.round(implausibleEdge * 100)}pts off market — treated as model error, not edge`,
+    );
     verdict = "PASS";
   }
 

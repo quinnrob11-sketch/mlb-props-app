@@ -69,6 +69,11 @@ const EVENT_ODDS_EXTRAS = {
   includeMultipliers: "true",
 };
 
+// Game lines for the whole slate in ONE call. Fixed, not caller-controlled:
+// there is exactly one canonical request, so it cannot fragment the cache.
+// Billed at markets x region-equivalents = 3 credits per call.
+const GAME_MARKETS = "h2h,spreads,totals";
+
 // Every market the app is allowed to ask for. Anything else is rejected before
 // it reaches the upstream, which is what bounds the cache-key space.
 const MARKETS = new Set([
@@ -93,6 +98,7 @@ const EVENT_ID = /^[a-f0-9]{32}$/;
 const TTL = {
   events: { s: 120, swr: 300 },
   "event-odds": { s: 60, swr: 180 },
+  "game-odds": { s: 60, swr: 180 },
 };
 
 const UPSTREAM_TIMEOUT_MS = 15_000;
@@ -246,8 +252,28 @@ export default async function handler(req, res) {
     } else {
       upstream.searchParams.set("bookmakers", BOOK_SETS[books].join(","));
     }
+  } else if (endpoint === "game-odds") {
+    const booksMode = normalizeBooks(q.get("books"));
+    if (booksMode.error) return fail(res, 400, booksMode.error);
+    const books = booksMode.value;
+    if (books === "all") return fail(res, 400, "game-odds takes a pinned book set");
+
+    // Same canonical-URL rule as event-odds: one cache key per book set.
+    const canonical = `/api/odds?endpoint=game-odds&books=${books}`;
+    const incoming = new URL(req.url, "http://localhost");
+    if (incoming.pathname + incoming.search !== canonical) {
+      res.setHeader("Cache-Control", "public, s-maxage=600");
+      res.setHeader("Location", canonical);
+      return res.status(308).end();
+    }
+
+    upstream = new URL(`${UPSTREAM}/sports/${SPORT}/odds`);
+    upstream.searchParams.set("markets", GAME_MARKETS);
+    upstream.searchParams.set("oddsFormat", "american");
+    upstream.searchParams.set("dateFormat", "iso");
+    upstream.searchParams.set("bookmakers", BOOK_SETS[books].join(","));
   } else {
-    return fail(res, 400, "endpoint must be 'events' or 'event-odds'");
+    return fail(res, 400, "endpoint must be 'events', 'event-odds' or 'game-odds'");
   }
 
   // Key resolution happens *after* the request is known to be well formed, so

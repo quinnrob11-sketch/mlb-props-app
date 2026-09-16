@@ -53,6 +53,8 @@ import { lineupHandedness, platoonMultipliers } from '../model/platoon.js';
 import { projectBatter, SB_PER_GAME_PRIOR, PA_BY_LINEUP_SLOT } from '../model/batter.js';
 import { projectNrfi } from '../model/nrfi.js';
 import { evaluateEdge } from '../model/edges.js';
+import { projectGame, leagueRunPrevention } from '../model/game.js';
+import { fetchTeamMarketQuotes, priceTeamMarkets } from './teamMarkets.js';
 import { createLineupProjector, PROJ_LINEUP_FLAG } from './projectedLineup.js';
 
 /**
@@ -310,6 +312,14 @@ export async function loadSlate({
   // a no-op handler to a derived promise marks it handled without touching
   // what `await teamHittingPromise` sees.
   teamHittingPromise.catch(() => {});
+  // Starter / reliever pitching splits for every team, one request. Feeds the
+  // game model's bullpen term and the league run-prevention baselines. Optional:
+  // a failure leaves every bullpen at league average rather than failing the load.
+  // `limit=100`: this endpoint pages at 50 rows, and 30 teams x 2 roles is 60 —
+  // without it six teams silently had no bullpen line.
+  const teamPitchingPromise = mlbFetch(
+    `/api/v1/teams/stats?sportId=1&season=${SEASON}&group=pitching&stats=statSplits&sitCodes=sp,rp&limit=100`,
+  ).catch(() => null);
   // Same contract as the try/catch this replaces: the odds path may never
   // reject the load, it may only populate `oddsError`. Folding the catch into
   // the promise keeps that true while it is in flight unattended.
@@ -354,6 +364,8 @@ export async function loadSlate({
   // load rather than adding its latency to the end of it. `fetchWeather` never
   // rejects, so it is safe to leave in flight across the awaits below.
   const weatherPromise = fetchWeather(games);
+  // Game lines (sportsbooks + Kalshi) need only `games` too. Never rejects.
+  const teamMarketsPromise = fetchTeamMarketQuotes({ games, date, oddsKey });
 
   // ── 2. team batting environment ────────────────────────────────────────────
   status('Fetching team batting environment…');
@@ -366,6 +378,7 @@ export async function loadSlate({
   let lgAb = 0;
   let lgSb = 0;
   let lgGames = 0;
+  let lgRuns = 0;
   for (const split of teamHitting.stats?.[0]?.splits || []) {
     const stat = split.stat;
     const pa = stat.plateAppearances || 1;
@@ -374,8 +387,12 @@ export async function loadSlate({
       bbRate: (stat.baseOnBalls || 0) / pa,
       avg: parseFloat(stat.avg) || 0.244,
       obp: parseFloat(stat.obp) || 0.315,
+      ops: parseFloat(stat.ops) || null,
+      runs: stat.runs ?? null,
+      gamesPlayed: stat.gamesPlayed || 0,
       name: split.team.name,
     });
+    lgRuns += stat.runs || 0;
     lgPa += pa;
     lgK += stat.strikeOuts || 0;
     lgBb += stat.baseOnBalls || 0;
@@ -439,6 +456,27 @@ export async function loadSlate({
     spHRate: lgPa ? (lgH / lgPa) * SP_TO_LEAGUE_H : LEAGUE_AVG.spHRate,
     spKRate: lgPa ? (lgK / lgPa) * SP_TO_LEAGUE_K : LEAGUE_AVG.spKRate,
     spBbRate: lgPa ? (lgBb / lgPa) * SP_TO_LEAGUE_BB : LEAGUE_AVG.spBbRate,
+  };
+
+  // Game-model baselines: league runs per team-game, and the ERA/FIP blend for
+  // starters, relievers and everyone, all from this season's team splits.
+  const teamPitching = await teamPitchingPromise;
+  const bullpenByTeam = new Map();
+  const spSplits = [];
+  const rpSplits = [];
+  for (const split of teamPitching?.stats?.[0]?.splits || []) {
+    const code = split.split?.code;
+    if (code === 'rp') {
+      bullpenByTeam.set(split.team.id, split.stat);
+      rpSplits.push(split.stat);
+    } else if (code === 'sp') spSplits.push(split.stat);
+  }
+  const prevention = leagueRunPrevention(spSplits, rpSplits);
+  const gameLeague = {
+    rpg: lgGames && lgRuns ? lgRuns / lgGames : 4.49,
+    ...(prevention?.spRa9 && prevention?.rpRa9
+      ? prevention
+      : { spRa9: 4.1, rpRa9: 3.9, allRa9: 4.0, fipConstant: 3.1 }),
   };
 
   // ── 3. lineups ─────────────────────────────────────────────────────────────
@@ -656,6 +694,41 @@ export async function loadSlate({
   status('Fetching weather…');
   const weatherByGame = await weatherPromise;
 
+  status('Fetching game lines…');
+  const teamMarkets = await teamMarketsPromise;
+  noteRemaining(teamMarkets.remaining);
+
+  // Lineup OPS relative to each team's season OPS, for the game model. Nine
+  // regulars out-hit a season line that includes the bench and call-ups, so the
+  // raw ratio runs high for every team; dividing by the slate average leaves
+  // only tonight's DIFFERENCES (a rested star, a platoon-heavy card).
+  const lineupOpsRatio = new Map();
+  for (const game of games) {
+    for (const side of ['away', 'home']) {
+      const lineup = lineupBySide.get(sideKey(game.gamePk, side)) || [];
+      const team = teamEnv.get(game.teams[side].team.id);
+      if (lineup.length < 9 || !team?.ops) continue;
+      let weighted = 0;
+      let weights = 0;
+      lineup.slice(0, 9).forEach((player, index) => {
+        const s = pickSplit(batters26.get(player.id), 'hitting', SEASON);
+        const ops = parseFloat(s?.ops);
+        const pa = s?.plateAppearances || 0;
+        const weight = PA_BY_LINEUP_SLOT[index] ?? PA_BY_LINEUP_SLOT[8];
+        weighted += weight * (pa >= 50 && Number.isFinite(ops) ? ops : team.ops);
+        weights += weight;
+      });
+      if (weights) lineupOpsRatio.set(sideKey(game.gamePk, side), weighted / weights / team.ops);
+    }
+  }
+  if (lineupOpsRatio.size >= 6) {
+    const centre = [...lineupOpsRatio.values()].reduce((a, b) => a + b, 0) / lineupOpsRatio.size;
+    for (const [k, v] of lineupOpsRatio) lineupOpsRatio.set(k, v / centre);
+  } else {
+    // Too few cards to know what "normal" looks like; use season lines only.
+    lineupOpsRatio.clear();
+  }
+
   // ── 9. projections ─────────────────────────────────────────────────────────
   const out = [];
   status('Building projections…');
@@ -836,6 +909,24 @@ export async function loadSlate({
       });
     }
 
+    // ── game lines: moneyline, run line, total ──────────────────────────────────
+    const gameSide = (side, team) => ({
+      offense: teamEnv.get(team.id) || null,
+      homePark: team.venue?.name || '',
+      lineupOpsRatio: lineupOpsRatio.get(sideKey(game.gamePk, side)) || null,
+      starter: sp[side] ? { s26: sp[side].s26, s25: sp[side].s25, projIP: sp[side].proj.projIP } : null,
+      bullpen: bullpenByTeam.get(team.id) || null,
+    });
+    row.game = projectGame({
+      away: gameSide('away', awayTeam),
+      home: gameSide('home', homeTeam),
+      league: gameLeague,
+      park,
+      wx,
+    });
+    const lineQuotes = teamMarkets.quotesByGame.get(game.gamePk);
+    row.teamLines = priceTeamMarkets(row.game, lineQuotes?.books, lineQuotes?.kalshi);
+
     // ── NRFI: only when *both* probable starters are known ────────────────────
     const awaySp = sp.away;
     const homeSp = sp.home;
@@ -1003,6 +1094,9 @@ export async function loadSlate({
     remaining,
     oddsError,
     lineupError,
+    // Game-line sources fail independently of the prop feed and of each other.
+    gameLinesError: teamMarkets.booksError,
+    kalshiGameError: teamMarkets.kalshiError,
     skipped,
     loadedAt: new Date().toISOString(),
     // Unchanged meaning: games for which MLB posted at least one card. It is no
