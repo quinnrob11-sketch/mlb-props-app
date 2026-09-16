@@ -11,5 +11,7 @@
 .trlegend{color:var(--muted);font-size:11.5px;line-height:1.9;margin-top:14px;padding:10px 14px;background:var(--surface);border:1px solid var(--border-soft);border-radius:var(--r)}
 .trlegend b{color:var(--ink)}
 .trlegend .tchip{margin-left:0}
+.trlegend.unvalidated{color:#e8ecf5;background:#f8717114;border-color:#f8717166;margin-bottom:8px}
+.trlegend.unvalidated b{color:#f87171}
 .rest-divider.noedge{color:#7a849c;border-color:#262d3d}
 @media (max-width:640px){.tchip{font-size:10px;padding:2px 7px}}

@@ -77,16 +77,24 @@ const FAMILY_DEFAULT = {
 };
 
 const LABEL = {
-  proven: '✓ PROVEN',
+  proven: '✓ BEATS BASELINE',
   ranked: '◆ TOP PICKS ONLY',
   none: '✕ NO EDGE',
 };
 
+// RELABELLED 2026-08-31. The top tier used to read "PROVEN", which implied a
+// validation that was never performed. Every number below was measured against
+// OUTCOMES relative to naive baselines. None of it was ever graded against the
+// PRICE you pay, and a measurement against real posted odds found this model
+// differs from vig-free market consensus by a median 7.1 points with a
+// systematic UNDER lean — i.e. it is less accurate than the market it is
+// betting into. Beating a naive baseline and beating a price are different
+// claims, and only the second one pays.
 const NOTE = {
   proven:
-    'Backtest-proven: on Aug 3-22 real games the model beat naive side-picking outright at this line. Take on model probability, price permitting.',
+    'Beat naive side-picking on Aug 3-22 real games at this line. NOTE: measured against outcomes, never against the price you pay — this is not evidence the bet is profitable.',
   ranked:
-    'The model only earns here at the TOP of the ranked board — its best-ranked picks beat the league rate, but generic over/under calling adds nothing at this line. Trust high-ranked entries; skip mid-list ones.',
+    'Only the model\'s highest-ranked picks beat the league base rate here; generic over/under calling adds nothing at this line. NOTE: measured against outcomes, never against the price you pay.',
   none:
     'No measured advantage at this line — the market price is the best estimate available. Shown for information; not a bet.',
 };

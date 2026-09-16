@@ -234,14 +234,25 @@ export default function BestBets({
     {priceMode !== 'maker' && <VenueLegend rows={sorted} />}
     {/* Track-record legend: what the chips mean and where the numbers come
         from, once per board. */}
+    <div className="trlegend unvalidated">
+      <b>Not validated against market prices.</b> Measured on 2026-08-31 against
+      real posted odds (FanDuel, DraftKings, Pinnacle), this model differs from
+      the vig-free market consensus by a median of 7.1 points, with a systematic
+      lean to the UNDER — which means it is less accurate than the market it is
+      betting into. Plays more than 12 points off consensus are now suppressed
+      as model error rather than shown as edge. <b>No measurement yet shows
+      these picks are profitable at the prices you pay.</b> Treat everything
+      below as unproven until the closing-line test is done.
+    </div>
     <div className="trlegend">
       <b>Track record</b> (replayed vs real games, Aug 3–22: 534 starts, 4,792
-      batter-games) — <span className="tchip t-proven">✓ PROVEN</span> model
-      beat naive side-picking outright at this line; take on model probability.{' '}
-      <span className="tchip t-ranked">◆ TOP PICKS ONLY</span> only the model's
-      highest-ranked picks beat the base rate — trust it near the top of this
-      board, not mid-list. <span className="tchip t-none">✕ NO EDGE</span> the
-      market already prices this right.
+      batter-games) — these tiers grade the model against OUTCOMES versus naive
+      baselines, not against prices.{' '}
+      <span className="tchip t-proven">✓ BEATS BASELINE</span> beat naive
+      side-picking at this line. <span className="tchip t-ranked">◆ TOP PICKS
+      ONLY</span> only the highest-ranked picks beat the base rate.{' '}
+      <span className="tchip t-none">✕ NO EDGE</span> the market already prices
+      this right.
     </div>
     </>
   );

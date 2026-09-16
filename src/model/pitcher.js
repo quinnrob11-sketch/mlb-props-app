@@ -394,8 +394,17 @@ export function projectPitcher(input) {
   // Applied AFTER shrinkToMean so the factor reaches the displayed projection
   // and the distribution mean identically (dist.k re-derives its per-BF rate
   // from projKAdj; dist.bb reads projBBAdj directly).
-  const K_LEVEL = 0.969;
-  const BB_LEVEL = 1.030;
+  // RETIRED 2026-08-31. These were fitted on the Aug 3-22 replay, which graded
+  // projections against OUTCOMES. That target does not correspond to money:
+  // measured against real posted prices, the model already leaned UNDER the
+  // market on strikeouts by -3.9 points on average, and K_LEVEL 0.969 cut
+  // projections a further 3.1% in that same direction. Concretely it projects
+  // Jacob deGrom at 4.87 K against his actual 6.36 per start. Two measurements
+  // disagree — outcome-bias said trim, market-bias says the opposite — and
+  // until the CLV test settles which one predicts profit, the honest setting is
+  // the one that adds no untested adjustment at all.
+  const K_LEVEL = 1.0;
+  const BB_LEVEL = 1.0;
 
   const projOutsAdj = Math.max(3, shrinkToMean(projOuts, 15.5, 0.89));
   const projHAdj = Math.max(0.2, shrinkToMean(projH, 4.88, 0.89));

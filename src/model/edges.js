@@ -237,6 +237,37 @@ export function evaluateEdge(modelOver, line, overOdds, underOdds, opts = {}) {
     verdict = "LEAN";
   }
 
+  // Demotion (a2) — IMPLAUSIBILITY SUPPRESSION (2026-08-31).
+  //
+  // Measured against real posted prices at FanDuel, DraftKings and Pinnacle on
+  // the 2026-08-31 slate (59 priced pitcher lines), this model's probability
+  // differs from the vig-free market consensus by a MEDIAN of 7.1 points, a
+  // mean of 8.0, and a maximum of 41.3 — and the disagreement is
+  // one-directional (signed mean -3.5%, i.e. the model leans UNDER).
+  //
+  // A model with a genuine 7-point edge on liquid pitcher props priced by
+  // Pinnacle would be among the most profitable betting operations in
+  // existence. This one is not. So a large gap is evidence the MODEL is wrong,
+  // not that the market is: the biggest apparent edges are the biggest errors,
+  // and a board sorted by EV therefore recommends its own worst mistakes
+  // first. On that slate the top four plays by EV were all >15 points off
+  // consensus, led by a 41-point disagreement shown as +8.4% EV.
+  //
+  // Demotion (a) capped those at LEAN, which still displays them as plays.
+  // This rule removes them from the board entirely. It is deliberately a hard
+  // PASS rather than a cap: there is no stake size at which betting a number
+  // we believe to be an error is correct.
+  //
+  // The 0.12 threshold sits just above the measured median disagreement, so it
+  // suppresses the tail without silencing the whole board. It is a safety
+  // limit, NOT a fitted parameter — nothing here has been validated as
+  // profitable, and see trackRecord.js for what has and has not been measured.
+  const modelImplausible = edge != null && Math.abs(edge) > 0.12;
+  if (modelImplausible && verdict !== "PASS") {
+    why.push("model >12pts off market — treated as model error, not edge");
+    verdict = "PASS";
+  }
+
   // Demotion (b): a single book cannot make a STRONG.
   if ((nBooks ?? 0) < 2 && verdict === "STRONG") {
     why.push("single book");
