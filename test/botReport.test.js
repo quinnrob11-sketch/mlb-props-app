@@ -56,6 +56,16 @@ test('the same ticker and side across several dry runs counts once, at the first
   assert.equal(ds.length, 3);
 });
 
+test('another rung or bet type on the same player later that day is flagged, not dropped', () => {
+  const ds = decisionsFrom([
+    dry({ ts: '2026-09-16T14:30:00Z' }),
+    dry({ ts: '2026-09-16T16:30:00Z', ticker: T.replace('-7', '-8') }),
+    dry({ ts: '2026-09-16T16:30:00Z', ticker: 'KXMLBGAME-26SEP161845PHIWSH-PHI', kind: 'game' }),
+  ]);
+  assert.deepEqual(ds.map((d) => d.correlatedRepeat), [false, true, false]);
+  assert.equal(summarize(ds.map((d) => gradeDecision(d, {}, AFTER))).correlatedRepeats, 1);
+});
+
 // ── fees and settlement ────────────────────────────────────────────────────
 
 test('dry-run P&L is after the un-ceilinged Kalshi fee', () => {

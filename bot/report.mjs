@@ -19,7 +19,10 @@
 //              size and edge). Later repeats only bump `runs`. A later flip to
 //              the other side is a separate decision. Live orders that share a
 //              key (only possible if a client id was reused) are combined into
-//              one position at the fill-weighted average price.
+//              one position at the fill-weighted average price. A prop on a
+//              player already bet earlier that day (another rung or bet type)
+//              is kept but flagged correlatedRepeat: a dry run holds nothing,
+//              so it cannot see the per-player limit a live run would hit.
 //   ENTRY      Dry run: the journal's `priceCents` x `count` (the ask it would
 //              have taken). Live: the order response's `fill_count` and
 //              `average_fill_price` (quoted on the YES leg, so a NO fill costs
@@ -225,7 +228,23 @@ export function decisionsFrom(entries) {
       clientOrderId: e.clientOrderId || null,
     });
   }
-  return [...byKey.values()];
+  // A dry run has no positions, so a later run can pick a different rung or
+  // bet type on a player it already "bought" — something maxBetsPerPlayer
+  // would block live. Flag (never drop) those so the paper record can be read
+  // with and without them.
+  const decisions = [...byKey.values()];
+  const firstByPlayer = new Map();
+  for (const d of decisions) {
+    const parts = String(d.ticker).split('-');
+    const pk = d.kind === 'prop' ? d.playerKey || (parts.length >= 4 ? `${parts[1]}:${parts[2]}` : null) : null;
+    d.correlatedRepeat = false;
+    if (!pk) continue;
+    const k = `${d.mode}|${d.env}|${d.date}|${pk}`;
+    const first = firstByPlayer.get(k);
+    if (first && first.key !== d.key) d.correlatedRepeat = true;
+    else firstByPlayer.set(k, d);
+  }
+  return decisions;
 }
 
 // ── market data -> close and settlement ───────────────────────────────────
@@ -467,6 +486,7 @@ export function summarize(graded) {
   return {
     count: bets.length,
     unfilled: graded.length - bets.length,
+    correlatedRepeats: bets.filter((g) => g.correlatedRepeat).length,
     settled: settled.length,
     pending: bets.length - settled.length,
     wins,
@@ -513,7 +533,7 @@ export function aggregate(graded) {
 
 export const DEFINITIONS = {
   decision: 'journal entries of type dry-run or order; skips and errors are ignored',
-  dedupe: 'one decision per mode+env+slate date+ticker+side; the first decision of the day is the entry, later runs only increment `runs`',
+  dedupe: 'one decision per mode+env+slate date+ticker+side; the first decision of the day is the entry, later runs only increment `runs`. A prop on a player already bet earlier that day (another rung or bet type) is kept but flagged correlatedRepeat, since live the per-player limit would have blocked it',
   entry: 'dry run: journal priceCents x count; live: response fill_count at average_fill_price (YES leg, so NO = 100 - it); zero fills = unfilled, not graded',
   fee: '0.07 x P x (1-P) per contract, un-ceilinged (src/trade/fees.js); live uses average_fee_paid when present',
   firstPitch: 'journal firstPitch (schedule gameDate), else the ET start time in the ticker; scheduled, not actual',
@@ -530,7 +550,7 @@ export function buildReport(graded, { dir = null, nowMs = Date.now(), entriesRea
   const decisions = [...graded]
     .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.ts).localeCompare(String(b.ts)))
     .map((g) => ({
-      date: g.date, mode: g.mode, env: g.env, ts: g.ts, runs: g.runs, ticker: g.ticker, side: g.side, kind: g.kind, marketKey: g.marketKey,
+      date: g.date, mode: g.mode, env: g.env, ts: g.ts, runs: g.runs, correlatedRepeat: g.correlatedRepeat ?? false, ticker: g.ticker, side: g.side, kind: g.kind, marketKey: g.marketKey,
       player: g.player, firstPitch: g.firstPitchMs != null ? new Date(g.firstPitchMs).toISOString() : null,
       count: g.count, entryCents: round(g.entryCents), feeCents: round(g.feeCents), edgePts: g.edgePts, model: g.model, blended: g.blended, market: g.market,
       status: g.status, closeSideCents: g.close ? round(g.close.sideCents) : null, closeSource: g.close?.source ?? null, clvCents: g.clvCents, beatClose: g.beatClose,
@@ -576,7 +596,7 @@ export function renderText(report) {
   out.push('');
   const drows = [['date', 'mode', 'ticker', 'side', 'n', 'entry', 'edge', 'status', 'close', 'CLV', 'result', 'P&L']];
   for (const d of report.decisions) {
-    drows.push([d.date, d.mode, d.ticker, d.side, d.count, show(d.entryCents, 'c'), show(d.edgePts), d.status + (d.runs > 1 ? ` (x${d.runs})` : ''), show(d.closeSideCents, 'c'), show(d.clvCents, 'c'), show(d.result), money(d.pnlDollars)]);
+    drows.push([d.date, d.mode, d.ticker, d.side, d.count, show(d.entryCents, 'c'), show(d.edgePts), d.status + (d.runs > 1 ? ` (x${d.runs})` : '') + (d.correlatedRepeat ? ' corr' : ''), show(d.closeSideCents, 'c'), show(d.clvCents, 'c'), show(d.result), money(d.pnlDollars)]);
   }
   out.push(textTable(drows));
   return out.join('\n');
