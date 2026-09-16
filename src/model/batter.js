@@ -39,12 +39,21 @@
  *      at rho ~ 0.42-0.51, so the convolution carried half the true variance
  *      and mispriced the 0.5 line by 15.3pp. Mean is unchanged; only the
  *      spread is corrected.
+ *
+ * BATTER REFIT (2026-09-16) against tools/backtest-batters.mjs (posted lineups, Aug 10-Sep 15
+ * 2026, fit/holdout split) — see BATTER_TUNING for every number:
+ *
+ *  R1  Plate appearances are a real distribution (team PA spread plus a chance
+ *      the starter is lifted), not the floor/ceil pair, and hit probabilities
+ *      carry a game-level spread. This is what hits@0.5 / TB@0.5 were
+ *      over-reading, and calibration.js no longer patches it.
+ *  R2  HR shrinkage 100 -> 300 PA; run/RBI levels, H+R+RBI shape and SB
+ *      dispersion re-fitted.
  */
 
 import {
   clamp,
   binomPmf,
-  binomTailOver,
   poissonPmf,
   poissonTailOver,
   negBinomPmf,
@@ -151,6 +160,8 @@ const RUN_CONTEXT_PASSTHROUGH = 0.4;
  *
  * Re-measure with:  node tools/backtest.mjs --from <start> --to <end>
  */
+// SUPERSEDED by the 2026-09-16 refit: BATTER_TUNING.hrrVarianceInflation (1.8), refit against the
+// wider hits leg. Kept for the measurement record above.
 const HRR_VARIANCE_INFLATION = 1.947;
 
 /**
@@ -189,6 +200,7 @@ const HRR_VARIANCE_INFLATION = 1.947;
  *
  * Re-measure with:  node tools/backtest.mjs --from <start> --to <end> --kind batter
  */
+// SUPERSEDED by the 2026-09-16 refit: BATTER_TUNING.hrrStructuralZero (0.10).
 const HRR_STRUCTURAL_ZERO = 0.0815;
 
 /**
@@ -275,6 +287,7 @@ const POWER_SHARE = 1.022;
  * dist.runs / dist.rbi / dist.hrr directly.
  */
 const HR_LEVEL = 0.945;
+// R_LEVEL / RBI_LEVEL SUPERSEDED by the 2026-09-16 refit: BATTER_TUNING.runLevel 0.95 / rbiLevel 0.98.
 const R_LEVEL = 0.933;
 const RBI_LEVEL = 0.963;
 
@@ -284,6 +297,122 @@ const RBI_LEVEL = 0.963;
  * contact/power pair — the two have nothing to do with each other.
  */
 const SB_SCALE = 0.969;
+
+/**
+ * BATTER_TUNING — every calibration setting the batter model reads, in one
+ * place, so `tools/tune-batters.mjs` can search them without editing the model.
+ * Pass `input.tuning` to `projectBatter` to override any of them.
+ *
+ * BATTER REFIT (2026-09-16) on a lookahead-free replay, tools/backtest-batters.mjs:
+ * every posted-lineup starter in every final game Aug 10-Sep 15 2026 (494
+ * games, 8,892 batter-games), each hitter's season line summed from his game
+ * log before the game date, the opposing starter's raw rates from the real
+ * `projectPitcher` on his as-of line, and loadSlate's as-of league object.
+ * Settings were chosen on Aug 10-31 (5,274) by log loss and kept ONLY if they
+ * also improved log loss on Sep 1-15 (3,618), which the search never saw.
+ *
+ * Holdout Sep 1-15, before -> after (bias is actual vs projected; dispersion
+ * is squared error over the model's own variance, >1 = model too narrow):
+ *
+ *               bias           dispersion      log loss          Brier
+ *   hits      +0.7 -> +0.7%   1.106 -> 1.037  1.1999 -> 1.1944  .1502 -> .1501
+ *   TB        +2.1 -> +2.2%   1.082 -> 1.038  1.6297 -> 1.6279  .1639 -> .1638
+ *   HR        +7.6 -> +8.1%   1.054 -> 1.047  0.3894 -> 0.3890  .0561 -> .0560
+ *   RBI       +8.2 -> +6.3%   1.051 -> 1.026  0.9149 -> 0.9146  .1144 -> .1143
+ *   H+R+RBI   +4.9 -> +3.9%   0.974 -> 0.990  1.8190 -> 1.8177  .1818 -> .1817
+ *   runs      +9.7 -> +7.7%   1.013 -> 0.994  0.9057 -> 0.9050  .1580 -> .1578
+ *   K         -1.7 -> -1.7%   1.004 -> 0.976  1.1470 -> 1.1470  .1426 -> .1426
+ *   singles   +0.3 -> +0.2%   1.097 -> 1.054  0.9860 -> 0.9838  .1709 -> .1707
+ *   SB        -2.9 -> -2.9%   0.903 -> 0.934  0.2335 -> 0.2331  .0573 -> .0573
+ *
+ *   hits@0.5 (= TB@0.5)  62.2 -> 61.0 predicted vs 60.8 observed
+ *   hits@2.5              3.9 ->  4.6            vs  5.1
+ *   HRR@1.5 / @2.5       44.0 / 27.2 -> 44.9 / 27.8   vs 46.7 / 30.8
+ *
+ * WHAT WAS WRONG. Per-PA rates were right (hits 0.997, K 0.990, HR 1.013 of
+ * projected per actual PA over the whole replay); the distributions around
+ * them were too narrow. Real plate appearances spread far wider than the
+ * floor/ceil pair (section 9), and hits in a game are more clustered than
+ * independent PAs, so every count market put too much mass in the middle —
+ * the standing hits@0.5 / TB@0.5 over-read that calibration.js was patching.
+ *
+ * The remaining holdout level gaps on runs/RBI/HR are the environment, not the
+ * model: league R/G was 4.36 in the fit window and 4.76 in the holdout (HR/PA
+ * .0288 vs .0321). No as-of input can see that coming, and a level fitted to
+ * the fit window (hrLevel 0.91) made the holdout WORSE, so it was rejected.
+ *
+ * Rejected because the holdout got worse: hrLevel 0.945 -> 0.91 (HR+TB log
+ * loss 2.0169 -> 2.0178), rbiK 0.85 -> 0.70 (0.9146 -> 0.9156), sbScale
+ * 0.969 -> 0.90 (0.2331 -> 0.2332). kRateSpread and contactShare: the fit
+ * window kept the current values.
+ *
+ * Re-measure with:
+ *   node tools/backtest-batters.mjs --from <start> --to <end> --split <date> --cache DIR
+ *   node tools/tune-batters.mjs     --from <start> --to <end> --split <date> --cache DIR
+ */
+export const BATTER_TUNING = {
+  contactShare: CONTACT_SHARE,
+  powerShare: POWER_SHARE,
+  hrLevel: HR_LEVEL,
+  /**
+   * Was R_LEVEL 0.933 / RBI_LEVEL 0.963 (Aug 3-22 replay). Fit window now reads
+   * runs +1.6% / RBI +1.1% under-projected at those values. Holdout log loss:
+   * runs 0.9057 -> 0.9050, RBI 0.9149 -> 0.9146. Small, and in the direction of
+   * the season-average run environment (4.49 R/G through Aug 9).
+   */
+  runLevel: 0.95,
+  rbiLevel: 0.98,
+  sbScale: SB_SCALE,
+  /**
+   * Shrinkage strength (PA) of the home-run rate toward its 0.03 prior. Was
+   * 100: projected-HR slope on actual was 0.81 (fit) / 0.87 (holdout), i.e.
+   * the model believed hitters' HR differences more than they held up. 300 was
+   * best of 60-600 on fit; holdout HR+TB log loss 2.0180 -> 2.0169.
+   */
+  hrPriorStrength: 300,
+  /** NB dispersion of RBI (k) and of stolen bases. */
+  rbiK: 0.85,
+  /**
+   * Was 1 (geometric). SB outcomes were narrower than modelled (dispersion
+   * 0.89 fit / 0.90 holdout). Holdout log loss 0.2335 -> 0.2331.
+   */
+  sbK: 1.5,
+  /**
+   * Was 1.947 / 0.0815 (measured on 2025-26 boxscores against the OLD
+   * two-point hits leg). The hits leg is now wider on its own (section 9 and
+   * rateSpread), so less of the H+R+RBI spread has to come from the inflation.
+   * Refit jointly on the fit window with every other setting in place; holdout
+   * log loss 1.8192 -> 1.8177, @0.5 66.9 -> 67.5 vs 67.7 observed.
+   */
+  hrrVarianceInflation: 1.8,
+  hrrStructuralZero: 0.1,
+  /**
+   * Plate-appearance distribution (section 9): SD of the team's plate
+   * appearances per game (0 = the old floor/ceil two-point mixture), and the
+   * probability the starter is lifted and loses a trip.
+   *
+   * Team PA SD measures 4.64 away / 4.45 home; fitting on the observed batter
+   * PA counts chose 5.5 with a 10% loss rate — the extra width stands in for
+   * extra innings and multi-PA removals the one-trip loss does not cover.
+   * PA log loss, holdout: 4.2489 (two-point) -> 1.1651; the per-slot
+   * empirical pmf, the practical floor, scores 1.1547. Hits+TB+singles+HR log
+   * loss, holdout: 4.2050 -> 4.1990.
+   */
+  teamPaSd: 5.5,
+  paLossRate: 0.1,
+  /**
+   * Game-level spread of the per-PA hit probabilities (all four hit types
+   * scaled together by 1-d / 1 / 1+d, weights 1/4, 1/2, 1/4). Mean-preserving.
+   * It stands in for what makes a hitter's PAs in one game move together
+   * (same starter, same bullpen, same park and air). With the PA fix in place
+   * hits were still too narrow (dispersion 1.08 holdout); 0.30 was best of
+   * 0-0.60 on fit. Hits+TB+singles+HR log loss, holdout: 4.1990 -> 4.1964.
+   * `kRateSpread` is the same thing for strikeouts; the fit kept it at 0
+   * (strikeouts were already at dispersion ~1.0).
+   */
+  rateSpread: 0.3,
+  kRateSpread: 0,
+};
 
 /**
  * Expected runs allowed per batter faced implied by a starter's hit and HR
@@ -422,6 +551,7 @@ export function projectBatter(input) {
     wx,
   } = input;
 
+  const T = { ...BATTER_TUNING, ...(input.tuning || {}) };
   const lg = { ...LEAGUE_AVG, ...(input.lg || {}) };
   const s26 = season26 || {};
   const s25 = season25 || {};
@@ -463,7 +593,7 @@ export function projectBatter(input) {
     single: shrunkRate(singles26,       pa26, singles25,       pa25, 0.14,  60),
     double: shrunkRate(s26.doubles,     pa26, s25.doubles,     pa25, 0.043, 80),
     triple: shrunkRate(s26.triples,     pa26, s25.triples,     pa25, 0.004, 120),
-    hr:     shrunkRate(s26.homeRuns,    pa26, s25.homeRuns,    pa25, 0.03,  100),
+    hr:     shrunkRate(s26.homeRuns,    pa26, s25.homeRuns,    pa25, 0.03,  T.hrPriorStrength),
     run:    shrunkRate(s26.runs,        pa26, s25.runs,        pa25, 0.12,  60),
     rbi:    shrunkRate(s26.rbi,         pa26, s25.rbi,         pa25, 0.115, 60),
     k:      shrunkRate(s26.strikeOuts,  pa26, s25.strikeOuts,  pa25, lg.kRate,  60),
@@ -496,7 +626,7 @@ export function projectBatter(input) {
       s26.stolenBases, s26.gamesPlayed,
       s25.stolenBases, s25.gamesPlayed,
       lg.sbPerGame ?? SB_PER_GAME_PRIOR, 30,
-    ) * SB_SCALE;
+    ) * T.sbScale;
 
   // ---------------------------------------------------------------------
   // 3. Platoon multiplier.
@@ -609,7 +739,7 @@ export function projectBatter(input) {
   // FIX(v31) — the CONTACT/POWER SPLIT. See the constants below.
   const hrPARaw = clamp(
     rates.hr * (platoon === 1 ? 1 : (platoon - 1) * 1.8 + 1) * spHr * parkHrWeather *
-      POWER_SHARE * HR_LEVEL,
+      T.powerShare * T.hrLevel,
     0.002, 0.1,
   );
 
@@ -636,7 +766,7 @@ export function projectBatter(input) {
   // measured answer is neither 0.975 nor 1.0.
   const nonHrHitPARaw = Math.max(
     0,
-    (rates.hit - rates.hr) * platoon * spHit * parkHits * CONTACT_SHARE,
+    (rates.hit - rates.hr) * platoon * spHit * parkHits * T.contactShare,
   );
 
   // The [0.05, 0.42] clamp still applies to the TOTAL hit rate, as before. When
@@ -684,8 +814,8 @@ export function projectBatter(input) {
   // (`platoon * 0.4 + 0.6` passes through only 40% of the platoon edge because
   // runs/RBI depend as much on teammates as on the batter) x the run context
   // from step 5. RBI keeps the same unexplained 0.975 haircut as hits.
-  const projR = pa * rates.run * (platoon * 0.4 + 0.6) * runContext * R_LEVEL;
-  const projRBI = pa * rates.rbi * (platoon * 0.4 + 0.6) * runContext * 0.975 * RBI_LEVEL;
+  const projR = pa * rates.run * (platoon * 0.4 + 0.6) * runContext * T.runLevel;
+  const projRBI = pa * rates.rbi * (platoon * 0.4 + 0.6) * runContext * 0.975 * T.rbiLevel;
 
   // H+R+RBI is a plain sum of the three means (correct in expectation: a solo
   // HR contributes 1 + 1 + 1 = 3).
@@ -715,55 +845,152 @@ export function projectBatter(input) {
   //      E[X] = (1-f)*n_lo*p + f*(n_lo+1)*p = (n_lo + f)*p = pa*p
   //
   //    so every `proj*` above is precisely the mean of the tail below.
-  //    (n = 0 is safe: binomTailOver returns 0 for zero trials, which is the
-  //    correct P(X > line >= 0).)
   // ---------------------------------------------------------------------
-  const paFloor = Math.max(0, Math.floor(pa));
-  const paCeil = Math.max(0, Math.ceil(pa));
-  const paFrac = pa - paFloor;
+  //
+  //    2026-09-16 REFIT — THE TWO-POINT MIXTURE WAS FAR TOO NARROW. tools/backtest-batters.mjs
+  //    replayed 8,892 posted-lineup starter-games (Aug 10-Sep 15 2026): the
+  //    table's per-slot MEAN is right to ~0.06 PA, but the real SD is 0.65-0.87
+  //    PA against the mixture's <= 0.5, and 2-PA and 6-PA games — which the
+  //    mixture gives probability zero — are 1-14% of games depending on slot.
+  //
+  //    The replacement models where plate appearances actually come from:
+  //      - the TEAM sends T batters to the plate, T ~ normal(mu, teamPaSd)
+  //        discretised; slot s then bats floor((T - s) / 9) + 1 times. The
+  //        spread is MEASURED, not fitted: team PA per game had SD 4.64 (away)
+  //        and 4.45 (home) over the same 494 games.
+  //      - with probability `paLossRate` the starter is lifted (pinch hitter,
+  //        injury, blowout rest) and loses one of those trips.
+  //    mu is solved per call so that E[n] is exactly `pa`, keeping every
+  //    `proj*` equal to its distribution's mean. `teamPaSd: 0` restores the
+  //    old two-point mixture exactly.
+  //
+  //    PA log loss on the observed counts, fit Aug 10-31 / holdout Sep 1-15:
+  //      two-point mixture          3.7049 / 4.2489
+  //      this model (4.5, 0.15)     1.1120 / 1.1811
+  //      per-slot empirical pmf     1.0689 (in-sample) / 1.1547   <- floor
+  // ---------------------------------------------------------------------
+  const paDist = (() => {
+    const sd = T.teamPaSd;
+    const loss = T.paLossRate;
+    if (!(sd > 0)) {
+      // Old two-point mixture.
+      const lo = Math.max(0, Math.floor(pa));
+      const f = pa - lo;
+      return f > 0 ? [[lo, 1 - f], [lo + 1, f]] : [[lo, 1]];
+    }
+    // Unknown slot: price him as a mid-order bat around his own PA mean.
+    const s = slot >= 1 && slot <= 9 ? slot : 5;
+    const trips = (mu) => {
+      const w = new Map();
+      let total = 0;
+      const lo = Math.floor(mu - 4 * sd);
+      const hi = Math.ceil(mu + 4 * sd);
+      for (let t = Math.max(0, lo); t <= hi; t++) {
+        const wt = Math.exp(-0.5 * ((t - mu) / sd) ** 2);
+        const n = Math.max(0, Math.floor((t - s) / 9) + 1);
+        w.set(n, (w.get(n) || 0) + wt);
+        total += wt;
+      }
+      // Lifted starter: one trip fewer.
+      const out = new Map();
+      for (const [n, wt] of w) {
+        const p = wt / total;
+        out.set(n, (out.get(n) || 0) + p * (1 - loss));
+        const m = Math.max(0, n - 1);
+        out.set(m, (out.get(m) || 0) + p * loss);
+      }
+      return out;
+    };
+    const meanOf = (d) => {
+      let m = 0;
+      for (const [n, p] of d) m += n * p;
+      return m;
+    };
+    // E[n] is increasing in mu; bisect for the lineup-slot mean.
+    let lo = 0;
+    let hi = 9 * (pa + 2) + s;
+    for (let i = 0; i < 40; i++) {
+      const mid = (lo + hi) / 2;
+      if (meanOf(trips(mid)) < pa) lo = mid;
+      else hi = mid;
+    }
+    return [...trips((lo + hi) / 2)].filter(([, p]) => p > 1e-12).sort((a, b) => a[0] - b[0]);
+  })();
+  const paMax = paDist[paDist.length - 1][0];
 
-  /** Blend a per-trial-count quantity over floor(pa) / ceil(pa). */
-  const mixOverPa = (fn) =>
-    paFrac <= 0 ? fn(paFloor) : (1 - paFrac) * fn(paFloor) + paFrac * fn(paCeil);
+  // Game-level spread of the per-PA probabilities (see BATTER_TUNING). Three
+  // equally spaced multipliers with weights 1/4, 1/2, 1/4: mean exactly 1, so
+  // every count mean is untouched; only the game-to-game variance grows.
+  const spreadMix = (d) => (d > 0 ? [[1 - d, 0.25], [1, 0.5], [1 + d, 0.25]] : [[1, 1]]);
+  const rateMix = spreadMix(T.rateSpread);
+  const kMix = spreadMix(T.kRateSpread);
+
+  /** Dense pmf of a binomial count mixed over the PA and rate distributions. */
+  const countPmf = (p, mix) => {
+    const out = new Array(paMax + 1).fill(0);
+    for (const [n, wn] of paDist) {
+      for (const [m, wm] of mix) {
+        const q = clamp(p * m, 0, 1);
+        if (!(q > 0)) {
+          out[0] += wn * wm;
+          continue;
+        }
+        if (q >= 1) {
+          out[n] += wn * wm;
+          continue;
+        }
+        for (let k = 0; k <= n; k++) out[k] += wn * wm * binomPmf(k, n, q);
+      }
+    }
+    return out;
+  };
+  const hitsPmf = countPmf(hitPA, rateMix);
+  const hrPmf = countPmf(hrPA, rateMix);
+  const singlesPmf = countPmf(singlePA, rateMix);
+  const kPmf = countPmf(kPA, kMix);
 
   // ---------------------------------------------------------------------
   // 10. Total-bases PMF by exact multinomial convolution.
   //
   //     Each PA is one draw from {out, 1B, 2B, 3B, HR} with base values
   //     {0,1,2,3,4}; convolving n independent draws gives the exact TB
-  //     distribution. The PMF is captured at floor(pa) draws and again at
-  //     ceil(pa), then mixed — same fractional-PA treatment as the binomial
-  //     markets, so E[TB] is exactly `projTB`.
+  //     distribution. The PMF is captured at every PA count the section-9
+  //     distribution weights (and each rate-spread multiplier), then mixed —
+  //     the same treatment as the binomial markets, so E[TB] is exactly `projTB`.
   //
   //     `outProb` is the leftover mass, floored at 0 — if the four hit
   //     probabilities ever sum above 1 the PMF silently sums above 1 too.
   // ---------------------------------------------------------------------
   const tbPmf = (() => {
-    const outcomeProbs = [singlePA, doublePA, triplePA, hrPA];
-    const outProb = Math.max(0, 1 - outcomeProbs.reduce((sum, p) => sum + p, 0));
+    const mixed = new Array(4 * paMax + 1).fill(0);
+    const weightOf = new Map(paDist);
+    for (const [m, wm] of rateMix) {
+      const outcomeProbs = [singlePA * m, doublePA * m, triplePA * m, hrPA * m];
+      const outProb = Math.max(0, 1 - outcomeProbs.reduce((sum, p) => sum + p, 0));
 
-    const step = (pmf) => {
-      const next = new Array(pmf.length + 4).fill(0);
-      for (let tb = 0; tb < pmf.length; tb++) {
-        if (pmf[tb]) {
-          next[tb]     += pmf[tb] * outProb;          // out: +0 bases
-          next[tb + 1] += pmf[tb] * outcomeProbs[0];  // single: +1
-          next[tb + 2] += pmf[tb] * outcomeProbs[1];  // double: +2
-          next[tb + 3] += pmf[tb] * outcomeProbs[2];  // triple: +3
-          next[tb + 4] += pmf[tb] * outcomeProbs[3];  // homer:  +4
+      const step = (pmf) => {
+        const next = new Array(pmf.length + 4).fill(0);
+        for (let tb = 0; tb < pmf.length; tb++) {
+          if (pmf[tb]) {
+            next[tb]     += pmf[tb] * outProb;          // out: +0 bases
+            next[tb + 1] += pmf[tb] * outcomeProbs[0];  // single: +1
+            next[tb + 2] += pmf[tb] * outcomeProbs[1];  // double: +2
+            next[tb + 3] += pmf[tb] * outcomeProbs[2];  // triple: +3
+            next[tb + 4] += pmf[tb] * outcomeProbs[3];  // homer:  +4
+          }
         }
+        return next;
+      };
+
+      // Walk the PA count up once, capturing the pmf at every n the PA
+      // distribution puts weight on.
+      let pmf = [1];
+      for (let n = 0; n <= paMax; n++) {
+        if (n > 0) pmf = step(pmf);
+        const wn = weightOf.get(n);
+        if (!wn) continue;
+        for (let i = 0; i < pmf.length; i++) mixed[i] += wn * wm * pmf[i];
       }
-      return next;
-    };
-
-    let pmf = [1];
-    for (let i = 0; i < paFloor; i++) pmf = step(pmf);
-    if (paFrac <= 0) return pmf;
-
-    const pmfCeil = step(pmf);
-    const mixed = new Array(pmfCeil.length).fill(0);
-    for (let i = 0; i < pmfCeil.length; i++) {
-      mixed[i] = (1 - paFrac) * (pmf[i] || 0) + paFrac * pmfCeil[i];
     }
     return mixed;
   })();
@@ -804,19 +1031,23 @@ export function projectBatter(input) {
   //     measured rather than chosen.
   // ---------------------------------------------------------------------
 
-  // Variance of the hits leg under the floor/ceil PA mixture:
-  //   Var = E[Var(X|n)] + Var(E[X|n])
-  //       = pa*p*(1-p) + p^2 * (E[n^2] - pa^2)
+  // Variance of the hits leg, read straight off its pmf (under the old
+  // two-point PA mixture this equals pa*p*(1-p) + p^2 * (E[n^2] - pa^2)).
   const hitsVar = (() => {
-    const eN2 = paFrac <= 0 ? paFloor ** 2 : (1 - paFrac) * paFloor ** 2 + paFrac * paCeil ** 2;
-    return pa * hitPA * (1 - hitPA) + hitPA ** 2 * (eN2 - pa ** 2);
+    let m = 0;
+    let m2 = 0;
+    hitsPmf.forEach((p, k) => {
+      m += p * k;
+      m2 += p * k * k;
+    });
+    return m2 - m * m;
   })();
   // Poisson: variance = mean. NB(mu, k): variance = mu + mu^2 / k.
   const runsVar = projR;
-  const rbiVar = projRBI + (projRBI * projRBI) / 0.85;
+  const rbiVar = projRBI + (projRBI * projRBI) / T.rbiK;
 
   const hrrMean = projHRR;
-  const hrrVar = HRR_VARIANCE_INFLATION * (hitsVar + runsVar + rbiVar);
+  const hrrVar = T.hrrVarianceInflation * (hitsVar + runsVar + rbiVar);
 
   const hrrTail = (() => {
     // A negative binomial needs variance strictly above the mean. For any
@@ -825,11 +1056,8 @@ export function projectBatter(input) {
     // almost nothing could in principle not, so fall back to the exact
     // independent convolution rather than producing a degenerate k.
     if (!(hrrVar > hrrMean * 1.02) || !(hrrMean > 0)) {
-      const hitsPmf = new Array(paCeil + 1)
-        .fill(0)
-        .map((_, k) => mixOverPa((n) => binomPmf(k, n, hitPA)));
       const runsPmf = densePmf((k) => poissonPmf(k, projR), projR);
-      const rbiPmf = densePmf((k) => negBinomPmf(k, projRBI, 0.85), projRBI);
+      const rbiPmf = densePmf((k) => negBinomPmf(k, projRBI, T.rbiK), projRBI);
       const pmf = convolvePmf(convolvePmf(hitsPmf, runsPmf), rbiPmf);
       return (line) => tailFromPmf(pmf, line);
     }
@@ -847,7 +1075,7 @@ export function projectBatter(input) {
     // that every distribution's mean equals the projection printed beside it.
     // Dispersion is recomputed at the lifted mean so the variance relation is
     // the one that was measured, not one inherited from the old mean.
-    const pi = HRR_STRUCTURAL_ZERO;
+    const pi = T.hrrStructuralZero;
     const liftedMean = hrrMean / (1 - pi);
     const liftedVar = (hrrVar / hrrMean) * liftedMean;
     if (!(liftedVar > liftedMean * 1.02)) {
@@ -868,24 +1096,24 @@ export function projectBatter(input) {
   // ---------------------------------------------------------------------
   // 12. Market tail distributions: each returns P(stat > line).
   //
-  //     Families: binomial (mixed over floor/ceil PA) for hits / HR / singles /
+  //     Families: binomial (mixed over the PA distribution) for hits / HR / singles /
   //     K; exact multinomial for TB; Poisson for runs; NB for RBI (k=0.85) and
   //     SB (k=1, geometric); and the convolution above for H+R+RBI. Every one
   //     of them now has mean exactly equal to the `proj*` displayed next to it.
   // ---------------------------------------------------------------------
   const dist = {
-    hits:    (line) => mixOverPa((n) => binomTailOver(line, n, hitPA)),
-    hr:      (line) => mixOverPa((n) => binomTailOver(line, n, hrPA)),
-    singles: (line) => mixOverPa((n) => binomTailOver(line, n, singlePA)),
-    k:       (line) => mixOverPa((n) => binomTailOver(line, n, kPA)),
+    hits:    (line) => tailFromPmf(hitsPmf, line),
+    hr:      (line) => tailFromPmf(hrPmf, line),
+    singles: (line) => tailFromPmf(singlesPmf, line),
+    k:       (line) => tailFromPmf(kPmf, line),
 
     // Exact multinomial tail from the convolved PMF.
     tb: (line) => tailFromPmf(tbPmf, line),
 
     runs: (line) => poissonTailOver(line, projR),
-    rbi:  (line) => negBinomTailOver(line, projRBI, 0.85),
+    rbi:  (line) => negBinomTailOver(line, projRBI, T.rbiK),
     hrr:  hrrTail,
-    sb:   (line) => negBinomTailOver(line, Math.max(0.01, projSB), 1),
+    sb:   (line) => negBinomTailOver(line, Math.max(0.01, projSB), T.sbK),
   };
 
   // ---------------------------------------------------------------------
@@ -899,6 +1127,8 @@ export function projectBatter(input) {
 
   return {
     pa,
+    /** [[plate appearances, probability], ...] behind every count market. */
+    paDist,
     rates: {
       hitPA,
       hrPA,

@@ -233,7 +233,7 @@ const HIT = 'KXMLBHIT-26SEP161910DETCLE-CLETBAT20-2';
 const TB = 'KXMLBTB-26SEP161910DETCLE-CLETBAT20-2';
 const batGame = {
   ...game,
-  batters: [{ id: 20, name: 'Test Bat', lineupSource: 'confirmed', proj: { dist: { hits: () => 0.6, tb: () => 0.65 } } }], // tb carries a -2.35pt calibration at 1.5
+  batters: [{ id: 20, name: 'Test Bat', lineupSource: 'confirmed', proj: { dist: { hits: () => 0.6, tb: () => 0.6265 } } }], // the 2026-09-16 batter refit deleted the tb@1.5 calibration; 0.6265 is the old 0.65 minus its 2.35pt, so the fixture prices exactly as before
 };
 const batPlan = (overrides = {}) =>
   planOrders({

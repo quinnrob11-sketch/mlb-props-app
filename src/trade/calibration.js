@@ -98,15 +98,47 @@ export const CALIBRATION = {
   // honestly), K@5.5 (-0.7/+0.3), K@6.5 (-2.1/+1.8), outs@16.5 (0.0 fit),
   // outs@17.5 (-0.5/+4.5), outs@18.5 (-0.1 fit), and the entire old
   // pitcher_outs negative block, whose sign the fresh window contradicts.
-  batter_hits: {
-    0.5: 0.02,
-  },
-  batter_total_bases: {
-    1.5: 0.0235,
-  },
-  batter_hits_runs_rbis: {
-    2.5: -0.008,
-  },
+  // ── BATTER ENTRIES RE-DERIVED 2026-09-16 against the batter refit ───────
+  //
+  // tools/backtest-batters.mjs, 8,892 posted-lineup starter-games, fit Aug
+  // 10-31 / holdout Sep 1-15, same rule as always (>= 0.5pp in BOTH windows,
+  // same sign, mean not maximum). Gaps (pred - obs, pp, fit / holdout):
+  //
+  //                             before refit     after refit
+  //     batter_hits@0.5         +1.6 / +1.5      +0.4 / +0.3
+  //     batter_hits@1.5         +0.2 / -0.6      +0.5 / -0.3
+  //     batter_hits@2.5         -0.5 / -1.2      +0.2 / -0.5
+  //     batter_total_bases@0.5  +1.6 / +1.5      +0.4 / +0.3
+  //     batter_total_bases@1.5  +1.8 / -0.3      +1.6 / -0.5
+  //     batter_total_bases@2.5  +0.6 / -1.1      +0.8 / -0.8
+  //     batter_total_bases@3.5  +0.8 / -1.6      +1.0 / -1.4
+  //     batter_home_runs@0.5    +0.4 / -1.0      +0.3 / -1.0
+  //     batter_rbis@0.5         +0.3 / -1.7      +0.7 / -1.4
+  //     batter_rbis@1.5         -0.6 / -1.5      -0.4 / -1.3
+  //     batter_hits_runs_rbis@0.5  -0.1 / -0.5   +0.3 / -0.1
+  //     batter_hits_runs_rbis@1.5  -0.8 / -2.7   +0.1 / -1.9
+  //     batter_hits_runs_rbis@2.5  -0.7 / -3.5   -0.2 / -3.0
+  //     batter_hits_runs_rbis@3.5  -0.5 / -2.4   -0.2 / -2.1
+  //
+  // NOTHING qualifies against the refit, so all three old entries are gone:
+  //   - hits@0.5 (+0.020): absorbed. It was the too-narrow PA distribution —
+  //     real plate appearances spread far wider than the floor/ceil pair, which
+  //     put too much mass on "at least one hit". the refit models that directly.
+  //   - total_bases@1.5 (+0.0235): the windows now disagree (+1.8 / -0.3 even
+  //     on the old model); applying it would have pushed the holdout 2.8pp wrong.
+  //   - hits_runs_rbis@2.5 (-0.008): the fit window is clean (-0.2). The
+  //     holdout's -3.0 is the September scoring jump (league 4.36 -> 4.76 R/G),
+  //     which a fixed correction cannot track and the fit window does not show.
+  //
+  // The lines are listed at 0 so the board shows them as MEASURED clean rather
+  // than never measured (`calibrate` ignores anything under MIN_CORRECTION).
+  // Watch the negative holdout gaps on RBI/HRR/runs: if they persist into a
+  // window where they also show up first, they become entries.
+  batter_hits: { 0.5: 0, 1.5: 0, 2.5: 0 },
+  batter_total_bases: { 0.5: 0, 1.5: 0, 2.5: 0, 3.5: 0 },
+  batter_home_runs: { 0.5: 0 },
+  batter_rbis: { 0.5: 0, 1.5: 0 },
+  batter_hits_runs_rbis: { 0.5: 0, 1.5: 0, 2.5: 0, 3.5: 0 },
   // pitcher_strikeouts@4.5 (+0.021) and pitcher_outs@14.5 (+0.0195) DELETED
   // 2026-09-16: both were measured against the pre-v35.1 pitcher model. The
   // PITCHER_TUNING refit absorbed them — on the Sep 1-15 holdout of the
