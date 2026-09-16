@@ -68,6 +68,7 @@ const schedule = await cached(
   `schedule_${SEASON}_${TO}`,
   `${API}/schedule?sportId=1&gameType=R&startDate=${SEASON}-03-20&endDate=${TO}&hydrate=probablePitcher`,
 );
+export { schedule };
 const venueByGame = new Map();
 const teamIds = new Set();
 const pitcherIds = new Set();
@@ -184,6 +185,13 @@ export function buildStarts() {
       starts.push({
         id,
         date: g.date,
+        // Identity of the game, for joining starts to external markets
+        // (tools/backtest-kalshi.mjs). Not used by the model.
+        name: g.player?.fullName || null,
+        gamePk: g.game?.gamePk ?? null,
+        teamId: g.team?.id ?? null,
+        oppId: g.opponent?.id ?? null,
+        isHome: g.isHome ?? null,
         input: {
           season26: s26,
           season25: prior.get(id) || null,
