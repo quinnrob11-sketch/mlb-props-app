@@ -2,6 +2,13 @@
 //
 //   node tools/backtest-pitchers.mjs --from 2026-08-10 --to 2026-09-15 [--cache DIR] [--split 2026-09-01]
 //
+// Works for any season with the same flags (e.g. --from 2025-04-15 --to
+// 2025-09-28); the prior season is always FROM's year minus one.
+//
+// Besides level (bias), spread (dispersion) and the proper scores, it reports
+// per-pitcher discrimination: `corr` (projection vs actual across starts) and
+// `mae` (mean |projection - actual|).
+//
 // For every start in the window it rebuilds, from games BEFORE that date only:
 //   - the pitcher's season line (from his game log) and recent starts,
 //   - the opponent's season hitting rates (from the team game log),
@@ -86,13 +93,13 @@ for (const d of schedule.dates) {
   }
 }
 
-const teamLogs = new Map();
+export const teamLogs = new Map();
 await pool([...teamIds], 8, async (id) => {
   const body = await cached(`teamhit_${id}_${SEASON}`, `${API}/teams/${id}/stats?stats=gameLog&group=hitting&season=${SEASON}`);
   teamLogs.set(id, body.stats?.[0]?.splits || []);
 });
 
-const pitcherLogs = new Map();
+export const pitcherLogs = new Map();
 await pool([...pitcherIds], 8, async (id) => {
   const body = await cached(`pitchlog_${id}_${SEASON}`, `${API}/people/${id}/stats?stats=gameLog&group=pitching&season=${SEASON}`);
   pitcherLogs.set(id, body.stats?.[0]?.splits || []);
@@ -192,6 +199,8 @@ export function buildStarts() {
         teamId: g.team?.id ?? null,
         oppId: g.opponent?.id ?? null,
         isHome: g.isHome ?? null,
+        // Context the model does not read; for research scripts only.
+        meta: { team: g.team?.id, opp: g.opponent?.id, isHome: g.isHome, gamePk: g.game?.gamePk },
         input: {
           season26: s26,
           season25: prior.get(id) || null,
@@ -199,6 +208,8 @@ export function buildStarts() {
           opp: t.pa ? { kRate: t.k / t.pa, bbRate: t.bb / t.pa, avg: t.h / t.ab } : null,
           park: venueByGame.get(g.game.gamePk) || '',
           lg: leagueBefore(g.date),
+          // loadSlate knows which side the starter is on; so does the log.
+          isHome: g.isHome,
         },
         actual: {
           k: Number(g.stat.strikeOuts),
@@ -236,7 +247,7 @@ export function evaluate(starts, project = projectPitcher, only = null) {
   const report = {};
   for (const [m, spec] of Object.entries(MARKETS)) {
     if (only && !only.includes(m)) continue;
-    let n = 0, sumP = 0, sumA = 0, sumSq = 0, sumVar = 0, sumPP = 0, sumPA = 0, logLoss = 0, brier = 0, nb = 0;
+    let n = 0, sumP = 0, sumA = 0, sumSq = 0, sumVar = 0, sumPP = 0, sumPA = 0, sumAA = 0, sumAbs = 0, logLoss = 0, brier = 0, nb = 0;
     const bins = Array.from({ length: 10 }, () => ({ p: 0, o: 0, n: 0 }));
     const perLine = new Map(spec.lines.map((l) => [l, { p: 0, o: 0, n: 0 }]));
     for (const s of starts) {
@@ -249,7 +260,7 @@ export function evaluate(starts, project = projectPitcher, only = null) {
       const pm = pmf.reduce((acc, p, k) => acc + p * k, 0);
       const pv = pmf.reduce((acc, p, k) => acc + p * (k - pm) ** 2, 0);
       n++; sumP += mean; sumA += a; sumSq += (a - mean) ** 2; sumVar += pv;
-      sumPP += mean * mean; sumPA += mean * a;
+      sumPP += mean * mean; sumPA += mean * a; sumAA += a * a; sumAbs += Math.abs(a - mean);
       logLoss += -Math.log(Math.max(1e-6, pmf[Math.min(a, spec.max)] || 1e-6));
       for (const line of spec.lines) {
         const p = dist(line);
@@ -262,13 +273,19 @@ export function evaluate(starts, project = projectPitcher, only = null) {
       }
     }
     const meanP = sumP / n;
-    const slope = (sumPA / n - meanP * (sumA / n)) / (sumPP / n - meanP * meanP);
+    const cov = sumPA / n - meanP * (sumA / n);
+    const slope = cov / (sumPP / n - meanP * meanP);
+    // Per-pitcher discrimination: how well the projection ranks starts, and its
+    // typical miss. Level-independent (corr) and level-sensitive (mae).
+    const corr = cov / Math.sqrt((sumPP / n - meanP * meanP) * (sumAA / n - (sumA / n) ** 2));
     report[m] = {
       n,
       meanProj: meanP,
       meanActual: sumA / n,
       biasPct: (100 * (sumA / n - meanP)) / meanP,
       slope,
+      corr,
+      mae: sumAbs / n,
       dispersion: sumSq / sumVar, // >1: real outcomes spread wider than the model's distribution
       logLoss: logLoss / n,
       brier: brier / nb,
@@ -284,7 +301,7 @@ export function printReport(report, label) {
   console.log(`\n=== ${label} ===`);
   for (const [m, r] of Object.entries(report)) {
     console.log(
-      `${m.padEnd(5)} n=${r.n}  proj ${r.meanProj.toFixed(2)} actual ${r.meanActual.toFixed(2)} (bias ${r.biasPct >= 0 ? '+' : ''}${r.biasPct.toFixed(1)}%)  slope ${r.slope.toFixed(2)}  dispersion ${r.dispersion.toFixed(2)}  logloss ${r.logLoss.toFixed(4)}  brier ${r.brier.toFixed(4)}`,
+      `${m.padEnd(5)} n=${r.n}  proj ${r.meanProj.toFixed(2)} actual ${r.meanActual.toFixed(2)} (bias ${r.biasPct >= 0 ? '+' : ''}${r.biasPct.toFixed(1)}%)  slope ${r.slope.toFixed(2)}  corr ${r.corr.toFixed(3)}  mae ${r.mae.toFixed(3)}  dispersion ${r.dispersion.toFixed(2)}  logloss ${r.logLoss.toFixed(4)}  brier ${r.brier.toFixed(4)}`,
     );
     console.log(`      predicted→observed by bin: ${r.bins.join('  ')}`);
     console.log(`      by line (pred vs obs %): ${r.lines.join('  ')}`);

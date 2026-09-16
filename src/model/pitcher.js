@@ -49,6 +49,8 @@ export function parseInningsPitched(ip) {
  * @param {object}   input.opp       opposing team rates {kRate, bbRate, avg}
  * @param {string}   input.park      venue name (keys PARK_FACTORS)
  * @param {object}   input.lg        league overrides merged onto LEAGUE_AVG
+ * @param {boolean}  [input.isHome]  starter pitches at home (home/away terms
+ *                                   are skipped when absent)
  */
 /**
  * The pitcher model's calibration settings in one place, so the backtest can
@@ -79,6 +81,30 @@ export function parseInningsPitched(ip) {
  *     rather than 5, which tracks the late-season shortening of starters; it
  *     still leaves September about 3% high, so treat outs overs with care.
  *   - Hits allowed were calibrated in shape and ~3% high in level.
+ *
+ * TRIED(v35.2), NOT SHIPPED — measured on the same replay extended to Jun 1
+ * 2026 (fit Jun 1-Aug 31, holdouts Sep 1-15 and Aug 16-31) plus a full 2025
+ * replay; none improved log loss consistently across those samples:
+ *   - Recent-form K rate (last 3/5/8 starts vs the shrunk season rate): no
+ *     out-of-sample gain in corr or error. Neither was a wider or narrower K
+ *     shrinkage (strength 30/70, prior-season weight 0.3/0.6, spread x1.1-1.3).
+ *   - Season swinging-strike rate (whiffs per pitch, from play-by-play) blended
+ *     into the K rate: per-BF corr +-0.01, no gain on the count.
+ *   - Opponent K% over the last 14/30 days instead of season: +0.008 corr in
+ *     the regression, too small to justify a new live data feed.
+ *   - K rate uncertainty in dist.k (p x 0.75/1/1.25 mixture, bfSpread 3):
+ *     better on both fit windows and 2025, WORSE on Aug 16-31 (2.1130 ->
+ *     2.1167). Worth re-testing with more data.
+ *   - kLevel 0.96-0.97 after the reliever fix: better on fit and 2025, flat or
+ *     worse on Aug 16-31. Left at 0.95; strikeouts now run ~1.5% low.
+ *   - Workload: long rest (>=12/15/20 days) or <3 starts budget cuts, recency-
+ *     weighted pitch counts, keeping short outings, opponent pitches per PA,
+ *     bullpen outs over the last 1-3 days, a team starter-depth effect, and
+ *     re-fitting budgetSpread/hook constants — each <=0.001 or mixed.
+ *   - Late season: the best September budget cut on 2025 September moved outs
+ *     log loss only 2.5257 -> 2.5249 and made strikeouts worse; an outs-only
+ *     September level did no better. The ~2% September outs shortfall is
+ *     real in both seasons but too small next to outcome noise to fix this way.
  */
 export const PITCHER_TUNING = {
   kLevel: 0.95,
@@ -97,6 +123,73 @@ export const PITCHER_TUNING = {
   recentBudgetWeight: 0.55,
   /** Weight of recent innings vs budget-implied innings in projIP. */
   recentIpWeight: 0.4,
+  /**
+   * Pitch budget for a pitcher with no start this season who has been
+   * relieving: [base, multiplier] on his pitches per appearance. null = off.
+   *
+   * ADDED(v35.2). Chosen on Jun 1-Aug 31 2026 (2,363 starts) by K + outs log
+   * loss; the surface is flat across [0,1.3]-[20,1.0], and 2025 picks the same
+   * point. Together with `budgetFloor` 45 -> 25 (openers throw 30-45 pitches,
+   * the old floor lifted them all to 45). Holdout Sep 1-15 2026, 402 starts,
+   * before -> after (second holdout Aug 16-31, 430 starts, in brackets):
+   *
+   *                  strikeouts                 outs
+   *     log loss     2.1897 -> 2.1676 (2.1392 -> 2.1179)   2.4927 -> 2.4431 (2.5135 -> 2.4770)
+   *     Brier        0.1704 -> 0.1675           0.1884 -> 0.1848
+   *     corr         0.459 -> 0.487 (0.438 -> 0.467)       0.531 -> 0.591 (0.460 -> 0.545)
+   *     mean |err|   1.782 -> 1.750             3.008 -> 2.860
+   *     bias         +0.3% -> +1.6%             -3.0% -> -1.9%
+   *     spread ratio 1.12 -> 1.09               0.98 -> 0.88
+   *
+   *     K lines   3.5-7.5 pred: 65.4 48.0 32.2 19.9 11.3 -> 64.3 47.2 31.7 19.6 11.1
+   *               observed:     65.7 48.0 33.6 22.9 11.2
+   *     outs 13.5-18.5 pred:    69.8 64.4 47.6 42.3 36.5 17.6 -> 68.6 63.2 46.9 41.7 36.0 17.4
+   *               observed:     67.9 63.2 45.0 40.8 35.6 15.4
+   *
+   * Hits 2.1704 -> 2.1531, walks 1.5511 -> 1.5401, ER 1.9767 -> 1.9699 on the
+   * same holdout (projBF shrinks with the leash). Full 2025 replay (Apr 15 -
+   * Sep 28, 4,370 starts): K 2.2265 -> 2.2116, outs 2.5146 -> 2.4771, outs corr
+   * 0.377 -> 0.478. Most of the gain is on openers (who may well not carry a
+   * Kalshi line): on starters with 3+ prior starts (374 of the holdout) outs log loss
+   * moves 2.4311 -> 2.4277 and K 2.1717 -> 2.1752.
+   */
+  reliefBudget: [10, 1.2],
+  /** Lowest pitch budget the leash model will accept. */
+  budgetFloor: 25,
+  /**
+   * Home/away. `homeK` scales the per-BF strikeout rate by 1 + homeK at home
+   * and 1 - homeK on the road; `homeBudget` moves the pitch budget by that
+   * many pitches either way. Both need `input.isHome` and are neutral without.
+   *
+   * ADDED(v35.2). In the replay, with level and opponent already applied,
+   * strikeouts ran +6.1% vs projection at home and -2.1% away in 2026 (2,765
+   * starts), +7.1% / +0.1% in 2025 (4,370); outs +0.5% / -2.6% and
+   * +1.0% / -1.2%. Fitted on Jun 1-Aug 31 2026 by log loss (homeK 0.03-0.04
+   * and homeBudget 1-2 tie; 2025 agrees). Added on top of `reliefBudget`,
+   * holdout Sep 1-15 2026 (402 starts), second holdout Aug 16-31 in brackets:
+   *
+   *     homeK 0 -> 0.03       K log loss  2.1676 -> 2.1607 (2.1179 -> 2.1130)
+   *                           K Brier     0.1675 -> 0.1660
+   *                           K corr      0.487 -> 0.498 (0.467 -> 0.476)
+   *                           K mean|err| 1.750 -> 1.734
+   *                           bias/spread +1.6% -> +1.6%, 1.09 -> 1.07
+   *                           2025 replay K log loss 2.2116 -> 2.2088
+   *                           (other markets unchanged: it only moves adjK)
+   *
+   *     homeBudget 0 -> 1     outs log loss 2.4431 -> 2.4411 (2.4770 -> 2.4759)
+   *                           outs Brier    0.1848 -> 0.1845
+   *                           outs corr     0.591 -> 0.593 (0.545 -> 0.547)
+   *                           outs mean|err| 2.860 -> 2.857
+   *                           K log loss    2.1607 -> 2.1595 (2.1130 -> 2.1122)
+   *                           hits 2.1531 -> 2.1515 (2.1617 -> 2.1619),
+   *                           walks/ER within +-0.0006 in both windows
+   *                           2025 replay outs 2.4771 -> 2.4764, K unchanged
+   *
+   * The budget term is small; it is kept because it moves the right way in all
+   * three samples, not because it is large.
+   */
+  homeK: 0.03,
+  homeBudget: 1,
 };
 
 export function projectPitcher(input) {
@@ -190,8 +283,12 @@ export function projectPitcher(input) {
   // regression to the mean) each moved it and none removed it.
   const K_CONTACT_SPLIT = 0.98;
 
+  // Home/away (see `homeK` in PITCHER_TUNING): starters strike out more at
+  // home. Neutral when the caller does not say which side he is on.
+  const homeKFactor = input.isHome == null ? 1 : input.isHome ? 1 + T.homeK : 1 - T.homeK;
+
   const adjK = clamp(
-    kRate * (1 + 0.4 * (oppK / lg.kRate - 1)) * parkFactor(park, 'so', 0.5) * K_CONTACT_SPLIT * plK,
+    kRate * (1 + 0.4 * (oppK / lg.kRate - 1)) * parkFactor(park, 'so', 0.5) * K_CONTACT_SPLIT * plK * homeKFactor,
     0.05, 0.45,
   );
   const adjBB = clamp(
@@ -213,7 +310,7 @@ export function projectPitcher(input) {
   // ---------------------------------------------------------------------
   const recent = gameLog.slice(-T.recentStarts);
 
-  // Median pitch count over the last five starts, used only as a yardstick.
+  // Median pitch count over the recent starts, used only as a yardstick.
   const medianPitches = (() => {
     const sorted = recent.map((g) => g.pitches || 0).sort((a, b) => a - b);
     return sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
@@ -243,16 +340,31 @@ export function projectPitcher(input) {
         ? (s25.numberOfPitches / s25.gamesStarted) * 0.95
         : null;
 
+  // FIX(v35.2) — a reliever handed a start. With no start in this season's log
+  // and a season that is not starter usage, the budget used to fall through to
+  // last year's starter line or a flat 82 pitches, so an opener or bullpen-game
+  // "starter" was projected like a five-inning starter (~14.8 outs). Measured in
+  // the replay, those starts average 34-47 pitches and 5-8 outs (2026: 69 of
+  // 2,765 starts; 2025: 116 of 4,370). His leash tracks his own relief
+  // outings: `reliefBudget` = [base, per pitch] on his pitches per appearance.
+  const reliefPitchesPerStart =
+    T.reliefBudget && !gameLog.length && (s26.gamesPlayed || 0) > 0 &&
+    !isStarterSeason(s26) && s26.numberOfPitches
+      ? T.reliefBudget[0] + T.reliefBudget[1] * (s26.numberOfPitches / s26.gamesPlayed)
+      : null;
+
   // Blend recent form (55%) with season baseline (45%); fall back to 82
   // pitches when neither is available. Clamped to a plausible MLB range —
-  // 45 is opener territory, 112 is a workhorse ceiling.
+  // `budgetFloor` is opener territory, 112 is a workhorse ceiling.
   let pitchBudget;
   if (recentPitchAvg != null && seasonPitchesPerStart != null) {
     pitchBudget = T.recentBudgetWeight * recentPitchAvg + (1 - T.recentBudgetWeight) * seasonPitchesPerStart;
   } else {
-    pitchBudget = recentPitchAvg ?? seasonPitchesPerStart ?? 82;
+    pitchBudget = recentPitchAvg ?? reliefPitchesPerStart ?? seasonPitchesPerStart ?? 82;
   }
-  pitchBudget = clamp(pitchBudget, 45, 112);
+  // Home starters are left in slightly longer (see `homeBudget`).
+  if (input.isHome != null) pitchBudget += input.isHome ? T.homeBudget : -T.homeBudget;
+  pitchBudget = clamp(pitchBudget, T.budgetFloor, 112);
 
   // ---------------------------------------------------------------------
   // 4. Convert the pitch budget into innings.
