@@ -9,7 +9,7 @@ import path from 'node:path';
 
 import {
   tickerStart, decisionsFrom, liveFill, closingFromCandles, settlementOf, gradeDecision,
-  createMarketData, gradeAll, summarize, aggregate, wilson, meanInterval, priceBucket, edgeBucket, main,
+  createMarketData, gradeAll, summarize, aggregate, wilson, meanInterval, priceBucket, edgeBucket, main, renderText,
 } from '../bot/report.mjs';
 import { paperFields } from '../bot/plan.mjs';
 
@@ -299,6 +299,7 @@ test('CLI end to end: journals in, report.json and a self-contained report.html 
   assert.equal(report.decisions[0].won, false);
   const json = JSON.parse(fs.readFileSync(path.join(dir, 'report.json'), 'utf8'));
   assert.equal(json.overall.settled, 1);
+  assert.match(renderText(report), /-$5.1[78]/);
   const html = fs.readFileSync(path.join(dir, 'report.html'), 'utf8');
   assert.match(html, /<table/);
   assert.doesNotMatch(html, /<script|<link|src=|https?:\/\//, 'no external assets');

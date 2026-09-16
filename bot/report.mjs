@@ -545,7 +545,7 @@ export function buildReport(graded, { dir = null, nowMs = Date.now(), entriesRea
 
 const ci = (arr, unit = '') => (arr ? `[${arr[0]}${unit}, ${arr[1]}${unit}]` : '');
 const show = (x, unit = '') => (x == null ? '-' : `${x}${unit}`);
-const money = (x) => (x == null ? '-' : `${x < 0 ? '-' : ''}${Math.abs(x).toFixed(2)}`);
+const money = (x) => (x == null ? '-' : `${x < 0 ? '-' : ''}$${Math.abs(x).toFixed(2)}`);
 
 export function summaryRow(label, s) {
   return [
