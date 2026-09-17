@@ -26,3 +26,7 @@ They need Playwright, which is deliberately NOT a dependency (it would add
   Method and results: `docs/KALSHI-BATTER-BACKTEST.md`. Kalshi plumbing shared
   by both Kalshi tools (cached public fetches, doubleheader-aware ticker parse,
   candle quotes, bootstrap statistics) lives in `kalshi-common.mjs`.
+- `venue-gap.mjs` — sportsbook consensus vs Kalshi cost (fee included) for the
+  same contract, right now. Measures whether the two venues disagree enough to
+  trade without needing the model to be right. First run (2026-09-17, 235
+  contracts priced at both): median gap −2.0 pts, best +1.6, none over 3.
