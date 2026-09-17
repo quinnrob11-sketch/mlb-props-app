@@ -26,3 +26,11 @@ They need Playwright, which is deliberately NOT a dependency (it would add
   Method and results: `docs/KALSHI-BATTER-BACKTEST.md`. Kalshi plumbing shared
   by both Kalshi tools (cached public fetches, doubleheader-aware ticker parse,
   candle quotes, bootstrap statistics) lives in `kalshi-common.mjs`.
+- `backtest-games.mjs` — lookahead-free GAME model replay: team hitting, team
+  starter/reliever pitching splits (rebuilt from player game logs, because the
+  statSplits endpoint has no date range), both starters, the park and the posted
+  lineups, all as of the morning of the game. Validates `projectGame` against the
+  observed home-win, total, run-line and NRFI rates.
+- `backtest-kalshi-games.mjs` — that replay traded against settled KXMLBGAME /
+  KXMLBSPREAD / KXMLBTOTAL / KXMLBRFI prices, same rules. Method and results:
+  `docs/KALSHI-GAME-BACKTEST.md`.
