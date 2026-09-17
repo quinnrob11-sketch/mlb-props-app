@@ -33,6 +33,33 @@ export default function MethodologyView() {
         included) always.
       </p>
 
+      <h3>Does any of this beat the market?</h3>
+      <p>
+        Not so far, and this is the most important thing on the page. Every settled Kalshi
+        contract between 10 July and 15 September 2026 was replayed with the model's own
+        probabilities, the same filters this board uses, and the price actually available two
+        hours before first pitch — then scored against how each game really ended, after fees.
+      </p>
+      <p>
+        <b>Pitcher props:</b> 623 trades, <code>−4.0%</code> return (strikeouts alone{' '}
+        <code>−7.8%</code>). <b>Batter props:</b> 609 trades, <code>−3.4%</code>. In all seven
+        markets the exchange's price forecast results better than the model, measured by Brier
+        score, and mixing the model into the price never helped: the best mix gave the model
+        0–25% of the say, while this board gives it 30–55%.
+      </p>
+      <p>
+        The projections themselves are sound — they match real outcomes closely, and this round
+        fixed a bug that had openers projected as full starts. Matching outcomes is not the same
+        as beating a price. The fair reading is that the market already knows what this model
+        knows. Use the board to see where the model and the market disagree and why, not as a
+        list of profitable bets, and let <b>Results</b> decide before you risk money.
+      </p>
+      <p>
+        Game lines (moneyline, run line, total) are marked information only for the same reason,
+        and the Kalshi bot in the repo paper-trades every market by default: it records what it
+        would have done and grades it later, without placing an order.
+      </p>
+
       <h3>What the engine does</h3>
       <p>
         Every projection is built from live MLB Stats API data at load time — no

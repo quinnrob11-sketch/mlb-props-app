@@ -78,12 +78,14 @@ export default function BestBets({
   return (
     <>
     <div className="trlegend unvalidated top">
-      <b>Unproven — read before betting.</b> Player props: on 2026-08-31 the model was a median
-      7.1 points away from the no-vig sportsbook price. Game lines: on 2026-09-16 it was 3.1 points
-      from Kalshi on moneylines and 3.2 on totals. Both are further from the market than a
-      winning model would be, so disagreements past 12 points (props) or 8 points (game lines) are
-      treated as model error and never shown as plays. Nothing here has yet been shown to beat
-      closing prices — track it in Results before sizing up.
+      <b>Measured against real prices, this model has no edge on player props.</b> Every settled
+      Kalshi contract from 10 Jul to 15 Sep 2026 was replayed with the model's own numbers and
+      these rules: 623 pitcher-prop trades returned <b>−4.0%</b> (strikeouts −7.8%) and 609
+      batter-prop trades returned <b>−3.4%</b>. In all seven markets the exchange's price
+      predicted outcomes <i>better</i> than the model did, and the blend that scored best gave
+      the model only 0–25% of the say — less than this board still gives it. See How It Works.
+      Treat the plays below as the model's opinion, not as an edge, and check Results before
+      risking anything.
     </div>
     {topCount > 0 && (
       <div className="conviction-head">
