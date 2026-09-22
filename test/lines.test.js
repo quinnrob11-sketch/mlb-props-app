@@ -176,8 +176,11 @@ test("a book quoting the same point in both feeds is counted once", () => {
   assert.equal(main.nBooksTwoSided, 1);
   assert.equal(main.feed, "both", "provenance records both feeds");
 
-  // The counts matter: one book cannot make a STRONG.
-  assert.equal(main.edge.verdict, "SOLID");
+  // The counts matter. One book used to be demoted to SOLID; since v36.3 a
+  // batter prop needs two books to be a play at all, because a lone quote is
+  // devigged against itself and its "edge" is that book's own margin.
+  assert.equal(main.edge.verdict, "PASS");
+  assert.ok(main.edge.why.includes("needs 2+ books"), main.edge.why.join());
   // Proof that the pre-fix input really did defeat the demotion - the same
   // engine call with the duplicated quote list still returns STRONG.
   const doubled = evaluateEdge(0.495, 5.5, 150, -180, {
@@ -266,7 +269,10 @@ test("a base-market outlier is an alternate LINE, not an alternate MARKET", () =
         quote("DK", 17.5, -110, -110),
         quote("FD", 17.5, -110, -110),
         quote("MGM", 17.5, -110, -110),
+        // Two books off the consensus line: enough to be a callable alternate
+        // row under the two-book rule, still outvoted 3-2 for the main line.
         quote("CZR", 15.5, -140, 120),
+        quote("PIN", 15.5, -140, 120),
       ],
     },
   };

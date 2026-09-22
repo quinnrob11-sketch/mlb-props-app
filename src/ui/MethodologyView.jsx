@@ -204,7 +204,9 @@ export default function MethodologyView() {
         guards from a 433-start / 15k-prop calibration audit: model-vs-market
         disagreement is <b>clamped at ±15 points</b> (bigger gaps mean the book
         knows something — capped at LEAN), one-sided quotes cap at LEAN,
-        single-book STRONGs downgrade, and anything past +250 is untouchable.
+        a prop priced by only one book is a PASS outright — pitchers since v35.1 and
+        batters since v36.3, because a lone quote is devigged against itself, so its
+        "fair" price is that book's own margin — and anything past +250 is untouchable.
         Small samples never exceed LEAN. NRFI is anchored at the league's ~54%
         base rate. OVER calls are green, UNDER calls are red — everywhere.
       </p>

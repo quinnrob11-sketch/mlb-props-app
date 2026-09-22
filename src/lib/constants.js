@@ -57,7 +57,17 @@
  *   - a pitcher prop needs 2+ sportsbooks pricing it and a price no longer than
  *     +150 before it can be anything but a PASS. Nearly every pitcher "play" on
  *     that slate was a one-book quote at +150 to +250 in a market where the model
- *     was 7-9 points off.
+ *     was 7-9 points off;
+ *   - a batter prop needs 2+ books as well (v36.3). Once MARKET_WEIGHT dropped to
+ *     the measured values, the only plays left are the ones where a book is out
+ *     of line with the consensus — and a single quote has no consensus to be out
+ *     of line with. It is devigged against itself, so what looks like an edge is
+ *     that book's own margin. On the 2026-09-22 slate this was two of the three
+ *     surviving plays, both a lone +180 quote.
+ *
+ *     No price cap on batters yet: the measured longshot problem is real
+ *     (15-24c contracts returned -9.2%) but it is one slice of one study, and
+ *     the two-book rule already removes most of those rows.
  *
  * Loosen these only on evidence — closing-line value from graded Results — not
  * because the board looks empty.
@@ -65,6 +75,7 @@
 export const PLAY_RULES = {
   gameLinesInformationOnly: true,
   pitcher: { minBooks: 2, maxOdds: 150 },
+  batter: { minBooks: 2 },
 };
 
 export const MARKET_WEIGHT = {

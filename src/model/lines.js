@@ -1253,7 +1253,10 @@ function venuesForLine(quotes, line, book, side) {
 
 /** Board policy for a market key; see PLAY_RULES in lib/constants.js. */
 function playRulesFor(marketKey) {
-  return String(marketKey).startsWith("pitcher_") ? PLAY_RULES.pitcher : {};
+  const key = String(marketKey);
+  if (key.startsWith("pitcher_")) return PLAY_RULES.pitcher;
+  if (key.startsWith("batter_")) return PLAY_RULES.batter;
+  return {};
 }
 
 /**

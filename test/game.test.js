@@ -434,7 +434,7 @@ test('a game called before nine innings voids run line and total, keeps the mone
 // ── v35.1 board policy ─────────────────────────────────────────────────────
 
 import { attachLines } from '../src/model/lines.js';
-import { PITCHER_MARKETS } from '../src/lib/markets.js';
+import { PITCHER_MARKETS, BATTER_MARKETS } from '../src/lib/markets.js';
 
 const pitcherOdds = (quotes) => ({ pitcher_strikeouts: { 'test arm': quotes } });
 const kProjection = (p) => ({ projK: 6, dist: { k: () => p } });
@@ -454,6 +454,32 @@ test('a pitcher prop longer than +150 is never a play', () => {
   const row = withWeight('pitcher_strikeouts', 0.45, () => kRow([q('DK'), q('FD')], 0.42));
   assert.equal(row.edge.verdict, 'PASS');
   assert.ok(row.edge.why.includes('price longer than +150'), row.edge.why.join());
+});
+
+test('a batter prop priced by one book is never a play either', () => {
+  // v36.3. A lone quote is devigged against itself, so its "fair" price is that
+  // book's own margin and the gap to the model is not evidence of anything. The
+  // price cap stays pitcher-only: the batter longshot problem is real but rests
+  // on one slice of one study, and this rule already removes most of those rows.
+  const one = [{ book: 'DK', point: 1.5, over: 180, under: -240, w: 1 }];
+  const two = [...one, { book: 'FD', point: 1.5, over: 175, under: -235, w: 1 }];
+  const rowFor = (quotes) =>
+    withWeight('batter_total_bases', 0.45, () =>
+      attachLines(
+        { batter_total_bases: BATTER_MARKETS.batter_total_bases },
+        'test bat',
+        { batter_total_bases: { 'test bat': quotes } },
+        // 43% against a 33.6% devigged market: a real gap, inside the 12pt
+        // cap that treats a bigger one as the model being wrong.
+        { projTB: 1.6, dist: { tb: () => 0.43 } },
+        false,
+      )[0]);
+
+  const lone = rowFor(one);
+  assert.equal(lone.edge.verdict, 'PASS');
+  assert.ok(lone.edge.why.includes('needs 2+ books'), lone.edge.why.join());
+  // Same row, two books: the rule is what stopped it, not something else.
+  assert.notEqual(rowFor(two).edge.verdict, 'PASS');
 });
 
 test('the two-book and +150 rules are the only thing stopping that row', () => {
