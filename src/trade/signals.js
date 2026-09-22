@@ -214,39 +214,16 @@ export function buildSignal({
   };
 }
 
-/**
- * Where a resting (maker) order would sit, and what it would be worth.
- *
- * Making is not strictly better than taking. You save the spread but accept
- * that you only get filled when someone crosses to you — which, on an exchange,
- * is disproportionately when they know something you do not. This returns the
- * arithmetic and lets the caller decide; it does not assume making wins.
- *
- * @param {object} signal from `buildSignal`
- * @param {object} book   from `normalizeOrderbook`
- * @returns {object|null}
+/*
+ * REMOVED(v36.2): `makerAlternative`. It was exported, called from nowhere,
+ * and wrong in ways that would have mattered if anything had called it: it
+ * charged the resting order the full taker fee, charged 0.07 on both legs of
+ * the comparison so the improvement itself was distorted, returned null on
+ * one-tick spreads — 88% of the bot's real decisions — and priced the fill
+ * with an unconditional probability when conditioning on the fill is worth
+ * 4.7 ROI points (docs/KALSHI-MAKER-STUDY.md). `src/ui/makerMode.js` does
+ * this job correctly for the maker panel.
  */
-export function makerAlternative(signal, book) {
-  if (!signal || !signal.side || !book) return null;
-  const { bestYesBid, bestYesAsk } = book;
-  if (bestYesBid == null || bestYesAsk == null) return null;
-  // No room to improve on a one-tick market.
-  if (bestYesAsk - bestYesBid <= 1) return null;
-
-  // Join the near side one tick better than the current best, staying inside
-  // the spread so the order is genuinely passive.
-  const restPrice =
-    signal.side === 'yes' ? bestYesBid + 1 : 100 - (bestYesAsk - 1);
-
-  const ev = expectedValueCents(signal.blendedProb, restPrice);
-  return {
-    priceCents: restPrice,
-    evCents: ev,
-    improvementCents: ev - signal.evCents,
-    // Honest caveat carried on the object so a caller cannot forget it.
-    note: 'fill is not guaranteed; passive fills are adversely selected',
-  };
-}
 
 /**
  * Convert a probability to the nearest tradeable cent price.

@@ -33,8 +33,8 @@
  *     KXMLBRFI and the player props, but "quadratic_with_maker_fees" for
  *     KXMLBGAME. The two names exist to distinguish schedules that charge
  *     makers from those that do not, so a resting order on a "quadratic" series
- *     should cost no fee at all — which means `makerAlternative` in signals.js
- *     UNDERSTATES what resting is worth on those markets.
+ *     should cost no fee at all. The maker study measured what that is worth
+ *     and it is not enough to matter: see docs/KALSHI-MAKER-STUDY.md.
  *
  *     What the 0.5 multiplier does to the 0.07 coefficient is documented
  *     nowhere we could find, and neither reading has been checked against a
