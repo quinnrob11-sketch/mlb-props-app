@@ -60,6 +60,27 @@ export default function MethodologyView() {
         would have done and grades it later, without placing an order.
       </p>
 
+      <h3>Then is it just paying too much to trade?</h3>
+      <p>
+        No — that was measured too, because it is the obvious escape hatch. Crossing the
+        spread costs about <code>1.13c</code> per contract and the exchange fee another{' '}
+        <code>1.53c</code>, so resting an order instead of taking the price is worth at most{' '}
+        <code>2.66c</code>. The trades lose <code>1.73c</code>. Perfect execution would not
+        cover it, and execution is never perfect: re-running 1,040 real decisions as resting
+        orders, the ones that <i>would</i> have filled returned −6.2% when taken at the ask
+        while the ones that would not have filled returned +1.6%. You get filled when the
+        market is moving against you. Leaving orders out two hours into the game returns
+        −7.7%, the single clearest result in any of these tests, and it is clearly bad.
+      </p>
+      <p>
+        The pitcher <b>outs</b> market got the same treatment, with the test written down
+        before the profits were computed. It fails: +3.8% over 145 trades with an interval
+        from −11.9% to +19.1%, positive in one half of the sample and negative in the other.
+        One honest curiosity survived — on those same contracts every simple rule lost
+        money, including taking the market's own side — but separating that from luck needs
+        about 2,300 trades, which is five seasons at this rate. It stays on paper.
+      </p>
+
       <h3>What the engine does</h3>
       <p>
         Every projection is built from live MLB Stats API data at load time — no
