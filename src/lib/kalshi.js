@@ -108,6 +108,8 @@ export const KNOWN_SERIES = {
   KXMLBSTATCOUNT: null,
   /** Game lines (moneyline), not a player prop. */
   KXMLBGAME: null,
+  /** First-inning runs ("1st inning: Over 0.5"), priced by the game model. */
+  KXMLBRFI: null,
 };
 
 /**

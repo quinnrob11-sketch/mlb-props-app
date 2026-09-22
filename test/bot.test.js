@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 
 import { signingString, sign, orderBody, clientOrderId } from '../bot/kalshiClient.mjs';
-import { planOrders, modelProbability, topOfBook, playerKeyOf } from '../bot/plan.mjs';
+import { planOrders, modelProbability, topOfBook, playerKeyOf, groupKey } from '../bot/plan.mjs';
 import { normalizeMarket } from '../src/lib/kalshi.js';
 
 // ── signing ────────────────────────────────────────────────────────────────
@@ -71,6 +71,7 @@ const game = {
     { id: 21, name: 'Maybe Bat', lineupSource: 'projected', proj: { dist: { hits: () => 0.7 } } },
   ],
   game: {
+    nrfi: { nrfiProb: 0.47, yrfiProb: 0.53 },
     pHome: 0.6,
     pAway: 0.4,
     spread: (homeSpread) => (homeSpread === -1.5 ? { home: 0.42, away: 0.58, push: 0 } : { home: 0.7, away: 0.3, push: 0 }),
@@ -110,6 +111,35 @@ test('game contracts map to the right model probability for either team', () => 
   // "CLE wins by over 1.5" = home -1.5 covers; "DET wins by over 1.5" = home +1.5 fails.
   assert.equal(p('KXMLBSPREAD-26SEP161910DETCLE-CLE2', { floor_strike: 1.5 }), 0.42);
   assert.equal(p('KXMLBSPREAD-26SEP161910DETCLE-DET2', { floor_strike: 1.5 }), 0.3);
+});
+
+test('the first-inning contract prices off the model YRFI number', () => {
+  // Kalshi lists one market per game, titled "1st inning: Over 0.5 runs", so
+  // YES is a run scoring — YRFI, not NRFI. Getting this backwards would bet
+  // the wrong side of every one of them.
+  const info = modelProbability(normalizeMarket(kmarket('KXMLBRFI-26SEP161910DETCLE')), slate, config);
+  assert.equal(info.prob, 0.53);
+  assert.equal(info.marketKey, 'nrfi');
+});
+
+test("one game's lines are one bet, not four", () => {
+  // Moneyline, run line, total and first inning settle on the same nine
+  // innings: a blowout moves all of them together. Keying them by series let
+  // one game supply four correlated bets under the dollar cap alone.
+  const key = (ticker, extra) => {
+    const market = normalizeMarket(kmarket(ticker, extra));
+    return groupKey(market, modelProbability(market, slate, config));
+  };
+  const ml = key('KXMLBGAME-26SEP161910DETCLE-CLE');
+  assert.equal(key('KXMLBSPREAD-26SEP161910DETCLE-CLE2', { floor_strike: 1.5 }), ml);
+  assert.equal(key('KXMLBTOTAL-26SEP161910DETCLE-T8', { floor_strike: 8.5 }), ml);
+  assert.equal(key('KXMLBRFI-26SEP161910DETCLE'), ml);
+  // Different games stay separate, and a prop is still keyed per player.
+  assert.notEqual(
+    groupKey(normalizeMarket(kmarket('KXMLBGAME-26SEP161910DETCLE-CLE')), { kind: 'game', game: { gamePk: 2 } }),
+    ml,
+  );
+  assert.notEqual(key('KXMLBKS-26SEP161910DETCLE-DETTARM10-6', { yes_sub_title: 'Test Arm: 6+', floor_strike: 5.5 }), ml);
 });
 
 test('batter props need a confirmed lineup; the wrong date never matches', () => {

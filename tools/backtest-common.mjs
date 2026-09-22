@@ -52,7 +52,9 @@ export async function pool(items, n, fn) {
 }
 
 // ── as-of aggregation ───────────────────────────────────────────────────────
-const PITCH_FIELDS = ['gamesStarted', 'gamesPlayed', 'battersFaced', 'strikeOuts', 'baseOnBalls', 'hits', 'homeRuns', 'numberOfPitches', 'earnedRuns', 'outs', 'strikes'];
+// hitByPitch rides along because the game model's FIP term reads it; dropping
+// it made every replayed FIP slightly optimistic.
+const PITCH_FIELDS = ['gamesStarted', 'gamesPlayed', 'battersFaced', 'strikeOuts', 'baseOnBalls', 'hits', 'homeRuns', 'hitByPitch', 'numberOfPitches', 'earnedRuns', 'outs', 'strikes'];
 
 /** A pitcher's season line from every game-log entry dated before `date`. */
 export function pitcherSeasonBefore(logs, date) {

@@ -16,7 +16,14 @@ import { sizeOrder } from '../src/trade/risk.js';
 export const PROP_SERIES = Object.fromEntries(
   Object.entries(KNOWN_SERIES).filter(([, market]) => market && (PITCHER_MARKETS[market] || BATTER_MARKETS[market])),
 );
-export const GAME_SERIES = { KXMLBGAME: 'game_ml', KXMLBSPREAD: 'game_spread', KXMLBTOTAL: 'game_total' };
+export const GAME_SERIES = {
+  KXMLBGAME: 'game_ml',
+  KXMLBSPREAD: 'game_spread',
+  KXMLBTOTAL: 'game_total',
+  // "1st inning: Over 0.5 runs" — YES is YRFI, which the game model's
+  // first-inning number prices directly. One contract per game, no strike.
+  KXMLBRFI: 'nrfi',
+};
 export const ALL_SERIES = [...Object.keys(PROP_SERIES), ...Object.keys(GAME_SERIES)];
 
 /**
@@ -54,6 +61,10 @@ export function modelProbability(market, slate, { requireConfirmedLineup = true 
       const team = suffix.replace(/\d+$/, '');
       if (!Number.isFinite(strike) || strike % 1 === 0) return { prob: null, reason: 'unsupported strike' };
       prob = team === home ? m.spread(-strike).home : m.spread(strike).away;
+    } else if (series === 'KXMLBRFI') {
+      if (!m.nrfi) return { prob: null, reason: 'no first-inning model' };
+      // Kalshi's YES on this series is "a run scores in the 1st", i.e. YRFI.
+      prob = m.nrfi.yrfiProb;
     } else {
       if (!Number.isFinite(strike) || strike % 1 === 0) return { prob: null, reason: 'unsupported strike' };
       prob = m.total(strike).over;
@@ -133,10 +144,18 @@ export function paperFields(market, info, signal, book) {
   };
 }
 
-/** Correlated rungs (one player's ladder, one game's ladder) collapse to one bet. */
-function groupKey(market, info) {
+/**
+ * Correlated contracts collapse to one bet.
+ *
+ * A player's ladder inside one series is obviously one bet. So is a whole GAME:
+ * the moneyline, the run line, the total and the first inning all settle on the
+ * same nine innings, and one blowout moves every one of them together. Keying
+ * game lines by series let a single game supply four near-duplicate bets,
+ * limited only by the dollar cap.
+ */
+export function groupKey(market, info) {
   if (info.kind === 'prop') return `${market.series}:${info.game.gamePk}:${info.person.id}`;
-  return `${market.series}:${info.game.gamePk}`;
+  return `game:${info.game.gamePk}`;
 }
 
 /**

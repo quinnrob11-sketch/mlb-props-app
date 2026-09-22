@@ -27,8 +27,21 @@
  *
  *   - It peaks at P = 0.50 (1.75c per contract) and falls to ~0.16c at 0.02 or
  *     0.98. Cheap markets to trade are the confident ones.
- *   - Maker and taker pay the same. Resting an order saves you the spread, not
- *     the fee.
+ *   - Makers do NOT pay the same on most of these markets. Read from the
+ *     exchange on 2026-09-22, every MLB series carries `fee_multiplier: 0.5`,
+ *     and `fee_type` is "quadratic" for KXMLBOUTS / KXMLBSPREAD / KXMLBTOTAL /
+ *     KXMLBRFI and the player props, but "quadratic_with_maker_fees" for
+ *     KXMLBGAME. The two names exist to distinguish schedules that charge
+ *     makers from those that do not, so a resting order on a "quadratic" series
+ *     should cost no fee at all — which means `makerAlternative` in signals.js
+ *     UNDERSTATES what resting is worth on those markets.
+ *
+ *     What the 0.5 multiplier does to the 0.07 coefficient is documented
+ *     nowhere we could find, and neither reading has been checked against a
+ *     real fill. This module therefore keeps charging every order the full
+ *     taker rate: overstating the fee only makes the system trade less, while
+ *     understating it lets losing trades through. Re-measure on the first live
+ *     fill and change FEE_RATE only then.
  *
  * `FEE_RATE` is isolated so a schedule change is a one-line edit, and every
  * consumer reads the function rather than reimplementing the arithmetic.
