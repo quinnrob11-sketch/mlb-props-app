@@ -15,7 +15,7 @@ import {
   lineDiagnostics,
   parseEventOdds,
 } from "../src/model/lines.js";
-import { evaluateEdge } from "../src/model/edges.js";
+import { evaluateEdge, MARKET_WEIGHT } from "../src/model/edges.js";
 import { matchName, nameVariants, normalizeName } from "../src/lib/names.js";
 import { BATTER_MARKETS, PITCHER_MARKETS } from "../src/lib/markets.js";
 
@@ -134,6 +134,20 @@ test("a lone book's alt ladder does not drag the main line off the base market",
 // 2. A book present in both feeds counts once.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// At the shipped MARKET_WEIGHT no row is ever a play, and a demotion reason
+// only annotates a row that would otherwise be one. The two tests below are
+// about the demotion and about the alternate-line row (which is also kept only
+// when callable), so they lend the market its pre-v36.2 weight for the call.
+const withWeight = (market, value, fn) => {
+  const had = MARKET_WEIGHT[market];
+  MARKET_WEIGHT[market] = value;
+  try {
+    return fn();
+  } finally {
+    MARKET_WEIGHT[market] = had;
+  }
+};
+
 test("a book quoting the same point in both feeds is counted once", () => {
   // Batter hits (weight 0.45, same as pitcher strikeouts): pitcher props now
   // need 2+ books to be a play at all (PLAY_RULES), which would mask the
@@ -147,13 +161,14 @@ test("a book quoting the same point in both feeds is counted once", () => {
   // Model sits 0.119 above the market's fair price (inside the 0.12
   // implausibility limit, so the row stays callable): without the
   // demotion this is a STRONG.
-  const rows = attachLines(
-    only(BATTER_MARKETS, "batter_hits"),
-    "test player",
-    odds,
-    projection("hits", { 5.5: 0.495 }, 0.5, "projH"),
-    false,
-  );
+  const rows = withWeight("batter_hits", 0.45, () =>
+    attachLines(
+      only(BATTER_MARKETS, "batter_hits"),
+      "test player",
+      odds,
+      projection("hits", { 5.5: 0.495 }, 0.5, "projH"),
+      false,
+    ));
   const main = rows[0];
 
   assert.equal(main.nBooks, 1, "row book count");
@@ -256,13 +271,14 @@ test("a base-market outlier is an alternate LINE, not an alternate MARKET", () =
     },
   };
 
-  const rows = attachLines(
-    only(BATTER_MARKETS, "batter_singles"),
-    "test player",
-    odds,
-    projection("singles", { 15.5: 0.64 }, 0.5, "proj1B"),
-    false,
-  );
+  const rows = withWeight("batter_singles", 0.5, () =>
+    attachLines(
+      only(BATTER_MARKETS, "batter_singles"),
+      "test player",
+      odds,
+      projection("singles", { 15.5: 0.64 }, 0.5, "proj1B"),
+      false,
+    ));
 
   const main = rows.find((r) => !r.alt);
   assert.equal(main.line, 17.5);

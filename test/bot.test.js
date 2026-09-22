@@ -9,6 +9,7 @@ import { signingString, sign, orderBody, clientOrderId } from '../bot/kalshiClie
 import { planOrders, modelProbability, topOfBook, playerKeyOf, groupKey } from '../bot/plan.mjs';
 import { normalizeMarket, normalizeOrderbook } from '../src/lib/kalshi.js';
 import { buildSignal } from '../src/trade/signals.js';
+import { MARKET_WEIGHT } from '../src/lib/constants.js';
 
 // ── signing ────────────────────────────────────────────────────────────────
 
@@ -216,13 +217,44 @@ test('game lines cannot clear fees under the safety caps', () => {
   assert.ok(considered.some((c) => /required/.test(c.skip)));
 });
 
+// The shipped MARKET_WEIGHT is too low for any contract to clear the hurdle
+// (see "the shipped weights place nothing" below). The limit tests need a
+// tradeable candidate to have a limit to bind, so they lend the market the
+// weight it carried before v36.2. This is the old behaviour, held in place
+// deliberately, not a leak of the old policy into production.
+const withWeights = (map, fn) => {
+  const had = { ...MARKET_WEIGHT };
+  Object.assign(MARKET_WEIGHT, map);
+  try {
+    return fn();
+  } finally {
+    for (const k of Object.keys(map)) MARKET_WEIGHT[k] = had[k];
+  }
+};
+const OLD_WEIGHTS = { pitcher_strikeouts: 0.45, batter_hits: 0.45, batter_total_bases: 0.45 };
+
 const K6 = 'KXMLBKS-26SEP161910DETCLE-DETTARM10-6';
 const kPlan = (overrides = {}) =>
-  plan({
+  withWeights(OLD_WEIGHTS, () =>
+    plan({
+      markets: [kmarket(K6, { yes_sub_title: 'Test Arm: 6+', floor_strike: 5.5 })],
+      books: new Map([[K6, book(49, 50)]]),
+      ...overrides,
+    }));
+
+test('the shipped weights place nothing, in any market, at any price', () => {
+  // The policy, end to end: the same fixture that produces a sized order above
+  // produces none at the weights this repo ships, because the most the model
+  // can move the price is weight x the 12pt cap — 1.2 points at 0.10 — and the
+  // hurdle is the fee plus 2 points. Delete this test only alongside evidence
+  // that the model beats a price somewhere.
+  const { orders, considered } = plan({
     markets: [kmarket(K6, { yes_sub_title: 'Test Arm: 6+', floor_strike: 5.5 })],
     books: new Map([[K6, book(49, 50)]]),
-    ...overrides,
   });
+  assert.equal(orders.length, 0);
+  assert.ok(considered.some((c) => /required/.test(c.skip)), JSON.stringify(considered));
+});
 
 test('a clear prop edge within limits produces one sized order', () => {
   // Model 60% vs a 49.5c mid: inside the 12pt prop cap, positive after fees.
@@ -277,7 +309,8 @@ test('only the best rung of a ladder is bought', () => {
     [markets[0].ticker, book(50, 51)],
     [markets[1].ticker, book(36, 37)],
   ]);
-  const { orders } = planOrders({ slate, markets, books, account: emptyAccount, state: freshState, config, now: NOW });
+  const { orders } = withWeights(OLD_WEIGHTS, () =>
+    planOrders({ slate, markets, books, account: emptyAccount, state: freshState, config, now: NOW }));
   assert.equal(orders.length, 1, JSON.stringify(orders));
 });
 
@@ -309,6 +342,7 @@ const batGame = {
   batters: [{ id: 20, name: 'Test Bat', lineupSource: 'confirmed', proj: { dist: { hits: () => 0.6, tb: () => 0.6265 } } }], // the 2026-09-16 batter refit deleted the tb@1.5 calibration; 0.6265 is the old 0.65 minus its 2.35pt, so the fixture prices exactly as before
 };
 const batPlan = (overrides = {}) =>
+  withWeights(OLD_WEIGHTS, () =>
   planOrders({
     slate: { games: [batGame] },
     markets: [
@@ -324,7 +358,7 @@ const batPlan = (overrides = {}) =>
     config,
     now: NOW,
     ...overrides,
-  });
+  }));
 
 test('two bet types on one player place one order, not two', () => {
   const { orders, considered } = batPlan();

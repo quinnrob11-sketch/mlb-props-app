@@ -11,11 +11,30 @@
  * Per-market confidence weight: how much the model's own projection is trusted
  * relative to the de-vigged market consensus when the two are combined.
  *
- * Dimensionless in [0, 1]; higher means more weight on the model. The spread
- * (0.3 for stolen bases up to 0.55 for batter strikeouts) tracks how well each
- * market is modelled — high-variance, low-sample markets such as stolen bases
- * and RBIs defer more to the market, while strikeout markets, which have the
- * most stable per-plate-appearance rates, lean hardest on the model.
+ * Dimensionless in [0, 1]; higher means more weight on the model.
+ *
+ * MEASURED (v36.2). These used to run 0.30-0.55, set by how well we believed
+ * each market was modelled. That belief was tested and it was wrong. On 153,728
+ * settled batter contracts and 1,598 pitcher contracts, the weight on
+ * (model - market) that minimises Brier score is 0.10 pooled, and the market
+ * beats the model outright in every series and window with the interval
+ * excluding zero. The numbers below are those measurements, not judgements:
+ *
+ *   pitcher_strikeouts  0     optimal 0 in both windows (docs/KALSHI-BACKTEST.md)
+ *   pitcher_outs        0.10  0.1 in both halves (docs/OUTS-STUDY.md)
+ *   batter_hits         0.10  n=30,817
+ *   batter_total_bases  0.15  n=40,742
+ *   batter_home_runs    0     n=13,426
+ *   batter_rbis         0.15  n=19,512
+ *   batter_hits_runs_rbis 0.10  n=49,231 — and do not trade this one at all
+ *   everything else     0.10  the pooled optimum, for markets with no test of
+ *                             their own yet
+ *
+ * A weight of 0 means the board reports that market and never calls a play in
+ * it, which is the honest consequence of a model that cannot beat the price.
+ *
+ * Raise these only on evidence that runs the other way — closing-line value
+ * from graded Results — and never because the board looks empty.
  *
  * @type {Record<string, number>}
  */
@@ -49,24 +68,22 @@ export const PLAY_RULES = {
 };
 
 export const MARKET_WEIGHT = {
-  pitcher_strikeouts: 0.45,
-  pitcher_outs: 0.5,
-  pitcher_hits_allowed: 0.5,
-  pitcher_earned_runs: 0.35,
-  pitcher_walks: 0.45,
-  batter_hits: 0.45,
-  batter_total_bases: 0.45,
-  batter_home_runs: 0.5,
-  batter_singles: 0.5,
-  batter_strikeouts: 0.55,
-  batter_hits_runs_rbis: 0.4,
-  batter_runs_scored: 0.35,
-  batter_rbis: 0.35,
-  batter_stolen_bases: 0.3,
-  nrfi: 0.5,
-  // Game lines (v35). Low on purpose: these are the sharpest prices in the
-  // sport, and the game model is new and has no track record against them.
-  game_ml: 0.3,
-  game_spread: 0.3,
-  game_total: 0.3,
+  pitcher_strikeouts: 0,
+  pitcher_outs: 0.1,
+  pitcher_hits_allowed: 0.1,
+  pitcher_earned_runs: 0.1,
+  pitcher_walks: 0.1,
+  batter_hits: 0.1,
+  batter_total_bases: 0.15,
+  batter_home_runs: 0,
+  batter_singles: 0.1,
+  batter_strikeouts: 0.1,
+  batter_hits_runs_rbis: 0.1,
+  batter_runs_scored: 0.1,
+  batter_rbis: 0.15,
+  batter_stolen_bases: 0.1,
+  nrfi: 0.1,
+  game_ml: 0.1,
+  game_spread: 0.1,
+  game_total: 0.1,
 };

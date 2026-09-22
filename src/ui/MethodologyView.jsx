@@ -45,7 +45,18 @@ export default function MethodologyView() {
         <code>−7.8%</code>). <b>Batter props:</b> 609 trades, <code>−3.4%</code>. In all seven
         markets the exchange's price forecast results better than the model, measured by Brier
         score, and mixing the model into the price never helped: the best mix gave the model
-        0–25% of the say, while this board gives it 30–55%.
+        0–25% of the say. As of v36.2 that is what the board gives it: the
+        per-market weights are now the measured ones, 0 for strikeouts and home
+        runs, 0.15 for total bases and RBIs, 0.10 everywhere else.
+      </p>
+      <p>
+        <b>What that changes.</b> At a weight of 0.10 the model can move a price by at most 1.5
+        points, and the smallest call on the board needs 3. So the model can no longer call a bet
+        by disagreeing with the market — on a typical slate this takes the board from ~95 plays
+        to about 3. What is left are the rows where <i>one book's price is out of line with the
+        other books</i>. That is a real edge and it is not the model's opinion; it is the only
+        kind these tests found support for. The Kalshi bot, which has one venue and so nothing to
+        shop against, now places nothing at all.
       </p>
       <p>
         The projections themselves are sound — they match real outcomes closely, and this round
@@ -140,10 +151,10 @@ export default function MethodologyView() {
         and the fair probability is a weighted average — Pinnacle, the sharpest
         book in the market, carries <b>3× weight</b>, so fair value is anchored
         on the sharp price and retail quirks wash out. The bet is then priced on
-        a blend: <code>p = fair + w × (model − fair)</code>, keeping only 30–55%
-        of the model's disagreement with the market (per-market weights re-tuned
-        from the calibration audit). This is what separates a real edge finder
-        from a fake +90% EV machine.
+        a blend: <code>p = fair + w × (model − fair)</code>, keeping only{' '}
+        <b>0–15%</b> of the model's disagreement with the market — the weight measured on
+        155,000 settled contracts, not a judgement about how well each market is modelled. It
+        used to be 30–55%, which the same measurement showed was about four times too much.
       </p>
 
       <h3>Best-price EV + alternate lines</h3>

@@ -32,7 +32,7 @@ import { snapshotRowKey } from '../src/ui/snapshotStore.js';
 import { gradeSlate } from '../src/data/gradeSlate.js';
 import { parkFactor } from '../src/lib/parks.js';
 import { projectPitcher } from '../src/model/pitcher.js';
-import { evaluateEdge } from '../src/model/edges.js';
+import { evaluateEdge, MARKET_WEIGHT } from '../src/model/edges.js';
 
 const close = (a, b, tol, msg) =>
   assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b} (tol ${tol})`);
@@ -214,11 +214,47 @@ test('sportsbook game odds keep only mirrored spreads and matching totals', () =
   assert.equal(q.game_total[0].point, 8.5);
 });
 
+
+// The shipped MARKET_WEIGHT is low enough that no row is ever a play (see "at
+// the shipped weights" below), and the demotion reasons only annotate a row
+// that WOULD otherwise be one. The guard tests below are about those reasons,
+// so they lend the market its pre-v36.2 weight for the length of the call.
+const withWeight = (market, value, fn) => {
+  const had = MARKET_WEIGHT[market];
+  MARKET_WEIGHT[market] = value;
+  try {
+    return fn();
+  } finally {
+    MARKET_WEIGHT[market] = had;
+  }
+};
+
+test('at the shipped weights, model disagreement alone cannot make a play', () => {
+  // This is arithmetic, not a fixture. evaluateEdge clamps the pre-weight
+  // model-market gap to 0.15 and keeps `weight` of it, so the model can move
+  // the price by at most weight * 0.15 — 1.5 points at 0.10, 2.25 at 0.15 —
+  // and LEAN needs 3. At a fair, unshoppable price (-110 both sides) even a
+  // model that is certain is a PASS.
+  //
+  // What CAN still be a play is a price: when one book's number is out of line
+  // with the consensus of the others, that gap is real money and it is not the
+  // model's opinion. That is the only kind of play left, and it is the kind
+  // with evidence behind it. If a future weight rises above 0.2 this test
+  // fails, which is the point — it should be a decision with evidence, not a
+  // drift.
+  for (const [market, w] of Object.entries(MARKET_WEIGHT)) {
+    assert.ok(w <= 0.2, `${market} carries weight ${w}: plays are reachable again`);
+  }
+  // Even a model that is certain, at a fair price, with everything else ideal.
+  const best = evaluateEdge(0.999, 5.5, -110, -110, { weight: MARKET_WEIGHT.batter_total_bases });
+  assert.equal(best.verdict, 'PASS');
+});
+
 test('team markets use the tighter implausibility limit', () => {
   const model = { pHome: 0.62, pAway: 0.38, spread: () => ({ home: 0.5, away: 0.5, push: 0 }), total: () => ({ over: 0.5, under: 0.5, push: 0 }) };
   // Priced so the row would otherwise be a LEAN: +100 on the home side.
   const books = { game_ml: [{ book: 'DK', point: 0, over: 100, under: -120, w: 1 }, { book: 'FD', point: 0, over: 100, under: -120, w: 1 }], game_spread: [], game_total: [] };
-  const [ml] = priceTeamMarkets(model, books, null);
+  const [ml] = withWeight('game_ml', 0.3, () => priceTeamMarkets(model, books, null));
   assert.equal(ml.edge.verdict, 'PASS');
   assert.ok(ml.edge.why.some((w) => w.includes('8pts')), ml.edge.why.join());
   // The same 12-point disagreement on a prop is not suppressed by that rule.
@@ -406,7 +442,8 @@ const kRow = (quotes, p) =>
   attachLines({ pitcher_strikeouts: PITCHER_MARKETS.pitcher_strikeouts }, 'test arm', pitcherOdds(quotes), kProjection(p), false)[0];
 
 test('a pitcher prop priced by one book is never a play', () => {
-  const row = kRow([{ book: 'DK', point: 5.5, over: 110, under: -130, w: 1 }], 0.55);
+  const row = withWeight('pitcher_strikeouts', 0.45, () =>
+    kRow([{ book: 'DK', point: 5.5, over: 110, under: -130, w: 1 }], 0.55));
   assert.equal(row.edge.verdict, 'PASS');
   assert.ok(row.edge.why.includes('needs 2+ books'), row.edge.why.join());
 });
@@ -414,14 +451,18 @@ test('a pitcher prop priced by one book is never a play', () => {
 test('a pitcher prop longer than +150 is never a play', () => {
   const q = (book) => ({ book, point: 5.5, over: 190, under: -240, w: 1 });
   // Model 42% vs a 31% market: a LEAN on price alone before the +150 rule.
-  const row = kRow([q('DK'), q('FD')], 0.42);
+  const row = withWeight('pitcher_strikeouts', 0.45, () => kRow([q('DK'), q('FD')], 0.42));
   assert.equal(row.edge.verdict, 'PASS');
   assert.ok(row.edge.why.includes('price longer than +150'), row.edge.why.join());
 });
 
-test('a two-book pitcher prop at a normal price can still be a play', () => {
+test('the two-book and +150 rules are the only thing stopping that row', () => {
+  // Same row, both rules satisfied: it clears, so the two tests above are
+  // measuring their own rule and not some other refusal. (At the shipped
+  // weight of 0 for strikeouts it is a PASS regardless — that is the policy,
+  // tested above, not this rule.)
   const q = (book) => ({ book, point: 5.5, over: 105, under: -125, w: 1 });
-  const row = kRow([q('DK'), q('FD')], 0.55);
+  const row = withWeight('pitcher_strikeouts', 0.45, () => kRow([q('DK'), q('FD')], 0.55));
   assert.notEqual(row.edge.verdict, 'PASS', row.edge.why.join());
 });
 
@@ -429,7 +470,8 @@ test('game lines are information only', () => {
   // 56% vs a 49% low-margin market (+105/-105): a LEAN before the information-only rule.
   const model = { pHome: 0.56, pAway: 0.44, spread: () => ({ home: 0.5, away: 0.5, push: 0 }), total: () => ({ over: 0.5, under: 0.5, push: 0 }) };
   const q = (book) => ({ book, point: 0, over: 105, under: -105, w: 1 });
-  const [ml] = priceTeamMarkets(model, { game_ml: [q('DK'), q('FD')], game_spread: [], game_total: [] }, null);
+  const [ml] = withWeight('game_ml', 0.3, () =>
+    priceTeamMarkets(model, { game_ml: [q('DK'), q('FD')], game_spread: [], game_total: [] }, null));
   assert.equal(ml.edge.verdict, 'PASS');
   assert.ok(ml.edge.why.some((w) => w.startsWith('game lines are information only')), ml.edge.why.join());
   assert.ok(ml.edge.ev > 0, 'the number is still shown');

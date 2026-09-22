@@ -78,14 +78,16 @@ export default function BestBets({
   return (
     <>
     <div className="trlegend unvalidated top">
-      <b>Measured against real prices, this model has no edge on player props.</b> Every settled
-      Kalshi contract from 10 Jul to 15 Sep 2026 was replayed with the model's own numbers and
-      these rules: 623 pitcher-prop trades returned <b>−4.0%</b> (strikeouts −7.8%) and 609
-      batter-prop trades returned <b>−3.4%</b>. In all seven markets the exchange's price
-      predicted outcomes <i>better</i> than the model did, and the blend that scored best gave
-      the model only 0–25% of the say — less than this board still gives it. See How It Works.
-      Treat the plays below as the model's opinion, not as an edge, and check Results before
-      risking anything.
+      <b>The model no longer gets a vote big enough to call a bet on its own.</b> Replayed
+      against every settled Kalshi contract from 10 Jul to 15 Sep 2026, these rules returned
+      <b>−4.0%</b> on 623 pitcher-prop trades (strikeouts −7.8%) and <b>−3.4%</b> on 609
+      batter-prop trades, and the exchange's price forecast results better than the model in all
+      seven markets. So the model's weight is now what those tests measured — 0 to 0.15 rather
+      than the old 0.30–0.55 — and at that weight its disagreement can move a price by at most
+      2¼ points, which is below the bar for a call. Anything listed below is here because{' '}
+      <i>one book's price is out of line with the other books</i>, not because the model likes
+      it. That is the only edge these tests found any support for. Check Results before risking
+      anything.
     </div>
     {topCount > 0 && (
       <div className="conviction-head">
