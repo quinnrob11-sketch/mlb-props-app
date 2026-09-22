@@ -50,6 +50,11 @@ const DECISION_MIN = Number(arg('decision-min', 120));
 const DEADLINE_MIN = Number(arg('deadline', 0));
 const BOOT = Number(arg('boot', 5000));
 const JSON_OUT = arg('json', null);
+// Kalshi's LIVE tier drops candlestick history as it ages, and it has aged past
+// the start of the earlier studies' window since they were run. Decisions before
+// this date are dropped, because a market whose candles no longer exist would be
+// scored as "never filled" for a reason that has nothing to do with the market.
+const MIN_DATE = arg('min-date', '');
 const TAKER_FEE_RATE = Number(arg('fee-rate', 0.07));
 const MAKER_FEE_RATE = Number(arg('maker-fee-rate', 0)); // see docs: "quadratic" series
 const CANDLE_DIR = path.join(KCACHE, 'mcandles');
@@ -84,13 +89,21 @@ function bookOf(t) {
   return { yesBid, yesAsk, spread: yesAsk - yesBid };
 }
 
+/**
+ * `path` or `path#set`. The pitcher study writes `trades.<set>`; the batter
+ * study writes `trades.<decisionMinutes>.<set>` because it reports both decision
+ * times in one run. Both shapes are accepted, and the payout is taken from
+ * whichever field that study recorded it in.
+ */
 function loadDecisions() {
   const out = [];
-  for (const f of DECISIONS) {
+  for (const spec of DECISIONS) {
+    const [f, set = SET] = spec.split('#');
     const j = readJson(f);
-    const list = j.trades?.[SET];
-    if (!list) throw new Error(`${f} has no trades.${SET} (has ${Object.keys(j.trades || {})})`);
+    const list = j.trades?.[set] || j.trades?.[String(DECISION_MIN)]?.[set];
+    if (!list) throw new Error(`${f} has no trades.${set} (has ${Object.keys(j.trades || {})})`);
     for (const t of list) {
+      if (MIN_DATE && t.date < MIN_DATE) continue;
       const seg = t.ticker.split('-')[1];
       const p = parseEventTicker(`X-${seg}`);
       const startMs = startMsOf(p);
@@ -99,6 +112,7 @@ function loadDecisions() {
       out.push({
         ...t,
         source: path.basename(f),
+        set,
         game: seg, // cluster: every contract on one game moves together
         startMs,
         decisionMs: startMs - DECISION_MIN * 60e3,
@@ -112,7 +126,7 @@ function loadDecisions() {
         // at least 2c; at 1c it would cross and is not a resting order at all.
         restImpPrice: t.side === 'yes' ? b.yesBid + 1 : 100 - b.yesAsk + 1,
         impPossible: b.spread >= 2,
-        payoutCents: t.won ? 100 : 0,
+        payoutCents: t.payoutCents ?? (t.won ? 100 : 0),
       });
     }
   }
@@ -345,7 +359,7 @@ async function main() {
   };
 
   const windowOf = (d) => (d.date >= '2026-08-10' ? 'A Aug10-Sep15' : 'B Jul10-Aug9');
-  const report = { config: { decisions: DECISIONS, set: SET, decisionMin: DECISION_MIN, deadlineMin: DEADLINE_MIN, takerFeeRate: TAKER_FEE_RATE, makerFeeRate: MAKER_FEE_RATE, boot: BOOT } };
+  const report = { config: { decisions: DECISIONS, set: SET, decisionMin: DECISION_MIN, deadlineMin: DEADLINE_MIN, minDate: MIN_DATE || null, takerFeeRate: TAKER_FEE_RATE, makerFeeRate: MAKER_FEE_RATE, boot: BOOT } };
 
   report.coverage = {
     decisions: decisions.length,
@@ -382,6 +396,10 @@ async function main() {
       byWindow: Object.fromEntries(['A Aug10-Sep15', 'B Jul10-Aug9'].map((w) => {
         const sub = scored.filter((s) => windowOf(s) === w);
         return [w, { fillRate: sub.filter((s) => s.r.filled).length / (sub.length || 1), onFilled: rollup(sub.filter((s) => s.r.filled), (s) => s.r.cost, (s) => s.r.pnl), allDecisions: rollup(sub, (s) => s.r.cost, (s) => s.r.pnl) }];
+      })),
+      bySource: Object.fromEntries([...new Set(scored.map((s) => s.source))].sort().map((k) => {
+        const sub = scored.filter((s) => s.source === k);
+        return [k, { fillRate: sub.filter((s) => s.r.filled).length / (sub.length || 1), onFilled: rollup(sub.filter((s) => s.r.filled), (s) => s.r.cost, (s) => s.r.pnl), allDecisions: rollup(sub, (s) => s.r.cost, (s) => s.r.pnl) }];
       })),
       bySeries: Object.fromEntries([...new Set(scored.map((s) => s.series))].sort().map((k) => {
         const sub = scored.filter((s) => s.series === k);
@@ -458,6 +476,7 @@ function print(r) {
     console.log(`  on filled      ${roi(s.onFilled)}`);
     console.log(`  all decisions  ${roi(s.allDecisions)}`);
     for (const [w, x] of Object.entries(s.byWindow)) console.log(`    ${w.padEnd(16)} fill ${pct(x.fillRate)}  filled ${roi(x.onFilled)}  all ${roi(x.allDecisions)}`);
+    for (const [k, x] of Object.entries(s.bySource)) console.log(`    ${k.padEnd(16)} fill ${pct(x.fillRate)}  filled ${roi(x.onFilled)}  all ${roi(x.allDecisions)}`);
     for (const [k, x] of Object.entries(s.bySeries)) console.log(`    ${k.padEnd(16)} fill ${pct(x.fillRate)}  filled ${roi(x.onFilled)}  all ${roi(x.allDecisions)}`);
   }
   console.log('\n=== adverse selection (same resting order, filled vs unfilled) ===');
