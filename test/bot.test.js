@@ -7,7 +7,8 @@ import crypto from 'node:crypto';
 
 import { signingString, sign, orderBody, clientOrderId } from '../bot/kalshiClient.mjs';
 import { planOrders, modelProbability, topOfBook, playerKeyOf, groupKey } from '../bot/plan.mjs';
-import { normalizeMarket } from '../src/lib/kalshi.js';
+import { normalizeMarket, normalizeOrderbook } from '../src/lib/kalshi.js';
+import { buildSignal } from '../src/trade/signals.js';
 
 // ── signing ────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,48 @@ test('client order ids are deterministic per day, ticker and side', () => {
   assert.equal(clientOrderId('2026-09-16', 'T', 'yes'), clientOrderId('2026-09-16', 'T', 'yes'));
   assert.notEqual(clientOrderId('2026-09-16', 'T', 'yes'), clientOrderId('2026-09-16', 'T', 'no'));
   assert.notEqual(clientOrderId('2026-09-16', 'T', 'yes'), clientOrderId('2026-09-17', 'T', 'yes'));
+});
+
+// ── depth ──────────────────────────────────────────────────────────────────
+
+const depthOf = (yesLevels, noLevels, modelProb) =>
+  buildSignal({
+    modelProb,
+    book: normalizeOrderbook('T', { orderbook: { yes: yesLevels, no: noLevels } }),
+    ticker: 'T',
+    weight: 0.5,
+    minEdge: 0.02,
+  });
+
+test('buying NO eats the YES bids, and only the ones at or above our price', () => {
+  // YES bids 65x100, 64x500, 63x900. NO costs 100 - 65 = 35c, and only the 65c
+  // bids can fill it: 100 contracts. The old code compared the YES bid price
+  // against the NO price and found no depth at all, which is why the bot never
+  // once bought NO below 50c and so could never fade a favourite.
+  const s = depthOf([[65, 100], [64, 500], [63, 900]], [[30, 400]], 0.45);
+  assert.equal(s.side, 'no');
+  assert.equal(s.priceCents, 35);
+  assert.equal(s.availableContracts, 100);
+});
+
+test('depth on a cheap favourite is not multiplied by the whole book', () => {
+  // YES bids 30x100, 29x500, 28x900. NO costs 70c; only the 30c bids fill it.
+  // The old code counted every level below 70c — 1,500 contracts — and risk.js
+  // turns that count into a dollar cap, so it oversized too.
+  const s = depthOf([[30, 100], [29, 500], [28, 900]], [[65, 400]], 0.1);
+  assert.equal(s.side, 'no');
+  assert.equal(s.priceCents, 70);
+  assert.equal(s.availableContracts, 100);
+});
+
+test('buying YES eats the NO side by the same rule', () => {
+  // NO resting at 45c makes YES available at 55c, and that is the best offer,
+  // so it is what we pay. The 38c NO only offers YES at 62c, above our price,
+  // so it does not count: 300 contracts, not 500.
+  const s = depthOf([[50, 700]], [[38, 200], [45, 300]], 0.9);
+  assert.equal(s.side, 'yes');
+  assert.equal(s.priceCents, 55);
+  assert.equal(s.availableContracts, 300);
 });
 
 // ── planning ───────────────────────────────────────────────────────────────

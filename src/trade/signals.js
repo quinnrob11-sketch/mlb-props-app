@@ -173,9 +173,16 @@ export function buildSignal({
   const restingLevels = takeYes ? book.no : book.yes;
   const availableContracts = (restingLevels || [])
     .filter((level) => {
-      // A resting NO at c cents makes YES available at (100 - c).
-      const impliedYesCost = takeYes ? 100 - level.cents : level.cents;
-      return impliedYesCost <= priceCents;
+      // FIX: this read the NO side off the wrong end of the book. A resting
+      // order at c cents on the side we eat makes OUR side available at
+      // (100 - c) — that is true of both sides, so one rule covers both. The
+      // old code compared a resting YES BID price directly against the NO
+      // price we pay. With YES bids 65/64/63 it reported no depth at all when
+      // 100 contracts were sitting there, and with bids 30/29/28 it reported
+      // 1,500 when 100 were there. The bot consequently never bought NO below
+      // 50c in 443 NO trades — it could not fade a favourite — and oversized
+      // above 50c, because risk.js turns this count into a dollar cap.
+      return 100 - level.cents <= priceCents;
     })
     .reduce((sum, level) => sum + level.contracts, 0);
 
