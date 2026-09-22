@@ -107,7 +107,7 @@ before any real money is used. It reads Kalshi's public market data only.
 | `maxDailySpendDollars` | 30 | cap on new money per day |
 | `maxDailyLossDollars` | 20 | halts for the day once account value is down this much |
 | `maxOrdersPerRun` / `maxOrdersPerDay` | 5 / 15 | order-count caps |
-| `minPriceCents` / `maxPriceCents` | 15 / 90 | skips longshots and near-certainties, where the model is least reliable |
+| `minPriceCents` / `maxPriceCents` | 25 / 90 | skips longshots and near-certainties. Raised from 15c on 2026-09-22: contracts at 15-24c returned -45% [-74, -12] in the Jul-Sep backtest and -72% [-100, -4] in the fresh Sep 16-21 week — the only slice that is significantly negative in two independent windows |
 | `minEdgeAfterFees` | 0.02 | required edge beyond the fee |
 
 `markets.playerProps` and `markets.gameLines` switch each group on or off.

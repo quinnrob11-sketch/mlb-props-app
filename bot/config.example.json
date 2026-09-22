@@ -25,7 +25,7 @@
     "maxOrdersPerDay": 15,
     "maxContractsPerOrder": 50,
     "kellyFraction": 0.25,
-    "minPriceCents": 15,
+    "minPriceCents": 25,
     "maxPriceCents": 90
   }
 }

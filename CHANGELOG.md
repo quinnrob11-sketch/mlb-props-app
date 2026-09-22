@@ -1,3 +1,28 @@
+# v36.1 — fresh out-of-sample week, cheap-contract floor raised
+
+`bot/state` now carries a real paper record, and the week after every model fit
+(Sep 16–21) was replayed against real Kalshi prices as a clean out-of-sample
+test. It agrees with the July–September studies.
+
+| Sep 16–21 (135 starts, 1,068 markets) | result |
+|---|---|
+| bot rules, all | −5.7% [−27.5, 14.3] on 48 trades |
+| strikeouts | −12.7% [−38.3, 11.2] |
+| outs | +11.1% [−38.1, 57.4] on 15 trades |
+| forecast skill | model Brier 0.1864 vs market 0.1837 — market better again |
+
+**Change:** `minPriceCents` 15 → 25. Contracts priced 15–24c returned −45%
+[−74, −12] across Jul–Sep and −72% [−100, −4] in the fresh week — the only
+slice significantly negative in two independent windows. Everything else is
+unchanged: `liveSeries` stays empty, so the bot still paper-trades everything.
+
+**Paper record so far** (9 settled): −$0.41, closing-line value −1.5c
+[−2.82, −0.18], beating the close 22% of the time. The CLV interval excludes
+zero, which is the earliest sign that these entries are on the wrong side of
+where the market lands.
+
+---
+
 # v36 — backtests against real Kalshi prices, model refits, paper-trading tracker
 
 ## The answer to "does it make money?" (measured)
