@@ -248,12 +248,36 @@ export default function PropTable({
   // responsible — i.e. it removed every row before this component's own market
   // chip / "Lines only" / search narrowed anything further.
   const criteriaCut = rows.length === 0 ? explainEmpty(unfilteredRows, criteria) : null;
-  const emptyState = criteriaCut || {
-    headline: "Nothing matches.",
-    detail: linesOnly
-      ? 'No book lines in this view yet — toggle "Lines only" off to see raw projections.'
-      : "Adjust filters or search.",
-  };
+
+  // A search that matches nobody is usually not a filter problem: the board
+  // only carries the nine hitters in each card, so a player whose team has not
+  // posted yet is simply absent. "Nothing matches" made that look like a broken
+  // search, which is exactly how it was reported.
+  const projectedTeams =
+    kind === "batter"
+      ? new Set(
+          unfilteredRows
+            .filter((r) => r.lineupSource && r.lineupSource !== "confirmed")
+            .map((r) => r.team),
+        ).size
+      : 0;
+  const searchFoundNothing = query && rows.length > 0 && visible.length === 0;
+  const emptyState =
+    criteriaCut ||
+    (searchFoundNothing
+      ? {
+          headline: `No ${kind === "batter" ? "batter" : "pitcher"} matches “${query}”.`,
+          detail:
+            kind === "batter" && projectedTeams > 0
+              ? `The board carries the nine hitters in each card, and ${projectedTeams} of today's lineups are still PROJECTED rather than posted — a hitter who did not start his team's last game will not appear until the real card drops. Only about three quarters of a posted nine start again the next day, so check back closer to first pitch.`
+              : "Check the spelling, or clear the other filters — the market chips and “Lines only” narrow this table too.",
+        }
+      : {
+          headline: "Nothing matches.",
+          detail: linesOnly
+            ? 'No book lines in this view yet — toggle "Lines only" off to see raw projections.'
+            : "Adjust filters or search.",
+        });
 
   return (
     <>
