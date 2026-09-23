@@ -61,6 +61,27 @@ needs 50 before any category is named a leader. The same rules drive the
 RESULTS tab on the site, from the same module (`src/analysis/profitability.js`),
 so the two cannot disagree.
 
+## Seeing it in the app
+
+    node tools/track.mjs export
+
+writes `bot/state/track-export.json` in the envelope the RESULTS tab's IMPORT
+JSON button reads, holding the rows the board actually called. The disk record
+and the in-app breakdown are then the same history rather than two rival ones —
+they already share the module that computes it.
+
+## Checking the grading
+
+    node tools/track.mjs selftest
+
+Grades five props whose answers are known from a real box score (2026-09-20
+PHI @ NYM: Lindor 0 hits, Tong 5 K and 14 outs) and asserts each result. It is
+not part of `npm test` because it needs the network. It exists because a silent
+mis-grade corrupts the record permanently, and because an early version of this
+tool did exactly that — it matched results back to rows by a key that left out
+the side, so an over and an under on the same line collided and both took the
+second one's result. Run it after any change to the grading path.
+
 ## Cost
 
 Every run reads the board through the production deployment, so it reuses that
