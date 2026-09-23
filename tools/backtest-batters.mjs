@@ -34,7 +34,7 @@ import { projectBatter } from '../src/model/batter.js';
 import { projectPitcher, parseInningsPitched } from '../src/model/pitcher.js';
 import {
   API, argv, makeCache, pool, pitcherSeasonBefore, hitterSeasonBefore,
-  teamRatesBefore, makeLeagueBefore, pmfOf,
+  teamRatesBefore, makeLeagueBefore, pmfOf, MARKETS,
 } from './backtest-common.mjs';
 
 const FROM = argv('from', '2026-08-10');
@@ -275,19 +275,10 @@ export function buildRows() {
 }
 
 // ── evaluation ──────────────────────────────────────────────────────────────
-export const MARKETS = {
-  // Not a market: the plate-appearance distribution every count market sits on.
-  pa:      { key: null,                    proj: 'pa',      lines: [2.5, 3.5, 4.5, 5.5],      max: 9 },
-  hits:    { key: 'batter_hits',           proj: 'projH',   lines: [0.5, 1.5, 2.5],           max: 7 },
-  tb:      { key: 'batter_total_bases',    proj: 'projTB',  lines: [0.5, 1.5, 2.5, 3.5, 4.5], max: 20 },
-  hr:      { key: 'batter_home_runs',      proj: 'projHR',  lines: [0.5, 1.5],                max: 5 },
-  rbi:     { key: 'batter_rbis',           proj: 'projRBI', lines: [0.5, 1.5, 2.5],           max: 12 },
-  hrr:     { key: 'batter_hits_runs_rbis', proj: 'projHRR', lines: [0.5, 1.5, 2.5, 3.5, 4.5], max: 20 },
-  runs:    { key: 'batter_runs_scored',    proj: 'projR',   lines: [0.5, 1.5],                max: 8 },
-  k:       { key: 'batter_strikeouts',     proj: 'projK',   lines: [0.5, 1.5, 2.5],           max: 7 },
-  singles: { key: 'batter_singles',        proj: 'proj1B',  lines: [0.5, 1.5],                max: 7 },
-  sb:      { key: 'batter_stolen_bases',   proj: 'projSB',  lines: [0.5],                     max: 5 },
-};
+// `MARKETS` moved to backtest-common.mjs so a tool can read the market spec
+// without importing this module (whose top level fetches a season of
+// boxscores). It is re-exported here, unchanged, for every existing caller.
+export { MARKETS };
 
 /**
  * Per market: mean bias (actual vs projected, % of projected), slope of actual

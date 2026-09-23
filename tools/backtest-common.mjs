@@ -130,6 +130,29 @@ export function makeLeagueBefore(teamLogs) {
   };
 }
 
+/**
+ * The batter markets, their projection field, the ladder calibration is
+ * measured at and the count the pmf is truncated at.
+ *
+ * It lives here rather than in `tools/backtest-batters.mjs` so a tool can read
+ * it WITHOUT importing that module, whose top level fetches a whole season of
+ * boxscores the moment it is imported. `backtest-batters.mjs` re-exports it,
+ * so there is still exactly one definition.
+ */
+export const MARKETS = {
+  // Not a market: the plate-appearance distribution every count market sits on.
+  pa:      { key: null,                    proj: 'pa',      lines: [2.5, 3.5, 4.5, 5.5],      max: 9 },
+  hits:    { key: 'batter_hits',           proj: 'projH',   lines: [0.5, 1.5, 2.5],           max: 7 },
+  tb:      { key: 'batter_total_bases',    proj: 'projTB',  lines: [0.5, 1.5, 2.5, 3.5, 4.5], max: 20 },
+  hr:      { key: 'batter_home_runs',      proj: 'projHR',  lines: [0.5, 1.5],                max: 5 },
+  rbi:     { key: 'batter_rbis',           proj: 'projRBI', lines: [0.5, 1.5, 2.5],           max: 12 },
+  hrr:     { key: 'batter_hits_runs_rbis', proj: 'projHRR', lines: [0.5, 1.5, 2.5, 3.5, 4.5], max: 20 },
+  runs:    { key: 'batter_runs_scored',    proj: 'projR',   lines: [0.5, 1.5],                max: 8 },
+  k:       { key: 'batter_strikeouts',     proj: 'projK',   lines: [0.5, 1.5, 2.5],           max: 7 },
+  singles: { key: 'batter_singles',        proj: 'proj1B',  lines: [0.5, 1.5],                max: 7 },
+  sb:      { key: 'batter_stolen_bases',   proj: 'projSB',  lines: [0.5],                     max: 5 },
+};
+
 /** Model pmf from its survival function P(X > line) at half-integer lines. */
 export function pmfOf(dist, max) {
   const pmf = [];

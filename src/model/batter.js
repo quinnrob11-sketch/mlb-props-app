@@ -417,6 +417,98 @@ export const BATTER_TUNING = {
    */
   seasonPriorWeight: 0.6,
   /**
+   * SHORT BOOK, THIN HITTER (2026-09-23, docs/BATTER-CALIBRATION-FIX.md).
+   *
+   * `docs/ACCURACY.md` measured the one cell where the batter model is
+   * materially wrong: a hitter with fewer than 50 plate appearances THIS
+   * season reads about two points high on hits, total bases and singles. The
+   * shrinkage above cannot fix itself, because it treats 0.6 x last season as
+   * interchangeable evidence with this season. It is not. A hitter who has
+   * barely batted this season is either in the opening fortnight, when nobody
+   * is in form, or he is not being played — and neither fact is anywhere in
+   * the line the shrinkage reads.
+   *
+   * Measured on the fit window (75,762 batter-games, 2025 plus 2026 through
+   * 08-09), bucketed by plate appearances this season before first pitch, as
+   * the ratio of what those hitters ACTUALLY did to what the model projected:
+   *
+   *    PA so far      n      plate apps   hits/PA   runs/PA   K/PA
+   *     0-10        3,480      0.967       0.925     0.881    1.073
+   *     10-25       4,290      0.974       0.936     0.919    1.032
+   *     25-50       6,494      0.989       0.958     0.974    0.991
+   *     50-100     11,277      0.996       0.985     0.966    0.979
+   *     100-175    14,061      0.999       1.010     0.981    0.981
+   *     175-275    14,187      1.010       1.024     1.032    0.989
+   *     275-400    12,413      1.015       1.005     1.027    0.991
+   *     400+        9,542      1.017       1.004     1.056    1.006
+   *
+   * It is monotone, it replicates in each season on its own (hits at 0-10 is
+   * 0.901 in 2025 and 0.951 in 2026, 0.93/0.94 at 10-25), and it splits into
+   * TWO effects that have to be modelled separately:
+   *
+   *   PLATE APPEARANCES. A short-book hitter takes 3% fewer trips than his
+   *   lineup slot implies — he is the one who gets pinch-hit for, platooned
+   *   out or lifted for defence, and `paLossRate` is a flat 10% for everybody.
+   *   That is a third of the hits over-read on its own, and it is the reason
+   *   the correction cannot be a rate factor alone: it changes the SHAPE of
+   *   every count distribution, not just its mean.
+   *
+   *   RATES. On top of that, per plate appearance he gets 7.5% fewer hits,
+   *   12% fewer runs — and strikes out 7% MORE. The strikeout leg going the
+   *   other way is why one shared factor cannot do this either.
+   *
+   * So a single ramp `short`, 1 at no plate appearances and exactly 0 from
+   * `thinPaCap` upward, drives four measured multipliers:
+   *
+   *     short = max(0, 1 - PA this season / thinPaCap)
+   *     plate appearances                      x (1 - thin.pa       * short)
+   *     hit, single, double, triple, HR rates  x (1 - thin.offence  * short)
+   *     run, RBI rates                         x (1 - thin.scoring  * short)
+   *     strikeout rate                         x (1 + thin.k        * short)
+   *
+   * A RAMP, NOT A DECAY. An exponential fits the table just as well and never
+   * quite reaches zero, so it would move a 600-plate-appearance regular in the
+   * eighth decimal. The ramp is exactly 1.000 for everyone at or above the
+   * cap, which is the promise worth being able to make: this term touches
+   * nobody with a real book.
+   *
+   * The four shades and the cap were chosen on the fit window over
+   * cap 70/90/120 x offence 0.055/0.07/0.085 x scoring 0.08/0.11/0.14 x
+   * k 0/0.04, with the plate-appearance shade fitted first on the plate
+   * appearances alone (0.02 and 0.035 tie on log loss; 0.03 is where the thin
+   * cell's plate-appearance gap crosses zero). Log loss over the nine markets
+   * is flat to the fifth decimal across the good region, so the settings were
+   * taken from the CALIBRATION GAP instead, which is what the defect is:
+   *
+   *   thin cell, gap in points (predicted minus observed over the ladder)
+   *              PA    hits    TB   1B   runs   RBI   H+R+RBI    K
+   *   shipped  +1.98  +2.17 +2.43 +1.75 +2.03 +1.29   +2.58   -0.01
+   *   this     +0.06  +0.09 +0.53 -0.18 +0.08 +0.06   +0.06   +0.18
+   *
+   * A cap of 90 or 120 closes the thin cell no better and drags the regulars
+   * from -0.37 to -0.48 and -0.61, so 70 is where the term stops. `thin.k`
+   * exists only because the plate-appearance shade would otherwise leave
+   * strikeouts reading 0.6 points LOW in the same cell: the thin hitter takes
+   * fewer trips but strikes out more often in each of them, and the two very
+   * nearly cancel.
+   *
+   * WHY A DISCOUNT AND NOT A LOWER PRIOR. A lower prior was the first thing
+   * tried and it is the wrong shape. The worst-read hitters in this cell are
+   * the ones with a FULL prior season and no current one — a 2025 regular
+   * under 50 plate appearances in 2026 reads 0.915 — and for him the prior
+   * carries barely a third of the estimate, so moving the prior moves him
+   * least where he is wrong most. A book-size prior tilt closed a third of the
+   * gap and cost the regulars; it is not what shipped.
+   *
+   * Nothing here is fitted against a price. Setting any shade to 0, or
+   * `thinPaCap` to 0, restores the pre-2026-09-23 model exactly; so does
+   * calling with neither `season26` nor `season25`, because then the book is
+   * unknown rather than short (see `hasBook` at the call site). `thin` is read
+   * member by member, so an override may supply only the members it moves.
+   */
+  thinPaCap: 70,
+  thin: { pa: 0.03, offence: 0.085, scoring: 0.11, k: 0.04 },
+  /**
    * Strength of the park term and of the opposing-starter term, as multipliers
    * on the shipped park weights (0.7 / 0.5) and on `PITCHER_INFLUENCE` (0.6).
    * 1 is the pre-2026-09-23 model.
@@ -679,6 +771,28 @@ export function projectBatter(input) {
   const pa26 = s26.plateAppearances || 0;
   const pa25 = s25.plateAppearances || 0;
 
+  // SHORT BOOK, THIN HITTER — see `thin` in BATTER_TUNING for the measurement.
+  //
+  // `short` is 1 for a hitter who has not batted this season and falls
+  // linearly to exactly 0 at `thinPaCap` plate appearances, so every
+  // multiplier below is exactly 1 for anyone with a real book.
+  //
+  // FALLBACK. A caller that supplies NEITHER season line is not telling us the
+  // hitter is short of plate appearances — it is telling us nothing at all,
+  // and the undiscounted model is the right answer to nothing at all.
+  // `hasBook` is false only in that case, and all four multipliers are then
+  // exactly 1, so the projection is bit-for-bit the pre-2026-09-23 one. A
+  // hitter with a real line of zero plate appearances this season (a prior
+  // season supplied, or an empty current one) is a measurement, not a missing
+  // input, and is discounted.
+  const hasBook = season26 != null || season25 != null;
+  const TH = T.thin || {};
+  const short = hasBook && T.thinPaCap > 0 ? Math.max(0, 1 - pa26 / T.thinPaCap) : 0;
+  const paShort = 1 - (TH.pa || 0) * short;
+  const offShort = 1 - (TH.offence || 0) * short;
+  const scoringShort = 1 - (TH.scoring || 0) * short;
+  const kShort = 1 + (TH.k || 0) * short;
+
   // ---------------------------------------------------------------------
   // 1. Plate appearances.
   //    Known slot -> table lookup + home/away tweak. Unknown slot -> the
@@ -694,10 +808,16 @@ export function projectBatter(input) {
   if (paOverride) {
     pa = paOverride.reduce((s, [n, p]) => s + n * p, 0);
   } else if (slot >= 1 && slot <= 9) {
-    pa = PA_BY_LINEUP_SLOT[slot - 1] + (isAway ? 0.08 : -0.08);
+    // A short-book hitter takes ~3% fewer trips than his slot implies: he is
+    // the one who gets pinch-hit for, platooned out or lifted for defence.
+    // `paShort` is exactly 1 above `thinPaCap`, so a regular's plate
+    // appearances are the table value unchanged. The caller's own `paDist`
+    // (above) is left alone — a caller that models the count itself has
+    // already priced this.
+    pa = (PA_BY_LINEUP_SLOT[slot - 1] + (isAway ? 0.08 : -0.08)) * paShort;
   } else {
     const games = s26.gamesPlayed || 0;
-    pa = games > 10 ? clamp(pa26 / games, 3.3, 4.7) : 4;
+    pa = (games > 10 ? clamp(pa26 / games, 3.3, 4.7) : 4) * paShort;
   }
 
   // Singles are not reported directly: H - 2B - 3B - HR.
@@ -728,14 +848,16 @@ export function projectBatter(input) {
   };
 
   const rates = {
-    hit:    shrink(s26.hits,        pa26, s25.hits,        pa25, 0.222, S.hit),
-    single: shrink(singles26,       pa26, singles25,       pa25, 0.14,  S.single),
-    double: shrink(s26.doubles,     pa26, s25.doubles,     pa25, 0.043, S.double),
-    triple: shrink(s26.triples,     pa26, s25.triples,     pa25, 0.004, S.triple),
-    hr:     shrink(s26.homeRuns,    pa26, s25.homeRuns,    pa25, 0.03,  T.hrPriorStrength),
-    run:    shrink(s26.runs,        pa26, s25.runs,        pa25, 0.12,  S.run),
-    rbi:    shrink(s26.rbi,         pa26, s25.rbi,         pa25, 0.115, S.rbi),
-    k:      shrink(s26.strikeOuts,  pa26, s25.strikeOuts,  pa25, lg.kRate,  S.k),
+    hit:    shrink(s26.hits,        pa26, s25.hits,        pa25, 0.222, S.hit)    * offShort,
+    single: shrink(singles26,       pa26, singles25,       pa25, 0.14,  S.single) * offShort,
+    double: shrink(s26.doubles,     pa26, s25.doubles,     pa25, 0.043, S.double) * offShort,
+    triple: shrink(s26.triples,     pa26, s25.triples,     pa25, 0.004, S.triple) * offShort,
+    hr:     shrink(s26.homeRuns,    pa26, s25.homeRuns,    pa25, 0.03,  T.hrPriorStrength) * offShort,
+    run:    shrink(s26.runs,        pa26, s25.runs,        pa25, 0.12,  S.run) * scoringShort,
+    rbi:    shrink(s26.rbi,         pa26, s25.rbi,         pa25, 0.115, S.rbi) * scoringShort,
+    k:      shrink(s26.strikeOuts,  pa26, s25.strikeOuts,  pa25, lg.kRate,  S.k) * kShort,
+    // Walks are not discounted: they are not a market, they enter only through
+    // the shape of section 11b, and the thin cell measured clean on them.
     bb:     shrink(s26.baseOnBalls, pa26, s25.baseOnBalls, pa25, lg.bbRate, S.bb),
   };
 
