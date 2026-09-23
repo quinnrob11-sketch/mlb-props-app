@@ -639,16 +639,16 @@ excludes zero and it has **six trades**, all of which won.
   three weeks cannot resolve an edge of any plausible size.
 - The rebuild was not wasted. The rebuilt model is a better forecaster than the
   shipped one out of sample in every series, on the holdout, pooled by 0.0003
-  of Brier [0.0006, 0.0000]. It closed about a quarter of the distance to the
-  price and no more.
+  of Brier [0.0000, 0.0006] in its favour. It closed about a quarter of the
+  distance to the price and no more.
 
 ## What this adds to `docs/AUDIT.md`
 
-The batter row of that table should now read: the model has been rebuilt from a
-sample thirteen times larger than the last refit (42,444 batter-games against
-3,618), with one structural change and one outright bug removed, and it is
-still the worse forecaster than the price in every series with the interval
-excluding zero. The pooled prop line moves from "1,232 trades, −3.7%" to
+The batter row of that table should now read: the model has been rebuilt on a
+fit window six times larger than the last refit (31,986 batter-games against
+5,274), with one structural change and one outright bug removed, and the price
+is still the better forecaster in every series, with the interval excluding
+zero in five of six. The pooled prop line moves from "1,232 trades, −3.7%" to
 "−3.7% before the rebuild, +24.8% on 74 trades after it, interval [−0.1, 49.5]"
 — which is not a change of conclusion, it is the same conclusion with a wider
 interval on a shorter window.
