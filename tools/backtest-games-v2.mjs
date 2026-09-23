@@ -45,6 +45,9 @@ export function buildGames() {
     if (!(r.away.off?.gamesPlayed >= 10) || !(r.home.off?.gamesPlayed >= 10)) { bump('under ten games played'); continue; }
     const ctx = ctxByDate.get(r.date);
     const model = AS_V1 ? projectGameV1FromRow(r, ctx) : projectGameV2(r, ctx, PARAMS);
+    // The shipped model on the identical row, carried alongside so the price
+    // study can score v2 against v1 paired on the same markets.
+    const modelV1 = AS_V1 ? null : projectGameV1FromRow(r, ctx);
     out.push({
       gamePk: r.gamePk,
       gameNumber: r.gameNumber,
@@ -58,6 +61,7 @@ export function buildGames() {
       bothStarters: !model.flags.includes('NO PROBABLE'),
       hasLineups: !!(r.away.lineup?.nine && r.home.lineup?.nine),
       model,
+      modelV1,
       actual: {
         away: r.actual.away,
         home: r.actual.home,

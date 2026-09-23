@@ -228,3 +228,197 @@ Not one of them excludes zero, which is what a 23-day window buys.
 
 The holdout is 2026-09-02 .. 2026-09-22, 273 games. Kalshi's live tier holds
 all 21 dates.
+
+## The holdout (measured, one run)
+
+2026-09-02 .. 2026-09-22, the `core` configuration and the w-0.6 screen fixed
+in the commit above, decision at T-120.
+
+### Coverage
+
+| | |
+|---|---|
+| games replayed / Kalshi game events matched | 273 / 273 |
+| markets in window / matched to a replayed game | 6,829 / 6,793 |
+| two-sided decision quote | 5,649 — `KXMLBGAME` 544/546, `KXMLBTOTAL` 2,991/3,363, `KXMLBSPREAD` 1,632/2,374, `KXMLBRFI` 482/510 |
+| unmatched | 36 `KXMLBRFI` markets where one starter was not a listed probable |
+| non-binary settlements | 0 |
+| decision quote age | median 0-1 min, 90th percentile 0-7 min, 100% under an hour (99.6% for `KXMLBRFI`) |
+| hand-written screen vs `planOrders` | 272 games, **0** disagreements |
+
+The replay against what happened, same 273 games: home win 53.05% model against
+53.85% actual, home -1.5 35.63% against 35.53%, over 8.5 49.71% against 54.21%,
+NRFI 49.10% against 45.49%. The window ran hot — five points more overs and
+four points fewer scoreless first innings than the model or the market expected.
+
+### Leg 1 — forecast. Brier, model minus market. Negative is the model winning.
+
+| market | n | model | market | difference [95%] | passes? |
+|---|---|---|---|---|---|
+| **pooled** | 5,649 | 0.1869 | 0.1871 | **-0.0002 [-0.0025, +0.0019]** | **no** |
+| `KXMLBGAME` | 544 | 0.2358 | 0.2344 | +0.0013 [-0.0047, +0.0070] | no |
+| `KXMLBSPREAD` | 1,632 | 0.1844 | 0.1825 | +0.0018 [-0.0013, +0.0048] | no |
+| `KXMLBTOTAL` | 2,991 | 0.1697 | 0.1709 | -0.0012 [-0.0042, +0.0017] | no |
+| `KXMLBRFI` | 482 | 0.2464 | 0.2491 | -0.0027 [-0.0072, +0.0015] | no |
+
+Three of the five point estimates are on the model's side, which has never
+happened before in this repo. Not one interval excludes zero.
+
+### Leg 2 — money. w 0.6, 8-point cap, 1 contract, taker at the ask, fee 0.07.
+
+| market | n | games | hit vs priced | P&L/contract | ROI [95%] | passes? |
+|---|---|---|---|---|---|---|
+| **pooled** | 102 | 86 | 50.0% vs 48.4% | +0.04c | **+0.1% [-18.0, +19.2]** | **no** |
+| `KXMLBGAME` | 9 | 9 | 44.4% vs 40.6% | +2.24c | +5.3% [-71.0, +72.4] | no |
+| `KXMLBSPREAD` | 31 | 31 | 58.1% vs 55.8% | +0.80c | +1.4% [-28.6, +31.7] | no |
+| `KXMLBTOTAL` | 56 | 56 | 48.2% vs 45.9% | +0.86c | +1.8% [-22.8, +26.8] | no |
+| `KXMLBRFI` | 6 | 6 | 33.3% vs 46.5% | -14.90c | -30.9% [-100.0, +41.1] | no |
+
+At the 0.035 fee the pooled row is +1.6% [-16.7, +20.9]. Still no.
+
+### Verdict: FAIL, in all four markets and pooled
+
+Neither leg of the pre-registered bar is met anywhere. **The improved game
+model does not beat the exchange price on the moneyline, the run line, the
+total or the first inning.** The conclusion of `docs/KALSHI-GAME-BACKTEST.md`
+stands: these markets are not playable on this model.
+
+## What did change, and it is not nothing
+
+The same holdout, scored **paired on identical markets**, v2 against the
+shipped model. Negative means the new inputs forecast better than the old ones.
+
+| market | v2 - v1 [95%] | v1 - market [95%] | v2 - market [95%] |
+|---|---|---|---|
+| pooled | **-0.0025 [-0.0045, -0.0005]** | +0.0023 [-0.0003, +0.0049] | -0.0002 [-0.0025, +0.0019] |
+| `KXMLBGAME` | -0.0010 [-0.0037, +0.0017] | +0.0023 [-0.0042, +0.0085] | +0.0013 [-0.0047, +0.0070] |
+| `KXMLBSPREAD` | -0.0002 [-0.0019, +0.0013] | +0.0021 [-0.0015, +0.0055] | +0.0018 [-0.0013, +0.0048] |
+| `KXMLBTOTAL` | **-0.0036 [-0.0068, -0.0005]** | +0.0024 [-0.0011, +0.0060] | -0.0012 [-0.0042, +0.0017] |
+| `KXMLBRFI` | **-0.0052 [-0.0087, -0.0017]** | +0.0024 [-0.0007, +0.0055] | -0.0027 [-0.0072, +0.0015] |
+
+The improvement is real and its interval excludes zero — pooled, on totals and
+on the first inning. It is also almost exactly the size of the gap it had to
+close. The shipped model sat 0.0023 behind the price; the new one sits 0.0002
+in front of it, which is another way of saying **level**.
+
+Consistent with that, the in-sample Brier-optimal weight on (model - market)
+moves from near zero to something real: pooled **0.55**, `KXMLBTOTAL` **0.85**,
+`KXMLBRFI` **1.00**, `KXMLBGAME` 0.25, `KXMLBSPREAD` 0. The earlier study found
+0.05 pooled and no stable per-series value. Blending the new model in no longer
+costs anything and on totals it helps slightly (`blend - market` -0.0003
+[-0.0006, 0.0000]).
+
+The first inning is the clearest single change. The shipped model has no
+opinion about it — a standard deviation of 2.8 points across a slate, which is
+why it never disagreed with `KXMLBRFI` enough to trade. The new one has 3.5
+points of spread, and on the holdout it forecast the first inning better than
+the price did (-0.0027) and better than the shipped model did by -0.0052
+[-0.0087, -0.0017]. It still is not a demonstrated edge: the interval against
+the price spans zero, and the six contracts the screen actually bought lost
+31%.
+
+## Sensitivities (all declared before the holdout ran, none can change the verdict)
+
+| | pooled | `KXMLBGAME` | `KXMLBSPREAD` | `KXMLBTOTAL` | `KXMLBRFI` |
+|---|---|---|---|---|---|
+| `core` at T-120 (the result) | -0.0002 | +0.0013 | +0.0018 | -0.0012 | -0.0027 |
+| `core` at T-30 | -0.0002 | +0.0010 | +0.0019 | -0.0011 | -0.0033 |
+| `coreNoWx` (no temperature, no wind) | +0.0002 | +0.0014 | +0.0019 | -0.0006 | -0.0018 |
+| `as-v1` (the shipped model) | +0.0023 | +0.0023 | +0.0021 | +0.0024 | +0.0024 |
+
+- **T-30 changes nothing.** Game-line prices still barely move in the last two
+  hours, exactly as the earlier study found.
+- **The weather term is worth about 0.0004 of pooled Brier against the price**,
+  and it is the term with the lookahead. Take it out entirely and the holdout
+  reads +0.0002 instead of -0.0002 — a different sign on a number whose
+  interval spans zero either way. Nothing in this verdict rests on it.
+- **Every screen is positive on the holdout and none of them significantly so**
+  (w 0.8 with the cap: +3.7% [-9.7, +17.3] on 265; w 1.0 with the cap: +2.0%
+  [-10.4, +14.4] on 402; w 1.0 uncapped: +3.3% [-10.7, +17.0] on 443). The
+  locked screen was the worst of the four. That is what choosing a screen on
+  23 days of validation buys you, and it is the reason the screen was fixed in
+  advance rather than after.
+- **Closing-line value is mildly positive** on the locked screen: +0.21c
+  against the decision mid, -0.30c against the price paid, with the close
+  moving toward the trade on 33% of contracts and against it on 18%. Positive,
+  tiny, and smaller than the spread.
+
+## The bot still cannot place any of these bets
+
+`planOrders` screened **zero** contracts on all 273 holdout games, as it did on
+all 837 games of the earlier study. `MARKET_WEIGHT.game_*` is now 0.1
+(`src/lib/constants.js`), which makes the arithmetic in
+`docs/KALSHI-GAME-BACKTEST.md` finding 1 even more decisive: the maximum
+achievable edge is `0.1 * 0.08 - 0.005 = 0.003` against a minimum hurdle of
+0.0263. Everything above is a counterfactual at weights the bot does not use.
+
+## What this does and does not license
+
+- **It does not license trading game lines.** Nothing passed. The board's
+  `gameLinesInformationOnly` rule and the bot's inability to place the bet are
+  both still correct, and both are still doing work.
+- **It does license believing the number more.** As a displayed forecast the
+  new inputs are significantly better than the shipped ones, and level with the
+  exchange. Shipping them is not in this task's scope — the terms need
+  `src/data/loadSlate.js` to fetch the posted top four, the wind direction and
+  the prior-season team line, and that file is outside what this branch may
+  touch — so `src/model/game.js` is **deliberately unchanged**. The recipe is
+  `tools/game-model-v2.mjs` plus `.backtest-cache/params-core.json`.
+- **It closes four specific questions.** Bullpen availability, rest and travel,
+  the home-plate umpire, and a team defence term were each built, fitted on two
+  seasons and measured. None of them earned its place. They are listed in the
+  table above so the next person does not spend a day on them again.
+- **The honest summary of the whole exercise**: the shipped model was a fifth
+  of a Brier point behind the price; the best per-game inputs the public MLB
+  Stats API can supply closed that gap and stopped there. If there is an edge
+  in these markets it is not in better baseball inputs of this kind.
+
+## Caveats
+
+- **The holdout is 21 days.** 273 games, 5,649 markets, 102 trades at the
+  locked screen. A 102-trade ROI interval is about 37 points wide; nothing
+  smaller than a 20% edge could have cleared it. The forecast leg is much
+  better powered — 5,649 markets clustered in 273 games — and it is the leg
+  that came closest.
+- **Posted lineups are the cards that took the field**, not the cards that were
+  visible at T-120. Same optimism as the earlier study, and the lineup term is
+  worth 3.7 nats of the fit, so this is small.
+- **The weather is the recorded first-pitch weather, not a forecast.** Measured
+  and reported above; it moves the pooled number by 0.0004.
+- **Fills are idealised**: one contract, taker at the quoted top of book, no
+  depth, no queue, no latency. `docs/KALSHI-MAKER-STUDY.md` says resting orders
+  are worth 2.66c a contract and that you get filled when the market is moving
+  against you.
+- **The starter is the listed probable**, and `projIP` comes from his own
+  starts rather than from `projectPitcher`'s workload model — for both v1 and
+  v2, so the comparison between them is clean, but neither is exactly what the
+  live board computes.
+- **`EXPLAINED_TEAM_SD` is measured on FIT**, which includes 2025. If the
+  spread of projections drifts between seasons the sigma is slightly wrong.
+- **One configuration, one screen, one window.** The validation window liked
+  w 0.6 and the holdout liked w 0.8; both were noise. Reading anything into
+  which screen won either window would be the mistake this design exists to
+  prevent.
+
+## Reproduce
+
+```
+node tools/game-features.mjs --season 2025 --cache .backtest-cache \
+  --out .backtest-cache/features_2025.json
+node tools/game-features.mjs --season 2026 --to 2026-09-22 --cache .backtest-cache \
+  --out .backtest-cache/features_2026.json
+
+node tools/fit-game-v2.mjs --config core \
+  --features .backtest-cache/features_2025.json \
+  --features .backtest-cache/features_2026.json \
+  --out .backtest-cache/params-core.json
+
+node tools/backtest-kalshi-games.mjs --v2 --params .backtest-cache/params-core.json \
+  --features .backtest-cache/features_2026.json \
+  --features .backtest-cache/features_2025.json \
+  --from 2026-09-02 --to 2026-09-22 \
+  --cache .backtest-cache --kcache .kalshi-cache --json out.json
+```
+
+`--as-v1` prices the shipped model through the identical replay; `--config` takes
+`v1refit`, `core`, `coreNoWx`, `coreRest` or `all`.
