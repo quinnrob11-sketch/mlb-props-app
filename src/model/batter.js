@@ -1229,8 +1229,15 @@ export function projectBatter(input) {
     if (!T.jointScoring) return null;
     const bbPA = clamp(rates.bb, 0, 0.35);
     const W = T.rbiWeights;
-    const hitShare = T.rbiHitShares;
-    const hrShare = T.hrExtraShares;
+    // Normalised, because the pmf below must sum to exactly 1: `tailFromPmf`
+    // returns 1 - cumulative, so any missing mass becomes a floor under every
+    // tail and the distribution's mean stops equalling the projection.
+    const unit = (a) => {
+      const total = a.reduce((x, y) => x + y, 0);
+      return total > 0 ? a.map((x) => x / total) : a;
+    };
+    const hitShare = unit(T.rbiHitShares);
+    const hrShare = unit(T.hrExtraShares);
     const hitMeanPer = hitShare.reduce((s, w, i) => s + w * (i + 1), 0);
     const hrMeanPer = hrShare.reduce((s, w, i) => s + w * (i + 1), 0);
 
