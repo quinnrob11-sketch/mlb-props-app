@@ -88,11 +88,11 @@ doubleheader number) and then by normalised player name:
 | | markets |
 |---|---|
 | player props in the window | 272,914 |
-| joined to a game and a player | 262,012 |
-| no game matched (two dates whose lineups were not cached) | 8,794 |
-| name not found on either roster | 2,108 |
+| joined to a game and a player | 270,760 (99.2%) |
+| no game matched | 0 |
+| name not found on either roster | 2,154 |
 | ambiguous name within one game | 0 |
-| **player was in the announced lineup → not a candidate** | 257,958 |
+| **player was in the announced lineup → not a candidate** | 266,706 |
 | **player absent from the announced lineup → candidate** | **4,054** |
 
 And the fact that decides whether the look-ahead problem is real:
@@ -238,6 +238,9 @@ YES costs 0.44c a contract at the news, 1.8c an hour before first pitch, 4.0c at
 first pitch and 24c half an hour into the game. That is not an edge decaying; it
 is the book emptying out.
 
+(Quote availability is a property of the book rather than a return, so it is
+counted over all 68 dates.)
+
 | entry | markets still open | two-sided quote | median spread | p90 spread |
 |---|---|---|---|---|
 | `news` | 4,048 | 2,967 (**73.3%**) | **2c** | 13c |
@@ -276,8 +279,9 @@ archive — and with it the only lineup timestamp this study can prove — lands
 day after the scheduled first pitch, long past the last quote anyone made.
 Kalshi cancels the props either way, which is why they are in the population.
 
-**68 of the 2,967 quoted rows (2.3%) are postponed games, and they are the
-entire loss.** Removing them and nothing else turns `news / yes` from −1.33%
+**68 of the 1,391 quoted discovery rows (4.9%) are postponed games — and all 68
+of the window's postponed rows fall in discovery — and they are the entire
+loss.** Removing them and nothing else turns `news / yes` from −1.33%
 into **+2.65% [+1.77, +3.47]**.
 
 ## Three post-hoc arms, labelled as post-hoc
@@ -376,3 +380,214 @@ after the news**. If that price is derived from the book or from the last trade,
 a large taker order is not collecting a mispricing, it is moving the very
 quantity the payout is computed from. At one contract that is negligible. At
 twenty it is the whole thesis.
+
+---
+
+# Confirmation (2026-09-02 .. 2026-09-22, read once)
+
+No pre-registered rule reached condition 2 — none had a positive point estimate
+— so under the pass/fail rule none was eligible. The holdout is used for what it
+can still settle: whether the twelve stay negative, whether the settlement bias
+is really there, and whether the one post-hoc variant survives out of sample.
+
+## The twelve: still negative, every one
+
+| id | discovery ROI | **confirmation ROI** | confirmation c/contract |
+|---|---|---|---|
+| `news / yes` | −1.33% [−3.98, +0.98] | **−1.10% [−3.59, +0.95]** | −0.34c |
+| `news / no` | −11.12% | −9.82% [−10.59, −9.08] | −7.56c |
+| `fp-60 / yes` | −4.84% | −16.57% [−20.89, −12.08] | −6.60c |
+| `fp-60 / no` | −16.35% | −18.78% [−20.32, −17.35] | −15.44c |
+| `fp-30 / yes` | −5.06% | −17.27% [−21.59, −12.90] | −6.95c |
+| `fp-30 / no` | −16.79% | −19.04% [−20.62, −17.62] | −15.69c |
+| `fp+0 / yes` | −10.29% | −32.87% [−37.37, −28.10] | −16.29c |
+| `fp+0 / no` | −20.26% | −21.42% [−23.22, −19.76] | −18.19c |
+| `fp+30 / yes` | −38.95% | −48.54% [−51.55, −45.44] | −35.90c |
+| `fp+30 / no` | −29.07% | −31.12% [−33.67, −28.70] | −27.99c |
+| `fp+60 / yes` | −38.67% | −48.26% [−51.48, −44.95] | −35.52c |
+| `fp+60 / no` | −28.83% | −31.32% [−33.91, −28.68] | −28.24c |
+
+Twenty-four numbers, all negative, in two independent windows. The shape
+replicates too: `news` is much the least bad clock, `yes` beats `no` at all six
+clocks, and the damage grows monotonically the longer you wait.
+
+## The bias replicates; one of the three post-hoc arms does too
+
+| measured at the news, live quote only | discovery | **confirmation** |
+|---|---|---|
+| settlement − mid | +4.25c | **+3.78c** |
+| settlement − ask | +2.02c | **+1.09c** |
+| median spread at the news | 1c | 3c |
+| markets that never traded a contract in their life | 53.6% | 51.0% |
+
+**The four-cent settlement bias is real and it replicates.** What does not
+replicate is how much of it you get to keep, because the spread you have to
+cross was wider in September.
+
+| post-hoc arm | discovery | **confirmation** | verdict |
+|---|---|---|---|
+| `S0` excluding postponed games | +2.65% [+1.77, +3.47] | **−1.10% [−3.59, +0.95]** | fails — there were no postponed games in the holdout, so `S0` is just `news / yes` there |
+| `S1` live quote only | +2.83% [+2.06, +3.59] | **−0.24% [−1.96, +1.15]**, p = 0.82 | **fails** |
+| `S2` live quote and spread ≤ 2c | +3.95% [+3.19, +4.67] | **+2.42% [+1.64, +3.23]**, p = 0.0002 | **replicates** |
+
+`S1` fails for a reason worth stating, because it is the whole economics of this
+trade in one line. Split the same rows by spread:
+
+| | discovery | confirmation |
+|---|---|---|
+| spread ≤ 2c | +1.14c/contract | **+0.78c/contract** |
+| spread > 2c | +0.30c/contract | **−0.76c/contract** |
+
+The settlement lands about four cents above the mid. If the book is one or two
+cents wide you keep about a cent of that after the fee. If it is wider you pay
+the difference away on entry and there is nothing left. That is not a filter
+that was fitted to the data; it is arithmetic, and it is why the pre-registered
+rule — which had no spread condition — was always going to be a coin flip around
+zero.
+
+## What `S2` is actually worth
+
+| `S2` | discovery (44 dates) | confirmation (21 dates) |
+|---|---|---|
+| trades | 904 | 689 |
+| trades per day | 20.5 | **32.8** |
+| profit per contract after the 0.07 fee | +1.14c | **+0.78c** |
+| total at one contract | $10.34 | **$5.34** |
+| **dollars per day at one contract** | **$0.235** | **$0.254** |
+| of those markets, never traded a contract in their life | 49.3% | 38.2% |
+| of those markets, ever traded 20 contracts | 38.8% | 39.6% |
+
+The per-day figure replicates to within two cents. It is **twenty-five cents a
+day at one contract.** Reaching the $6-a-day bar the previous study set needs
+about twenty-four contracts on every one of thirty-three trades a day, and fewer
+than forty per cent of these markets have traded twenty contracts in their
+entire lifetime. At twenty contracts, assuming every single order fills, it is
+about **$5 a day** — and that assumption is the one the depth table says is
+false.
+
+# Verdict
+
+**There is an implementable rule. It is not a look-ahead. Its direction is
+right, its window is hours wide, it fires thirty times a day, and it is worth
+twenty-five cents a day. The blocker is not the latency and it is not the
+direction — it is that the edge per contract is one cent and the markets are too
+thin to buy more than a few.**
+
+## The rule, stated exactly
+
+> Poll the MLB StatsAPI game feed. The moment it serves a starting lineup for a
+> game, take every Kalshi player-prop market still open on a player who is not in
+> that lineup. If the market has a live two-sided quote no more than two cents
+> wide, buy YES at the ask. Hold to Kalshi's settlement.
+
+- **Is it implementable?** Yes. Every input is published before the trade: the
+  lineup is on a public endpoint, the quote is on the book. It never conditions
+  on the cancellation. In this window it did not have to — **all 4,054 markets
+  the trigger selects were cancelled, with no exceptions** — but that is a
+  measured property of Kalshi's listings, not an assumption the rule relies on.
+- **How often does it fire?** 20.5 times a day in discovery, **32.8 in
+  confirmation**, on about four scratched players a day.
+- **What does it pay?** **+0.78c a contract** after the 0.07 fee in the holdout
+  (+1.14c in discovery), on a contract costing about 28c — a return on capital
+  of **+2.42%**.
+- **What is the interval?** **[+1.64%, +3.23%]** on the holdout, a 5,000-resample
+  bootstrap clustered on the scratched player-game, p = 0.0002. In discovery it
+  was [+3.19%, +4.67%].
+- **What is the whole prize?** **$0.25 a day at one contract**, $5.34 across the
+  21 confirmation days. At twenty contracts, if every order filled, about $5 a
+  day — below the $6 a day the last study's strikeout rule was worth, on markets
+  where half have never traded a single contract.
+
+## What kills it, precisely
+
+Three candidate blockers were named at the start. Here is which one it was.
+
+**Not the latency.** This is the cleanest negative in the study. The lineup is
+provably public a median of **184 minutes before first pitch**; the market does
+not close until a median of **100 minutes after** it; and in between, the quoted
+mid **does not move** — median change 0.0c in the hour before the lineup and
+0.0c in the hour after. Nobody is racing you, because there is no information in
+the price to be first to. The window is four to five hours wide. Family B's
+strikeout trade lives for ninety seconds; this one lives for an afternoon, and
+that difference bought nothing.
+
+**Not the direction.** The 5.14c the previous study measured is real and it
+replicates from a different clock: **+4.25c above the mid in discovery, +3.78c
+in confirmation**, measured while the book is still two-sided and two cents
+wide, so it is not an artifact of where trading stopped. The side that pays is
+**buying**, exactly as the sign suggested, and the reference arm proves it —
+selling loses 8 to 16 cents a contract at every clock tested.
+
+**It is the population, in the specific sense of what you can get filled.** The
+count is fine: 4,054 markets, 68 a day, twenty times Family B. What is not fine
+is what sits inside one:
+
+- the four-cent bias is only **one cent** after you cross a two-cent spread and
+  pay a 1.4c fee, and it is **nothing at all** once the spread is wider than two
+  cents, which is already the median by September;
+- **51% to 54% of these markets never trade a single contract in their entire
+  life**, and the median one has zero volume in the minute you would be lifting
+  the offer;
+- **82% trade nothing at all after the lineup is out** (measured on discovery),
+  which means a large
+  taker order is not collecting Kalshi's fair-value convention so much as
+  becoming the quantity that convention is computed from.
+
+An edge of one cent needs size, and this is the one place in the whole Kalshi MLB
+book where size is least available.
+
+## Where this leaves the two studies
+
+| | Family B strikeout lag | this |
+|---|---|---|
+| opportunities a day | 3.5 | **20 to 33** |
+| window | **60 to 90 seconds** | 4 to 5 hours |
+| profit per contract | 7c to 18c | **0.8c to 1.1c** |
+| at one contract | $0.31/day | $0.25/day |
+| at twenty contracts | ~$6/day | ~$5/day |
+| what stops it | latency | depth |
+
+They are the same size and they fail for opposite reasons. The strikeout trade
+has a real edge per contract and sixty seconds to get it. This one has all
+afternoon and almost no edge to collect. Neither is a business at one lot, and
+neither has been shown to have the depth for twenty.
+
+## Caveats
+
+- **The one rule that replicated is post-hoc.** `S2` was written after the
+  discovery pass, its sibling `S1` failed the same holdout, and it does not
+  enter the multiplicity correction. It replicating out of sample is real
+  evidence and it is weaker evidence than a pre-registered result, and it is
+  reported as such.
+- **Eleven sensitivity variants were examined on discovery** before `S2` was
+  frozen. Every one returned between +0.89c and +1.21c a contract, which is why
+  the threshold is not believed to be fitted — but eleven looks are eleven looks.
+- **The news clock is a bound, not the moment.** The first archived StatsAPI
+  timecode proves the lineup was public by then; a beat writer may have had it
+  earlier. That makes the measured window a lower bound and cannot inflate the
+  P&L, because trading earlier than the timestamp is never simulated.
+- **Depth is inferred from traded volume, never observed.** Candles do not show
+  the size resting at the top of book. "Half these markets never traded a
+  contract" is evidence about liquidity, not a measurement of the offer.
+- **Late scratches are not tested.** 49 cancelled markets (1.1%) were on players
+  who *were* in the announced lineup and were pulled afterwards. Catching those
+  needs a timecode search per game and is the one part of this population the
+  trigger does not reach.
+- **2,154 markets (0.8%) failed the name join** and are absent from the
+  denominator. The join is by normalised name within one game; zero were
+  ambiguous.
+- **68 days, one season, 21 days of holdout.** The live tier serves nothing
+  before 2026-07-17.
+- **Taker prices throughout, one leg, no exit.** Everything is held to
+  settlement, so the fee is paid once. `docs/KALSHI-MAKER-STUDY.md` already
+  priced the resting-order alternative.
+
+## What this does not say
+
+- It does not say the settlement convention will stay where it is. The whole
+  trade is four cents of Kalshi's own arithmetic; a change to how they price a
+  cancellation ends it with no warning.
+- It does not say the offer is one lot. It says half of these markets have never
+  traded, which is the closest public data comes to an answer.
+- It does not reopen anything in `docs/AUDIT.md`. No model was used here, and
+  none of this bears on whether the model is right.
