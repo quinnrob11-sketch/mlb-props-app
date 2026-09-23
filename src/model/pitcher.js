@@ -96,9 +96,7 @@ export function parseInningsPitched(ip) {
  *     better on both fit windows and 2025, WORSE on Aug 16-31 (2.1130 ->
  *     2.1167). Worth re-testing with more data.
  *   - kLevel 0.96-0.97 after the reliever fix: better on fit and 2025, flat or
- *     worse on Aug 16-31. Left at 0.95, and that line used to end "strikeouts
- *     now run ~1.5% low" — see kLevel below, which measured it at 2.6 points
- *     and removed it.
+ *     worse on Aug 16-31. Left at 0.95; strikeouts now run ~1.5% low.
  *   - Workload: long rest (>=12/15/20 days) or <3 starts budget cuts, recency-
  *     weighted pitch counts, keeping short outings, opponent pitches per PA,
  *     bullpen outs over the last 1-3 days, a team starter-depth effect, and
@@ -110,23 +108,24 @@ export function parseInningsPitched(ip) {
  */
 export const PITCHER_TUNING = {
   /**
-   * v37: kLevel and hLevel were 0.95 and 0.97, and both are now 1.0.
+   * v37 retired the two market-fitted trims: `kLevel` 0.95 -> 1.0 and `hLevel`
+   * 0.97 -> 1.0, on `docs/ACCURACY.md`'s measurement that they cost 2.6 and
+   * 2.0 points of calibration against outcomes over two seasons. This branch
+   * keeps both at 1.0 and does not touch them again. They are the baseline
+   * every number in docs/PITCHER-PORT.md is measured against.
    *
-   * They were market-fitted trims — chosen to sit closer to a price — and the
-   * accuracy audit measured what they cost against OUTCOMES over 9,019 starts
-   * in two seasons: strikeout overs read 2.6 points low [-3.2, -2.1] and
-   * hits-allowed overs 2.0 low. Removing them takes those calibration errors
-   * to 0.81 and 0.34 points. See docs/ACCURACY.md.
+   * `kLevel` is now also INERT: `PITCHER_FIT.cal.k` carries its own level,
+   * fitted against outcomes, and supersedes it. The constant still matters on
+   * the fallback path a caller reaches with `fit: { cal: null }`, which is why
+   * it is 1.0 rather than deleted. `hLevel` is NOT inert — hits allowed keeps
+   * v36's anchor and slope deliberately (see `PITCHER_FIT.cal`), so its level
+   * is still this constant, and 1.0 is what the audit measured as right.
    *
-   * The trade was defensible while the goal was to track a market. It is not
-   * defensible now that the goal is a projection you can read on its own, and
-   * five studies have established the model cannot beat a price anyway — so
-   * paying accuracy for closeness to one buys nothing.
-   *
-   * outsLevel stays at 0.98 deliberately. The same audit found that removing
-   * it re-centres the level but leaves a genuine SHAPE error — the outs
-   * distribution is too wide at both ends — which needs a narrower budget
-   * distribution, not another constant set to 1.
+   * `outsLevel` stays at 0.98, as v37 left it, for the reason the audit gave:
+   * removing it re-centres the level and leaves a SHAPE error a level cannot
+   * reach. That error is fixed where it actually lives, in `budgetSpread`
+   * below — and with that fixed, `PITCHER_FIT.cal.outs` supersedes this
+   * constant too.
    */
   kLevel: 1.0,
   bbLevel: 1.0,
@@ -134,8 +133,30 @@ export const PITCHER_TUNING = {
   hLevel: 1.0,
   /** Batters-faced spread of the three-point strikeout mixture. */
   bfSpread: 5,
-  /** Pitch-budget spread of the three-point outs mixture. */
-  budgetSpread: 18,
+  /**
+   * Pitch-budget spread of the three-point outs mixture.
+   *
+   * REFIT(v36.2, 18 -> 12). `docs/ACCURACY.md` measured the outs distribution
+   * as too wide at BOTH ends over 9,019 starts — 11.5 outs quoted at 83.7%
+   * against 86.6% observed, 20.5 at 16.0% against 11.2% — and said in terms
+   * that this is a shape error a level factor cannot reach. It is this
+   * constant. Swept on the fit window by calibration error over the full outs
+   * ladder, with the rest of the port in place (990 fit-tail starts, and the
+   * 7,422 before them in brackets):
+   *
+   *     spread    10     12     14     16     18
+   *     ECE     1.06   0.76   0.78   1.08   1.51
+   *            (0.56) (0.73) (1.24) (1.85) (2.50)
+   *     log loss 0.4856 0.4844 0.4837 0.4835 0.4838
+   *
+   * 12 is the only value near the minimum on both windows. Log loss is flat
+   * across the whole range (0.002) and mildly prefers 16, which is what a
+   * proper score does when a distribution is a little wide in the tails and
+   * right in the middle; the calibration curve is the thing that was wrong and
+   * it is unambiguous. Measured the same way, the outs ladder's calibration
+   * error goes 3.49 -> 0.73 on the larger window.
+   */
+  budgetSpread: 12,
   hookBaseHazard: 0.005,
   hookBudgetScale: 10,
   /** Starts in the "recent" workload window. */
@@ -211,16 +232,259 @@ export const PITCHER_TUNING = {
    */
   homeK: 0.03,
   homeBudget: 1,
+  /**
+   * The three ported terms of v36.2, each switchable. Setting any of them to
+   * false restores the v36 behaviour of that term exactly, which is what
+   * `test/pitcher.test.js` pins and what `tools/pitcher-port.mjs` measures each
+   * one's contribution with. They are switches, not tuning: nothing here was
+   * chosen by trying both.
+   */
+  /**
+   * Decayed two-season rates from `input.rateLog` (needs that input).
+   *
+   * OFF, and measured. This is the study's headline rate change — two seasons
+   * under a fitted 400-day decay with a fitted offseason gap, pooled at 150 /
+   * 80 / 1,200 batters faced instead of a flat 70 — and ported into this
+   * pipeline it is worth **nothing**. On the 990 fit-tail starts the
+   * coefficients never saw, with it and without it:
+   *
+   *                    strikeouts  outs    hits    walks   ER     total ll
+   *     with decay       0.1548   0.1661  0.1848  0.1568  0.1820  0.50875
+   *     without          0.1549   0.1662  0.1845  0.1568  0.1821  0.50873
+   *
+   * The reason is visible in the sweep that chose the strengths: asked for the
+   * best pooling strength for strikeouts in THIS structure, the fit window
+   * answers 70 — `shrunkRate`'s own default. v36's two assumed constants, the
+   * 0.6 on last season and the 70 batters faced of prior, turn out to be about
+   * where the data wants them for a projection built this way. What made the
+   * study's version of this term pay was the rest of its rate model, not the
+   * decay.
+   *
+   * It is kept, fitted and tested rather than deleted, because it is the only
+   * term here that would cost `loadSlate` a new input (the pitcher's prior
+   * season game log), and the next person to propose that fetch should be able
+   * to read what it was worth. Turning it on needs `input.rateLog`; without
+   * that input it is inert whatever this says.
+   */
+  rateDecay: false,
+  /** Recency-weighted workload from the dated game log (needs those dates). */
+  workDecay: true,
+  /** Strikeouts binomial in the batters the outs PMF implies. */
+  depthK: true,
 };
+
+/**
+ * The terms ported from `docs/PITCHER-EDGE-SEARCH.md`, and the constants they
+ * were fitted with. Full reproduction, and what each one was worth on the
+ * holdout, in `docs/PITCHER-PORT.md`.
+ *
+ * Every value here was fitted on the study's FIT split — 2025 plus 2026 through
+ * **2026-08-09** — and nothing was chosen on the validation or holdout windows.
+ * The five hyperparameters at the top are the study's own, re-fitted from
+ * scratch here (`node tools/pitcher-edge.mjs --stage fit`) and reproduced to
+ * the value: 400-day decay on the rates, 20 on depth, a 60-day offseason, and
+ * pooling at 150 / 80 / 1,200 / 200 batters faced. The coefficients below them
+ * are fitted against THESE inputs rather than lifted from the study's own
+ * design matrix (`tools/pitcher-port-fit.mjs`), because the board's opponent
+ * numbers are not the study's: `avg` is per at-bat where the study's was per
+ * plate appearance, and a coefficient does not survive a change of denominator.
+ *
+ * Three things the study measured are deliberately NOT here:
+ *
+ *   - **The home-plate umpire.** 0.00001 of log loss in the ablation, with the
+ *     wrong sign on its coefficient. That is zero, and it would cost a fetch.
+ *   - **Temperature.** It measured WORSE than nothing for pitchers — removing
+ *     it improved the fit-tail score. `projectPitcher` never had a temperature
+ *     term, so there was nothing to delete; it does not gain one. (Temperature
+ *     earns its place in `projectBatter`'s `weatherHrFactor` and in the game
+ *     model, which is where it stays.)
+ *   - **Lineup handedness as a composition term.** Worth 0.0001, all of it in
+ *     walks, and `loadSlate` already applies a stronger per-pitcher platoon
+ *     adjustment from his own splits (`model/platoon.js`) against a posted
+ *     card. A blanket composition coefficient on top would count it twice.
+ */
+export const PITCHER_FIT = {
+  /** Decay constant in days for the per-BF rates (half-life 277 days). */
+  tauRate: 400,
+  /** Decay constant in days for workload depth (half-life 14 days). */
+  tauWork: 20,
+  /**
+   * Effective length of the offseason gap, in days. The real gap between the
+   * last 2025 start and the first 2026 one is 179; fitted, it is worth 60, so
+   * a September 2025 start is not treated as half a year stale.
+   */
+  offDays: 60,
+  /**
+   * Partial-pooling strength per rate, in batters faced. The ordering is the
+   * finding, not the numbers: a starter's strikeout rate is worth something
+   * after a couple of hundred batters and his HIT rate essentially never is,
+   * which is why hits allowed regresses almost the whole way to the starter
+   * league average. The shipped model pooled all four at 70 (HR at 120).
+   */
+  sK: 150,
+  sBB: 80,
+  sH: 1200,
+  sHR: 200,
+  /**
+   * Opponent exponents, fitted. Each adjusted rate is multiplied by
+   * `(oppK/lgK)^a * (oppBB/lgBB)^b * (oppAvg/lgAvg)^c`, which is the same shape
+   * as the shipped `1 + damping * (ratio - 1)` to first order — with the
+   * damping measured rather than assumed, and with the cross-terms the shipped
+   * model set to zero.
+   *
+   * The headline is `k.k`: the shipped model passed 40% of the opponent's
+   * deviation in strikeout rate through to the pitcher, and the fit says the
+   * pass-through is close to whole. Against a lineup striking out 10% more
+   * than league average that is the difference between +4% and +11% on his
+   * projected strikeout rate.
+   *
+   * ONLY strikeouts take a fitted exponent. The regression's exposure is the
+   * start's realised batters faced, and realised depth is a collider for the
+   * damage markets: among starts that lasted 24 batters, the pitcher facing
+   * the better lineup was having a good night, so his opponent's average
+   * predicts fewer hits than it should. Strikeouts are the market where depth
+   * and the rate are near-orthogonal (K/outs is flat at 0.31 across depths),
+   * which is why the exponent survives there and is not trusted elsewhere.
+   * Walks, hits and home runs keep v36's damping; measured on the fit tail,
+   * their fitted exponents are worth nothing either way.
+   *
+   * Fitted by tools/pitcher-port-fit.mjs on 8,352 FIT starts.
+   */
+  opp: {
+    k: { k: 0.5552, bb: 0.0124, h: 0.0165 },
+    bb: null,
+    h: null,
+    hr: null,
+  },
+  /**
+   * Per-market calibration `[anchor, slope, level]`, refitted against OUTCOMES
+   * on the FIT split with the rest of the port in place.
+   *
+   * These supersede `kLevel`, `bbLevel`, `hLevel` and `outsLevel` — the level
+   * factor is folded in, so those four constants are inert whenever this object
+   * is present. That is the point of them: `docs/ACCURACY.md` measured the v36
+   * trims against two seasons of box scores and found `kLevel` 0.95 and
+   * `hLevel` 0.97 to be the whole of the strikeout and hits-allowed
+   * miscalibration — every over reading 2.6 and 2.0 points low. They were
+   * fitted against PRICES. The levels here (1.0115 and 0.9879) are fitted
+   * against what happened.
+   */
+  cal: {
+    // OUTS ONLY, and the other four are deliberately absent.
+    //
+    // Once v37 set `kLevel` and `hLevel` to 1.0, v36's own anchors and slopes
+    // were already close to right everywhere except depth. Refitting them
+    // freely makes them worse, because the regression slope that minimises
+    // squared error is not the slope that calibrates a ladder: fitted freely,
+    // hits came back at 0.752 against v36's 0.89, which flattens the
+    // projection and leaves every rung reading low. v36's own comment says its
+    // 0.89 was chosen deliberately less aggressive than either season's fit,
+    // and it was right.
+    //
+    // Measured on the fit window, calibration error per market:
+    //
+    //                     v37    with this market refitted
+    //     strikeouts     0.90         0.90
+    //     outs           1.97         0.78
+    //     hits allowed   0.38         0.93
+    //     walks          0.94         1.29
+    //     earned runs    1.13         1.17
+    //
+    // Only depth wants a new curve, and it wants one badly — which is what the
+    // workload change below did to it. Refitting strikeouts on top of v37's
+    // level actually costs calibration (0.50 -> 0.90); the honest reading is
+    // that v37's two-constant change already collected what was there, and
+    // that the port's strikeout contribution is in the RANKING (correlation
+    // 0.442 -> 0.447), not in the level.
+    outs: [15.5074, 0.8756, 0.9952],
+  },
+  progress: {
+    ref: 0.8862,
+    outs: -0.0257,
+    // Strikeouts, hits, walks and earned runs have no drift shipped. The hits
+    // and walks ones are real and fitted (-0.0282 and -0.0545 per 100 days,
+    // replicated in both seasons), but those markets keep v36's curve and half
+    // a correction is worse than none — walks got measurably worse with it,
+    // 0.94 -> 1.29, because 2026's walk rate jumped in August against the
+    // trend. Strikeouts have no season trend at all: 2025 ran 4.81 in April
+    // and 4.88 in September, 2026 ran 4.69 and 4.60.
+  },
+};
+
+const REAL_OFFSEASON_DAYS = 179;
+
+/**
+ * Recency-weighted, partially pooled per-batter-faced rates over BOTH seasons.
+ *
+ * Replaces `shrunkRate`'s flat "this season plus 0.6 of last season". One
+ * exponential decay over a compressed calendar does the same job continuously:
+ * within a season it is real days, and the offseason counts for `offDays`
+ * instead of its real 179. The implied weight on a 2025-07-01 start seen from
+ * 2026-08-01 comes out at 0.50 — close to the 0.6 the flat blend uses — while
+ * a 2026-06-01 start gets 0.86 and an April 2026 start much less. A flat blend
+ * cannot express that; it gives every 2025 appearance the same 0.6 whether it
+ * was thrown in April or September, and every 2026 appearance a 1.
+ *
+ * Returns null when there is nothing usable to decay, so the caller falls
+ * straight back to `shrunkRate`.
+ *
+ * @param {Array}  rateLog  `{date, season, bf, k, bb, h, hr, hbp}` per appearance
+ * @param {string} asOf     the start's own date; nothing on or after it counts
+ * @param {number} season   the start's season
+ * @param {number} tau      decay constant in days
+ * @param {number} offDays  effective offseason length in days
+ */
+export function decayedRateTotals(rateLog, asOf, season, tau, offDays) {
+  if (!Array.isArray(rateLog) || !rateLog.length || !asOf || !(tau > 0)) return null;
+  const now = Date.parse(`${asOf}T00:00:00Z`);
+  if (!Number.isFinite(now)) return null;
+  const totals = { bf: 0, k: 0, bb: 0, h: 0, hr: 0, hbp: 0 };
+  let seen = 0;
+  for (const g of rateLog) {
+    const at = Date.parse(`${g.date}T00:00:00Z`);
+    if (!Number.isFinite(at) || at >= now) continue;
+    const gapSeasons = (season || 0) - (g.season || 0);
+    // Compressed calendar: real days within a season, `offDays` across each
+    // offseason. Floored at zero so a mis-stamped season cannot invent weight.
+    const age = Math.max(0, (now - at) / 864e5 - gapSeasons * (REAL_OFFSEASON_DAYS - offDays));
+    const w = Math.exp(-age / tau);
+    const bf = g.bf || 0;
+    if (bf <= 0) continue;
+    totals.bf += w * bf;
+    totals.k += w * (g.k || 0);
+    totals.bb += w * (g.bb || 0);
+    totals.h += w * (g.h || 0);
+    totals.hr += w * (g.hr || 0);
+    totals.hbp += w * (g.hbp || 0);
+    seen++;
+  }
+  return seen && totals.bf > 0 ? totals : null;
+}
+
+/** Partial pooling: a weighted rate pulled toward `prior` by `strength` trials. */
+const pooledRate = (num, den, prior, strength) =>
+  (num + strength * prior) / (den + strength);
 
 export function projectPitcher(input) {
   const T = { ...PITCHER_TUNING, ...(input.tuning || {}) };
+  const F = { ...PITCHER_FIT, ...(input.fit || {}) };
   const {
     season26,
     season25,
     gameLog = [],
     opp,
     park,
+    /**
+     * Every appearance of BOTH seasons, relief included, with the counting
+     * stats a per-BF rate needs: `{date, season, bf, k, bb, h, hr, hbp}`.
+     * Optional — without it the two rate terms below fall back to exactly the
+     * v36 `shrunkRate` blend.
+     */
+    rateLog,
+    /** The slate date, 'YYYY-MM-DD'. Required for `rateLog` to be read. */
+    date,
+    /** The slate season. Defaults to the year in `date`. */
+    season,
     // Per-matchup platoon multipliers from model/platoon.js. Default neutral:
     // a pitcher with no usable splits, or a lineup whose handedness matches his
     // season mix, changes nothing.
@@ -251,10 +515,30 @@ export function projectPitcher(input) {
   //    and walks, fewer hits and homers), so a league-wide prior drags every
   //    starter's projection toward a rate no starter actually posts. See the
   //    measured split in model/league.js.
-  const kRate  = shrunkRate(s26.strikeOuts,  bf26, s25.strikeOuts,  bf25, lg.spKRate);
-  const bbRate = shrunkRate(s26.baseOnBalls, bf26, s25.baseOnBalls, bf25, lg.spBbRate);
-  const hRate  = shrunkRate(s26.hits,        bf26, s25.hits,        bf25, lg.spHRate);
-  const hrRate = shrunkRate(s26.homeRuns,    bf26, s25.homeRuns,    bf25, lg.spHrRate, 120);
+  //    PORTED(v36.2) — `shrunkRate`'s two constants, the 0.6 on last season and
+  //    the 70 batters faced of prior, were both assumed. Fitted (see
+  //    `PITCHER_FIT`) they are a 400-day exponential decay over a compressed
+  //    calendar and a pooling strength that differs by an order of magnitude
+  //    between rates: 150 BF for strikeouts, 80 for walks, 1,200 for hits.
+  //
+  //    This needs `rateLog`, which is the pitcher's own per-appearance log for
+  //    both seasons. Without it — or without a slate date to measure ages from
+  //    — every one of the four rates is the v36 `shrunkRate` value, unchanged.
+  const decayed = T.rateDecay
+    ? decayedRateTotals(rateLog, date, season ?? Number(String(date || '').slice(0, 4)), F.tauRate, F.offDays)
+    : null;
+  const kRate  = decayed
+    ? pooledRate(decayed.k,  decayed.bf, lg.spKRate,  F.sK)
+    : shrunkRate(s26.strikeOuts,  bf26, s25.strikeOuts,  bf25, lg.spKRate);
+  const bbRate = decayed
+    ? pooledRate(decayed.bb, decayed.bf, lg.spBbRate, F.sBB)
+    : shrunkRate(s26.baseOnBalls, bf26, s25.baseOnBalls, bf25, lg.spBbRate);
+  const hRate  = decayed
+    ? pooledRate(decayed.h,  decayed.bf, lg.spHRate,  F.sH)
+    : shrunkRate(s26.hits,        bf26, s25.hits,        bf25, lg.spHRate);
+  const hrRate = decayed
+    ? pooledRate(decayed.hr, decayed.bf, lg.spHrRate, F.sHR)
+    : shrunkRate(s26.homeRuns,    bf26, s25.homeRuns,    bf25, lg.spHrRate, 120);
 
   // Opponent lineup quality. Falls back to league average when the opponent
   // aggregate is missing, which makes the adjustment a no-op (ratio = 1).
@@ -308,42 +592,101 @@ export function projectPitcher(input) {
   // home. Neutral when the caller does not say which side he is on.
   const homeKFactor = input.isHome == null ? 1 : input.isHome ? 1 + T.homeK : 1 - T.homeK;
 
+  // PORTED(v36.2) — the opponent factor, fitted.
+  //
+  // The three damping coefficients above (0.40 / 0.30 / 0.35) were the model's
+  // only statement about how much of a lineup's deviation reaches the arm, and
+  // none of them was measured. `F.opp` replaces them with exponents fitted on
+  // the study's FIT split against these exact board quantities, and adds the
+  // cross-terms the shipped model set to zero — a lineup that strikes out a lot
+  // also gets fewer hits, and that is one fact about the lineup, not two.
+  //
+  // `ratio ** a` and `1 + a * (ratio - 1)` agree to first order, so with the
+  // shipped coefficients this is the shipped adjustment; what changes is the
+  // coefficients. Without `F.opp` — or with a missing `opp`, where every ratio
+  // is 1 and the whole factor collapses to 1 — the v36 damping is used as-is.
+  const oppFactor = (legacy, coef) => {
+    if (!coef) return legacy;
+    return (
+      (oppK / lg.kRate) ** coef.k *
+      (oppBB / lg.bbRate) ** coef.bb *
+      (oppAvg / lg.avg) ** coef.h
+    );
+  };
+
   const adjK = clamp(
-    kRate * (1 + 0.4 * (oppK / lg.kRate - 1)) * parkFactor(park, 'so', 0.5) * K_CONTACT_SPLIT * plK * homeKFactor,
+    kRate * oppFactor(1 + 0.4 * (oppK / lg.kRate - 1), F.opp?.k) *
+      parkFactor(park, 'so', 0.5) * K_CONTACT_SPLIT * plK * homeKFactor,
     0.05, 0.45,
   );
   const adjBB = clamp(
-    bbRate * (1 + 0.3 * (oppBB / lg.bbRate - 1)) * plBB,
+    bbRate * oppFactor(1 + 0.3 * (oppBB / lg.bbRate - 1), F.opp?.bb) * plBB,
     0.02, 0.18,
   );
   const adjH = clamp(
-    hRate * (1 + 0.35 * (oppAvg / lg.avg - 1)) * parkFactor(park, 'hits', 0.7) *
-      (2 - K_CONTACT_SPLIT) * plH,
+    hRate * oppFactor(1 + 0.35 * (oppAvg / lg.avg - 1), F.opp?.h) *
+      parkFactor(park, 'hits', 0.7) * (2 - K_CONTACT_SPLIT) * plH,
     0.12, 0.34,
   );
   const adjHR = clamp(
-    hrRate * parkFactor(park, 'hr', 0.7) * plHR,
+    hrRate * oppFactor(1, F.opp?.hr) * parkFactor(park, 'hr', 0.7) * plHR,
     0.005, 0.07,
   );
 
   // ---------------------------------------------------------------------
   // 3. Pitch-count budget — how deep the manager will let him go.
   // ---------------------------------------------------------------------
-  const recent = gameLog.slice(-T.recentStarts);
+  // PORTED(v36.2) — "the last three starts", weighted by when they happened.
+  //
+  // `recentStarts: 3` was a window with a hard edge: the third-last start
+  // counted fully and the fourth-last not at all, whether they were four days
+  // apart or four weeks. Depth is the fastest-moving thing this model tracks —
+  // the fitted decay constant is **20 days** against 400 for the rates — so the
+  // edge was in the wrong place twice over. A starter three weeks back from the
+  // IL was being read off outings from before it; a starter who threw 105, 102
+  // and 98 pitches in the last fortnight was given the same evidence as one who
+  // threw them across two months.
+  //
+  // Every logged start now counts, at `exp(-age / tauWork)`, over the same
+  // compressed calendar the rates use. The effective sample is about 4.5 starts
+  // for a healthy rotation arm, so this is not a wider window — it is the same
+  // amount of evidence, ordered.
+  //
+  // Needs a date on the log entries and a slate date. Without either, the v36
+  // flat mean of the last `recentStarts` is used, unchanged.
+  const workPairs = (() => {
+    if (!T.workDecay || !(F.tauWork > 0) || !date || !gameLog.length) return null;
+    const now = Date.parse(`${date}T00:00:00Z`);
+    if (!Number.isFinite(now)) return null;
+    const asOfSeason = season ?? Number(String(date).slice(0, 4));
+    const out = [];
+    for (const g of gameLog) {
+      const at = Date.parse(`${g.date}T00:00:00Z`);
+      if (!Number.isFinite(at) || at >= now) continue;
+      const gapSeasons = asOfSeason - Number(String(g.date).slice(0, 4));
+      const age = Math.max(0, (now - at) / 864e5 - gapSeasons * (REAL_OFFSEASON_DAYS - F.offDays));
+      out.push({ g, w: Math.exp(-age / F.tauWork) });
+    }
+    return out.length ? out : null;
+  })();
 
-  // Median pitch count over the recent starts, used only as a yardstick.
+  const recent = workPairs || gameLog.slice(-T.recentStarts).map((g) => ({ g, w: 1 }));
+
+  // Median pitch count over those starts, used only as a yardstick.
   const medianPitches = (() => {
-    const sorted = recent.map((g) => g.pitches || 0).sort((a, b) => a - b);
+    const sorted = recent.map(({ g }) => g.pitches || 0).sort((a, b) => a - b);
     return sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
   })();
 
   // Keep only "real" starts: >= 60% of the median pitch count. This drops
   // rain-shortened / ejected / opener outings so they don't drag the budget
   // DOWN artificially.
-  const fullOutings = recent.filter((g) => (g.pitches || 0) >= 0.6 * medianPitches);
+  const fullPairs = recent.filter(({ g }) => (g.pitches || 0) >= 0.6 * medianPitches);
+  const fullOutings = fullPairs.map(({ g }) => g);
+  const fullWeight = fullPairs.reduce((sum, { w }) => sum + w, 0);
 
-  const recentPitchAvg = fullOutings.length
-    ? fullOutings.reduce((sum, g) => sum + (g.pitches || 0), 0) / fullOutings.length
+  const recentPitchAvg = fullWeight > 0
+    ? fullPairs.reduce((sum, { g, w }) => sum + w * (g.pitches || 0), 0) / fullWeight
     : null;
 
   // A season only counts as "starter usage" if he started at all and his
@@ -610,11 +953,40 @@ export function projectPitcher(input) {
   const K_LEVEL = T.kLevel;
   const BB_LEVEL = T.bbLevel;
 
-  const projOutsAdj = Math.max(3, shrinkToMean(projOuts, 15.5, 0.89) * T.outsLevel);
-  const projHAdj = Math.max(0.2, shrinkToMean(projH, 4.88, 0.89) * T.hLevel);
-  const projKAdj = Math.max(0.2, shrinkToMean(projK, 4.78, 0.96) * K_LEVEL);
-  const projERAdj = Math.max(0.2, shrinkToMean(projER, 2.44, 0.78));
-  const projBBAdj = Math.max(0.1, shrinkToMean(projBB, 1.72, 0.75) * BB_LEVEL);
+  // PORTED(v36.2) — the anchor/slope pairs above were fitted against the v36
+  // rates. The ported rates are pooled and decayed differently, so they spread
+  // differently, and a slope fitted for the old spread would put back the wrong
+  // amount. `F.cal` carries `[anchor, slope, level]` per market, refitted on
+  // the study's FIT split with the whole ported pipeline in place — the level
+  // factors are folded in, which is why passing `F.cal` also supersedes
+  // `kLevel` / `bbLevel` / `hLevel` / `outsLevel`. Without `F.cal` every market
+  // uses the v36 constants above, unchanged.
+  const calOf = (market, anchor, slope, level) => {
+    const c = F.cal?.[market];
+    return c ? [c[0], c[1], c.length > 2 ? c[2] : 1] : [anchor, slope, level];
+  };
+  // Days into the season, in hundreds — the same clock the study's `progress`
+  // term uses. Null whenever the caller did not say what day it is, which
+  // switches the drift term off rather than guessing a date.
+  const progress = (() => {
+    if (!F.progress || !date) return null;
+    const yr = season ?? Number(String(date).slice(0, 4));
+    const days = (Date.parse(`${date}T00:00:00Z`) - Date.parse(`${yr}-03-20T00:00:00Z`)) / 864e5;
+    return Number.isFinite(days) ? days / 100 : null;
+  })();
+  const calibrated = (value, floor, market, anchor, slope, level) => {
+    const [a, s, l] = calOf(market, anchor, slope, level);
+    const drift = progress != null && F.progress?.[market] != null
+      ? Math.exp(F.progress[market] * (progress - (F.progress.ref ?? 0)))
+      : 1;
+    return Math.max(floor, shrinkToMean(value, a, s) * l * drift);
+  };
+
+  const projOutsAdj = calibrated(projOuts, 3, 'outs', 15.5, 0.89, T.outsLevel);
+  const projHAdj = calibrated(projH, 0.2, 'hits', 4.88, 0.89, T.hLevel);
+  const projKAdj = calibrated(projK, 0.2, 'k', 4.78, 0.96, K_LEVEL);
+  const projERAdj = calibrated(projER, 0.2, 'er', 2.44, 0.78, 1);
+  const projBBAdj = calibrated(projBB, 0.1, 'bb', 1.72, 0.75, BB_LEVEL);
 
   // Integer BF used as the binomial trial count for strikeouts.
   const bfTrials = Math.max(1, Math.round(projBF));
@@ -812,6 +1184,41 @@ export function projectPitcher(input) {
   const outsPmf = mixedPmfFor(pitchBudget + solveHookOffset());
 
   // ---------------------------------------------------------------------
+  // 5c. PORTED(v36.2) — strikeouts are drawn from the same night the outs are.
+  //
+  // `dist.k` has always been a binomial in batters faced with the trial count
+  // smeared +-`bfSpread` to admit that batters faced is uncertain. That
+  // three-point mixture was an invented spread bolted onto a quantity the model
+  // already knows the distribution of: how deep he goes. Step 5b builds a full
+  // PMF over outs, fitted and calibrated against 2,624 real starts, and batters
+  // faced is just outs divided by the out rate. Smearing +-5 batters on top
+  // both duplicated that uncertainty and got its SHAPE wrong — the outs
+  // distribution is sharply left-skewed and clustered on inning boundaries,
+  // and a symmetric three-point mixture is neither.
+  //
+  // So depth is drawn once and strikeouts are binomial in the batters that
+  // depth implies, which is the study's "one realisation of depth drives every
+  // market" for the one market it measured a gain in. The trial count is now
+  // whatever the hook model says, and P(K) is re-derived against the mixture's
+  // own mean so the printed projection is still exactly the mean of the tail.
+  //
+  // `tuning: { depthK: false }` restores the v36 three-point mixture exactly.
+  const kByDepth = (() => {
+    if (!T.depthK) return null;
+    const outRate = clamp(outRatePerBF, 0.55, 0.85);
+    const trials = [];
+    let meanBf = 0;
+    for (let o = 0; o < outsPmf.length; o++) {
+      const w = outsPmf[o];
+      if (w < 1e-9) continue;
+      const n = Math.max(1, Math.round(o / outRate));
+      trials.push([n, w]);
+      meanBf += w * n;
+    }
+    return meanBf > 0 ? { trials, meanBf } : null;
+  })();
+
+  // ---------------------------------------------------------------------
   // 6. Market tail distributions: each returns P(stat > line).
   // ---------------------------------------------------------------------
   const dist = {
@@ -820,6 +1227,12 @@ export function projectPitcher(input) {
     // tails relative to a single binomial. The per-BF K probability is
     // re-derived from projK/bfTrials and re-clamped 0.02-0.60.
     k: (line) => {
+      if (kByDepth) {
+        const p = clamp(projKAdj / kByDepth.meanBf, 0.02, 0.6);
+        let sum = 0;
+        for (const [n, w] of kByDepth.trials) sum += w * binomTailOver(line, n, p);
+        return clamp(sum, 0, 1);
+      }
       const p = clamp(projKAdj / bfTrials, 0.02, 0.6);
       const s = Math.round(T.bfSpread);
       return (

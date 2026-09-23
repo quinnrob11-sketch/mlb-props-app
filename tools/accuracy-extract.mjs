@@ -36,6 +36,21 @@ if (!OUT) throw new Error('--out is required');
  */
 const TUNING = arg('tuning', null) ? JSON.parse(arg('tuning')) : null;
 if (TUNING) process.stderr.write(`tuning override: ${JSON.stringify(TUNING)}\n`);
+/**
+ * `--fit '{"cal":null}'` overrides `PITCHER_FIT` the same way, for the terms
+ * v36.2 ported in (see docs/PITCHER-PORT.md). A null member switches that term
+ * off, so `--fit '{"cal":null,"opp":null,"progress":null}'` is the v36 rate
+ * model wearing v36.2's workload weighting. It changes nothing that ships.
+ */
+const FIT = arg('fit', null) ? JSON.parse(arg('fit')) : null;
+if (FIT) process.stderr.write(`fit override: ${JSON.stringify(FIT)}\n`);
+/**
+ * `--v1` replays `tools/pitcher-model-v1.mjs`, the frozen v36.1 model, instead
+ * of the shipped one — the control every number in docs/PITCHER-PORT.md is
+ * paired against.
+ */
+const V1 = process.argv.includes('--v1');
+if (V1) process.stderr.write('replaying the FROZEN v36.1 model (tools/pitcher-model-v1.mjs)\n');
 
 /** P(X > line) at every line in the ladder, rounded to five places. */
 const ladder = (dist, lines) => lines.map((l) => Math.round(1e5 * dist(l)) / 1e5);
@@ -56,11 +71,17 @@ const PITCHER_PROJ = { k: 'projK', outs: 'projOuts', hits: 'projH', bb: 'projBB'
 
 async function extractPitchers() {
   const { buildStarts } = await import('./backtest-pitchers.mjs');
-  const { projectPitcher } = await import('../src/model/pitcher.js');
+  const { PITCHER_FIT } = await import('../src/model/pitcher.js');
+  const projectPitcher = V1
+    ? (await import('./pitcher-model-v1.mjs')).projectPitcherV1
+    : (await import('../src/model/pitcher.js')).projectPitcher;
   const starts = buildStarts();
   process.stderr.write(`${starts.length} starts\n`);
   for (const s of starts) {
-    const proj = projectPitcher(TUNING ? { ...s.input, tuning: TUNING } : s.input);
+    let input = s.input;
+    if (TUNING) input = { ...input, tuning: TUNING };
+    if (FIT) input = { ...input, fit: { ...PITCHER_FIT, ...FIT } };
+    const proj = projectPitcher(input);
     const log = s.input.gameLog || [];
     // Days of rest: the gap to his previous start. Visible on the board.
     let rest = null;

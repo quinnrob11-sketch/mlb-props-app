@@ -202,6 +202,11 @@ export function buildStarts() {
         // Context the model does not read; for research scripts only.
         meta: { team: g.team?.id, opp: g.opponent?.id, isHome: g.isHome, gamePk: g.game?.gamePk },
         input: {
+          // The slate date. `loadSlate` has always known it; it reached
+          // `projectPitcher` only in v36.2, when the workload term started
+          // weighting a start by how long ago it was. Passing it here is not
+          // new information — every game log entry is already filtered by it.
+          date: g.date,
           season26: s26,
           season25: prior.get(id) || null,
           gameLog,
