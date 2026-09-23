@@ -293,12 +293,15 @@ test("every unmatchable input is a documented refusal, never a guess", () => {
   assert.match(match({ player: "Pedro Ramirez", line: 9.5 }).reason, /9\+|10\+/);
   // a whole-number line is not a Kalshi bet
   assert.match(match({ player: "Pedro Ramirez", line: 2 }).reason, /whole number/);
-  // a market we have no verified series for
-  assert.equal(seriesForMarket("batter_stolen_bases"), null);
+  // A market we have no verified series for. Runs scored and singles were
+  // probed against the live exchange and 404 — unlike stolen bases, which is
+  // listed as KXMLBSB and was missing from the map until v36.4.
+  assert.equal(seriesForMarket("batter_runs_scored"), null);
   assert.match(
-    match({ player: "Pedro Ramirez", market: "batter_stolen_bases" }).reason,
+    match({ player: "Pedro Ramirez", market: "batter_runs_scored" }).reason,
     /no verified Kalshi series/,
   );
+  assert.equal(seriesForMarket("batter_stolen_bases"), "KXMLBSB");
   // an empty pool
   assert.match(match({ player: "Pedro Ramirez", markets: [] }).reason, /no open Kalshi markets/);
   // and a market from a different series never leaks in

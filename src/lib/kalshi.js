@@ -80,6 +80,12 @@ export const SERIES_BY_MARKET = {
   batter_hits: "KXMLBHIT",
   batter_home_runs: "KXMLBHR",
   batter_rbis: "KXMLBRBI",
+  // FIX(v36.4): the exchange lists stolen bases and this map did not, so
+  // planOrders could never see the series at all. Listed for completeness, not
+  // as a recommendation: the batter edge search measured SB as the worst of the
+  // six series, model Brier +0.0016 [0.0005, 0.0028] behind the price and -64%
+  // ROI on 15 trades. At the shipped market weight nothing trades it.
+  batter_stolen_bases: "KXMLBSB",
   pitcher_strikeouts: "KXMLBKS",
   pitcher_outs: "KXMLBOUTS",
 };
@@ -96,6 +102,8 @@ export const KNOWN_SERIES = {
   KXMLBHR: "batter_home_runs",
   /** RBIs. */
   KXMLBRBI: "batter_rbis",
+  /** "Name: 1+", floor_strike 0.5 — same shape as the other batter series. */
+  KXMLBSB: "batter_stolen_bases",
   /** Strikeouts — verified PITCHER-side, despite the bare series title. */
   KXMLBKS: "pitcher_strikeouts",
   /** Outs recorded, i.e. innings pitched x 3. */
