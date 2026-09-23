@@ -16,8 +16,10 @@ import { seriesForMarket } from '../lib/kalshi.js';
 import { applyCriteria, loadCriteria, saveCriteria } from './filters.js';
 import { loadPriceMode, savePriceMode } from './makerMode.js';
 import { buildDfsBoard } from './dfsRows.js';
+import { priceGaps } from '../analysis/shop.js';
 import FilterBar from './FilterBar.jsx';
 import BestBets from './BestBets.jsx';
+import ShopBoard from './ShopBoard.jsx';
 import DfsBoard from './DfsBoard.jsx';
 import KalshiBoard from './KalshiBoard.jsx';
 // TODO(recon): the shared pitcher/batter table (minified `Wa`, app.js:2158) is
@@ -187,6 +189,11 @@ export default function App() {
   // Every active criterion applied (including the alt rule). Boards render this.
   const filtered = useMemo(() => applyCriteria(allRows, criteria), [allRows, criteria]);
 
+  // Price gaps come from EVERY priced row, not from the filtered play board.
+  // A book out of line with its peers is worth taking whatever the model said
+  // about it, so the criteria that govern model plays must not touch this.
+  const shopGaps = useMemo(() => priceGaps(allRows), [allRows]);
+
   // Count of callable alt-line rungs, shown on the ALT chip even while alts are
   // hidden (computed from `allRows`, not the filtered list).
   const altEdges = allRows.filter(
@@ -341,6 +348,7 @@ export default function App() {
         {[
           ['games', 'Games', slate ? slate.games.length : null, 'Every game: model vs. market on moneyline, run line, total and first inning'],
           ['best', 'Best Bets', bestRows.length, 'Every play the engine would take, most confident first'],
+          ['shop', 'Shop', shopGaps.length, 'Where one book disagrees with the others — the model is not consulted'],
           ['pitchers', 'Pitcher Props', players(pitcherRows), 'Starting pitcher props'],
           ['batters', 'Batter Props', players(batterRows), 'Batter props'],
           ['results', 'Results', null, 'Grade past slates and see what has actually made money'],
@@ -455,6 +463,8 @@ export default function App() {
           </ol>
         </div>
       )}
+
+      {slate && tab === 'shop' && <ShopBoard gaps={shopGaps} rows={allRows.length} />}
 
       {slate && tab === 'best' && (
         <BestBets

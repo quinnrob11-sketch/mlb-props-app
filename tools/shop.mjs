@@ -19,7 +19,6 @@
 // rule forward. tools/track.mjs is recording it from today so that question
 // gets an answer. Until then treat the list as where to look, not what to bet.
 import { installFetch } from './local-api.mjs';
-import { toDecimal } from '../src/analysis/profitability.js';
 
 const date =
   process.argv.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a)) ||
@@ -38,44 +37,16 @@ const { flattenRows, pickText } = await import('../src/ui/rows.js');
 const slate = await loadSlate({ date, onStatus: () => {}, projectLineups: true });
 const rows = flattenRows(slate);
 
-const shop = [];
-for (const row of rows) {
-  const fairOver = row.edge?.fairOver;
-  // Three books minimum: with two, "the consensus" is one book's opinion of the
-  // other, and a single stale quote moves it as much as a real disagreement.
-  // Count books with a TWO-SIDED price: a de-vigged consensus rests on those
-  // and nothing else. row.nBooks counts every book at the line, which on
-  // today's board is a different number on 495 rows.
-  const twoSided = row.nBooksTwoSided ?? row.edge?.nBooks ?? 0;
-  if (fairOver == null || twoSided < MIN_BOOKS) continue;
+const { priceGaps } = await import('../src/analysis/shop.js');
+// One implementation, shared with the SHOP tab on the site, so the terminal and
+// the board can never disagree about what a gap is.
+const shop = priceGaps(rows, { minBooks: MIN_BOOKS, minEvPct: MIN_EV }).map((g) => ({
+  ...g,
+  name: g.row.name,
+  pick: pickText({ ...g.row, edge: { ...g.row.edge, side: g.side } }),
+  matchup: g.row.matchup,
+}));
 
-  for (const [side, odds, book, fair] of [
-    ['over', row.over, row.overBook, fairOver],
-    ['under', row.under, row.underBook, 1 - fairOver],
-  ]) {
-    const dec = toDecimal(odds);
-    if (dec == null || !book) continue;
-    // What the consensus says this side is worth, against what this book pays.
-    const ev = 100 * (fair * dec - 1);
-    if (ev < MIN_EV) continue;
-    shop.push({
-      ev,
-      side,
-      odds,
-      book,
-      fair,
-      implied: 1 / dec,
-      name: row.name,
-      pick: pickText({ ...row, edge: { ...row.edge, side } }),
-      market: row.market,
-      matchup: row.matchup,
-      books: twoSided,
-      kind: row.kind,
-    });
-  }
-}
-
-shop.sort((a, b) => b.ev - a.ev);
 const pct = (v) => `${(100 * v).toFixed(1)}%`;
 console.log(
   `${date}: ${slate.games.length} games, ${rows.length} rows priced | ` +
