@@ -61,6 +61,24 @@ needs 50 before any category is named a leader. The same rules drive the
 RESULTS tab on the site, from the same module (`src/analysis/profitability.js`),
 so the two cannot disagree.
 
+## Replaying a rule that did not exist yet
+
+    node tools/track.mjs replay [--books=3] [--min=1]
+
+The archive stores the INPUTS — both sides' best prices, the de-vigged
+consensus, the book counts — not only what the board decided. So a rule
+invented next month can be scored on history recorded before it existed, with
+no further API calls. Any row with a graded `actual` can be scored on either
+side, because over wins exactly when the actual clears the line.
+
+Today this replays the price-shopping rule, which is the one idea five studies
+did not kill and the one with no measured track record at all. It shares
+`src/analysis/shop.js` with the SHOP tab, so the replay and the live board run
+the same code rather than two versions of it.
+
+Verified against a synthetic day with known outcomes: three qualifying bets,
+one excluded for having only two books, 2-1, +0.82 units.
+
 ## Seeing it in the app
 
     node tools/track.mjs export
