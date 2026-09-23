@@ -301,6 +301,10 @@ const bucketOf = (mid) => BUCKETS.find((b) => mid >= b[1] && mid <= b[2]);
 function pricePass() {
   const out = {
     C: Object.fromEntries(BUCKETS.map((b) => [b[0], { discovery: [], confirm: [] }])),
+    // The opposite side of the same bucket. NOT the mirror image of the test:
+    // both sides pay the spread and both fees, so the two ROIs do not sum to
+    // zero and both can lose. Reported as a reference arm.
+    Cm: Object.fromEntries(BUCKETS.map((b) => [b[0], { discovery: [], confirm: [] }])),
     D1: { discovery: [], confirm: [] },
     D2: { discovery: [], confirm: [] },
     D3early: { discovery: [], confirm: [] },
@@ -334,6 +338,11 @@ function pricePass() {
           out.coverage.quoted++;
           const b = bucketOf(q1.mid);
           if (b) {
+            const other = b[3] === 'yes' ? 'no' : 'yes';
+            const otherPrice = other === 'yes' ? q1.ask : 100 - q1.bid;
+            if (otherPrice >= 1 && otherPrice <= 99) {
+              out.Cm[b[0]][w].push(trade(m, other, otherPrice, { series, date }));
+            }
             const side = b[3];
             const price = side === 'yes' ? q1.ask : 100 - q1.bid;
             if (price >= 1 && price <= 99) {
@@ -436,6 +445,7 @@ process.stderr.write('Families C, D, E\n');
 const pp = pricePass();
 results.coverage = pp.coverage;
 for (const b of BUCKETS) addTest(b[0], `yes-mid ${b[1]}-${b[2]}c, buy ${b[3].toUpperCase()} at T-1h`, pp.C[b[0]]);
+for (const b of BUCKETS) addTest(`${b[0]}m`, `yes-mid ${b[1]}-${b[2]}c, buy ${b[3] === 'yes' ? 'NO' : 'YES'} (reference arm)`, pp.Cm[b[0]]);
 addTest('D1', 'buy yes at ask T-6h, sell at bid at first pitch', pp.D1);
 addTest('D2', 'fade a >=5c hourly move for one hour', pp.D2);
 addTest('D3', 'Family C rule, listed >24h before first pitch', pp.D3early);
@@ -478,7 +488,7 @@ addTest('E2', 'Family C rule, doubleheader legs only', pp.E2);
 // denominator at 26 and can only make the correction stricter for the rest.
 // D3b is a reference arm for D3, not one of the 26, and is excluded.
 const K = 26;
-const scored = results.tests.filter((t) => t.id !== 'D3b');
+const scored = results.tests.filter((t) => t.id !== 'D3b' && !/^C\dm$/.test(t.id));
 const ps = [...scored.map((t) => t.discovery.p ?? 1), ...Array(K - scored.length).fill(1)];
 const bh = benjaminiHochberg(ps, 0.10);
 results.multiplicity = {

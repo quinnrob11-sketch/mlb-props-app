@@ -188,3 +188,186 @@ one contract on each side is credible.
 
 Anything else is reported as **no edge demonstrated**, and that is a result, not
 a failure.
+
+---
+
+# Discovery results (run 2026-09-23, game dates through 2026-09-01)
+
+**Short answer: no. Nothing in the price is beatable by a rule you can write
+down in advance, except for about ninety seconds at a time, a few times a day,
+for a total of about $16 at one contract a go.**
+
+Ten of the fourteen scored tests survive Benjamini-Hochberg. **Every single one
+of them is negative.** The corrected survivors are not edges; they are the
+spread, measured ten different ways, with enough data behind each that the
+interval no longer touches zero. The one thing that is genuinely there — the
+price lagging the box score — is real, riskless and small.
+
+Coverage: **294,589 settled markets**, of which **245,179** had a two-sided
+quote at T−1h.
+
+## Family A — internal consistency: no violations at all
+
+| test | series | ladder-hours | quoted pairs | widest `bid(h) − ask(l)` | locked | crossed, fee ate it | **violations** |
+|---|---|---|---|---|---|---|---|
+| A1 | KXMLBKS | 2,374 | 47,184 | −1c | 0 | 0 | **0** |
+| A2 | KXMLBHIT | 43,822 | 126,672 | 0c | 1 | 0 | **0** |
+| A3 | KXMLBTB | 43,809 | 270,744 | −1c | 0 | 0 | **0** |
+| A4 | KXMLBHRR | 43,299 | 388,014 | 0c | 4 | 0 | **0** |
+| A5 | KXMLBRBI | 10,153 | 11,943 | −7c | 0 | 0 | **0** |
+| A6 | KXMLBHR | 9,421 | 1,446 | −7c | 0 | 0 | **0** |
+| A7 | KXMLBTOTAL | 7,643 | 359,096 | −2c | 0 | 0 | **0** |
+| A8 | KXMLBSPREAD | 15,286 | 39,327 | −4c | 0 | 0 | **0** |
+| A9 | KXMLBGAME moneyline | 7,656 | 6,571 | — | 0 | 5 | **0** |
+| A10 | moneyline vs run line | 15,264 | 39,287 | — | 0 | 0 | **0** |
+| | **total** | **198,727** | **1,290,284** | | **5** | **5** | **0** |
+
+Over 1.29 million simultaneous pairs of contracts whose outcomes are logically
+nested, the book **never once crossed far enough to pay a fee**, and in eight of
+the ten tests it never crossed at all. The strongest statement the data allows is
+the "widest" column: on the strikeout ladder the best the book ever offered was
+`bid(h) = ask(l) − 1c`, one cent the wrong side of free. Five pairs in 1.29
+million were exactly locked, which pays nothing. The five near-misses are all on
+the moneyline, where the two sides of a game summed to slightly less than 100c
+and the two fees were larger than the gap.
+
+This is what an actively quoted book looks like. Whoever makes these markets
+quotes the whole ladder off one distribution, so the ladder cannot disagree with
+itself. **Hypothesis 2 from the brief — free money inside the book — is dead, and
+it is dead by a wide margin rather than a narrow one.**
+
+The caveat that survives: these are hourly snapshots. An inconsistency that
+opened and closed inside one hour is invisible here. But an edge that never once
+persists to an hour boundary across 198,727 ladder-hours is not one that a
+system reading the book every few minutes is going to collect.
+
+## Family B — the price does lag the box score, for about a minute
+
+This is the only thing in the whole search that is real. 904 strikeout events
+matched to StatsAPI, 1,692 pitcher-games, 0 ambiguous name matches, and **19
+contradictions in 12,152 checks (0.16%)** between StatsAPI's strikeout count and
+Kalshi's own settlement — the match is essentially exact.
+
+**B1 — after the pitcher's s-th strikeout, "s+" is certain YES.** 3,706 such
+contracts.
+
+| delay after the strikeout | still had a buyable ask | of those, printed *after* the news | mean free money per contract | mean volume traded since the news |
+|---|---|---|---|---|
+| +1 min | **145 (3.9%)** | 106 | **7.03c** (5.13c on the fresh ones) | 135 contracts |
+| +2 min | 6 (0.2%) | 6 | 1.09c | 1,175 |
+| +5 min and beyond | 0 | | | |
+
+**B2 — after the starter is replaced, every rung above his final total is certain
+NO.** 4,816 such contracts.
+
+| delay after the replacement threw his first pitch | still had a positive bid | printed after the news | mean free money per contract |
+|---|---|---|---|
+| +1 min | **34 (0.7%)** | 17 | **15.76c** |
+| +2 min | 21 (0.4%) | 16 | 11.01c |
+| +5 min and beyond | 0 | | |
+
+Every one of these is profitable by construction — the outcome is already
+decided — so "100% profitable" is arithmetic, not evidence. What matters is the
+size of the prize. Summed over the whole discovery window: **1,019c on B1 and
+536c on B2, about $15.55 across 47 days at one contract per opportunity**, from
+roughly 180 opportunities, about **3.8 a day**, each open for **less than two
+minutes**. The mean B1 opportunity pays 7c on a contract costing about 93c; the
+mean B2 opportunity pays 16c on one costing about 84c.
+
+The market prices a certainty within about ninety seconds of the play. There is
+real volume in that window — a mean of 135 contracts traded in the minute after
+the strikeout — so this is not a one-lot curiosity. But it is a latency race
+against whoever else is reading the same feed, for a prize of a few dollars a day
+at twenty contracts a clip, and it needs a live play-by-play listener and an
+order on the wire inside a minute.
+
+## Family C — price-level bias: both sides lose
+
+The classic longshot bias is not there. Worse, **both sides of every bucket lose**
+— which is what a spread is.
+
+| bucket | bet against the tail | n | ROI [95%] | bet on the tail (reference arm) | ROI [95%] |
+|---|---|---|---|---|---|
+| 1–5c | buy NO | 13,822 | **−0.85% [−1.16, −0.56]** | buy YES | −26.74% [−33.58, −19.69] |
+| 6–10c | buy NO | 23,640 | **−2.06% [−2.46, −1.65]** | buy YES | −11.67% [−15.66, −7.68] |
+| 11–20c | buy NO | 36,461 | **−2.72% [−3.24, −2.22]** | buy YES | −10.95% [−13.41, −8.41] |
+| 21–35c | buy NO | 35,558 | **−3.50% [−4.24, −2.78]** | buy YES | −8.82% [−10.61, −6.90] |
+| 36–64c | buy NO | 33,734 | **−5.45% [−6.75, −4.12]** | buy YES | −5.40% [−6.72, −4.13] |
+| 65–79c | buy YES | 10,263 | **−2.81% [−4.16, −1.44]** | buy NO | −9.65% [−12.71, −6.59] |
+| 80–89c | buy YES | 1,777 | −1.54% [−3.54, 0.50] | buy NO | −10.15% [−20.62, 0.28] |
+| 90–94c | buy YES | 924 | −0.97% [−3.01, 0.94] | buy NO | −15.61% [−34.18, 4.53] |
+| 95–99c | buy YES | 498 | −1.28% [−3.31, 0.54] | buy NO | −13.53% [−51.89, 29.05] |
+
+C1 through C6 survive Bonferroni at p ≤ 0.0002, all on the losing side. The
+pre-registration called each bucket "two-sided", meaning a significant loss would
+be a discovery pointing the other way. **That was wrong, and the reference arm is
+here to show why**: in a market with a bid and an ask the two sides do not sum to
+zero, they sum to minus the spread and minus two fees, so both sides can lose and
+here both sides do. The cheapest contracts are the clearest case — buying the
+1–5c longshot loses 26.7% of stake while selling it loses 0.85%, and the gap
+between those two numbers is the vig, not a bias.
+
+## Family D — price path: paying the spread twice
+
+| test | n | ROI [95%] | p |
+|---|---|---|---|
+| D1 buy at the ask 6h out, sell at the bid at first pitch | 43,526 | **−9.75% [−9.90, −9.61]** | 0.0002 |
+| D2 fade a ≥5c hourly move for one hour | 3,562 | **−17.01% [−20.08, −13.86]** | 0.0002 |
+| D3 Family C rule on markets listed >24h out | 10,043 | −2.14% [−3.68, −0.58] | 0.0080 |
+| D3b same rule on same-day listings (reference) | 146,634 | −2.99% [−3.43, −2.56] | 0.0002 |
+
+D1 is the sharpest number in the study and it is the answer to hypothesis 4 of
+the brief. Round-tripping a contract from six hours out to first pitch, with no
+view at all, costs **3.66c per contract**. That is the toll on any strategy that
+tries to predict the close rather than the outcome: **you have to beat the
+closing mid by nearly four cents before you break even**, and
+`docs/KALSHI-BACKTEST.md` already measured the model's closing-line value at
+about 0c. Predicting the price instead of the game does not make the problem
+easier; it makes the hurdle explicit.
+
+D2 answers hypothesis 5: prices do not over-react. Fading a 5c hourly move loses
+9.94c a contract, which is the spread plus the fact that the move was mostly
+information.
+
+D3 against D3b answers the early-listing question: markets listed more than a day
+ahead are neither better nor worse than same-day listings once the spread is paid
+(−2.14% against −2.99%, intervals overlapping).
+
+## Family E — mechanics
+
+**E1, scalar settlements, is where the one unexplored door is.** 4,506 markets
+across seven series settled `scalar` — a cancelled player — far more than the 271
+the earlier pitcher study saw, because batter props get cancelled whenever the
+player does not appear. Their settlement value lands **5.14c above the last mid**
+on average (n = 3,073; median absolute error 4c, 90th percentile 17c). Selling
+them is therefore expensive: buying NO at the ask on every market that settled
+scalar returns **−14.85% [−16.00, −13.76]**.
+
+Read the sign, and then read the caveat. The positive side would be *buying*
+these contracts, and **the rule as pre-registered is not implementable**: it
+conditions on the market having settled scalar, which is not knowable at T−1h. It
+is a look-ahead rule, and it is reported here only because it was pre-registered.
+The implementable version — detect the scratch from a posted lineup, then trade —
+needs the lineup-posting timestamps this study did not collect. That is the
+honest gap, and the verdict returns to it.
+
+**E2, doubleheaders**: the Family C rule on doubleheader legs returns −0.92%
+[−3.64, +1.77] on 1,662 trades over 94 games. No different from anything else.
+
+## Multiplicity
+
+26 pre-registered tests. Fourteen produce an ROI and a game-cluster bootstrap
+p-value; the ten Family A tests and the two Family B tests are judged by their
+own rules and enter Benjamini-Hochberg at p = 1, which keeps the denominator at
+26 and makes the correction stricter for the rest, not looser.
+
+- **Benjamini-Hochberg at q = 0.10 survivors: C1, C2, C3, C4, C5, C6, D1, D2, D3, E1.**
+- **Bonferroni at 0.05/26 = 0.0019 survivors:** C1–C6, D1, D2, E1.
+- **Survivors with a positive ROI: none.**
+
+Every corrected survivor is a measurement of the cost of trading. Not one
+pre-registered rule has a positive point estimate, so **no rule reaches condition
+2 of the pass/fail test and nothing is eligible to be confirmed on the holdout.**
+The holdout is used below for what it is still good for: checking that the two
+things this window did say — that the book is never internally inconsistent, and
+that a certainty stays mispriced for about a minute — say the same thing again.

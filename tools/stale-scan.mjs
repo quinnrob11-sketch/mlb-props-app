@@ -136,7 +136,7 @@ const volumeIn = (c, fromMs, toMs) => (c || []).reduce((s, x) => (x[0] * 1000 > 
 const HORIZONS = [1, 2, 5, 15, 30, 60];
 
 function emptyB() {
-  return { cases: 0, byHorizon: Object.fromEntries(HORIZONS.map((h) => [h, { quoted: 0, profitable: 0, edgeSum: 0, edge5: 0, volSum: 0 }])), examples: [] };
+  return { cases: 0, byHorizon: Object.fromEntries(HORIZONS.map((h) => [h, { quoted: 0, fresh: 0, freshEdgeSum: 0, profitable: 0, edgeSum: 0, edge5: 0, volSum: 0 }])), examples: [] };
 }
 
 const markets = readJson(path.join(KCACHE, 'settled_KXMLBKS.json')).markets;
@@ -147,7 +147,9 @@ for (const m of markets) {
 }
 
 const MAXD = Number(arg('--max-dates', '999'));
-const dates = [...new Set([...byEvent.keys()].map((e) => parseEventTicker(e)?.date).filter(Boolean))].sort().slice(0, MAXD);
+const FROM = arg('--from', '0000-00-00');
+const dates = [...new Set([...byEvent.keys()].map((e) => parseEventTicker(e)?.date).filter(Boolean))]
+  .filter((d) => d >= FROM).sort().slice(0, MAXD);
 const res = {
   split: SPLIT,
   B1: { discovery: emptyB(), confirm: emptyB() },
@@ -230,6 +232,9 @@ for (const date of dates) {
             if (!q || q.ask == null) continue;
             cell.quoted++;
             const edge = 100 - q.ask - FEE(q.ask);
+            // Did the book print AFTER the strikeout, or is this a quote
+            // carried forward from before it? Only the first is unambiguous.
+            if (q.ts * 1000 > t0) { cell.fresh++; cell.freshEdgeSum += Math.max(0, edge); }
             if (edge > 0) cell.profitable++;
             cell.edgeSum += Math.max(0, edge);
             if (edge >= 5) cell.edge5++;
@@ -248,6 +253,7 @@ for (const date of dates) {
             if (!q || q.bid == null) continue;
             cell.quoted++;
             const edge = q.bid - FEE(100 - q.bid);
+            if (q.ts * 1000 > t0) { cell.fresh++; cell.freshEdgeSum += Math.max(0, edge); }
             if (edge > 0) cell.profitable++;
             cell.edgeSum += Math.max(0, edge);
             if (edge >= 5) cell.edge5++;
@@ -267,7 +273,11 @@ const summary = (b) => ({
   byHorizon: Object.fromEntries(HORIZONS.map((h) => {
     const c = b.byHorizon[h];
     return [h, {
+      quoted: c.quoted,
       quotedPct: b.cases ? Number((100 * c.quoted / b.cases).toFixed(1)) : null,
+      printedAfterTheNews: c.fresh,
+      meanEdgeWhenPrintedAfter: c.fresh ? Number((c.freshEdgeSum / c.fresh).toFixed(2)) : null,
+      totalEdgeCents: Number(c.edgeSum.toFixed(0)),
       profitablePct: c.quoted ? Number((100 * c.profitable / c.quoted).toFixed(1)) : null,
       atLeast5cPct: c.quoted ? Number((100 * c.edge5 / c.quoted).toFixed(1)) : null,
       meanEdgeCentsWhenQuoted: c.quoted ? Number((c.edgeSum / c.quoted).toFixed(2)) : null,
