@@ -16,3 +16,6 @@ bot/STOP
 scratch/
 # agent/edge-pitch research scratch (caches, fitted params, run outputs)
 .work/
+# Study caches: public API responses, hundreds of MB, refetchable
+ecache/
+scratchtmp/

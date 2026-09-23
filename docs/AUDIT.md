@@ -67,7 +67,37 @@ That is the honest shape of the whole thing: **the model can reach parity with
 a tight price, and parity does not pay a 1c spread plus a 1.7c fee.** Every
 apparent edge in this repo has lived in a market too wide to trade.
 
-### The one rule that works, and why it is not a plan
+### The only rule that clears zero out of sample
+
+Poll the StatsAPI game feed. The moment it serves a starting lineup, take every
+Kalshi player-prop market still open on a player **not** in that lineup; if it
+has a two-sided quote 2c wide or tighter, buy YES at the ask and hold to
+settlement. Kalshi cancels those markets and settles them at a "fair market
+price" that sits about 4c above the last quoted mid.
+
+**+2.42% [+1.64%, +3.23%]** per contract after the fee, p = 0.0002, firing 32.8
+times a day. It is implementable — the trigger reads only the published lineup,
+never the cancellation — and all 4,054 markets it selected did settle cancelled,
+so it gives up almost nothing to the hindsight version.
+
+Its status is *suggestive and replicated*, not proven: all twelve pre-registered
+arms were negative, and this rule was written after seeing the discovery window,
+then confirmed once on the holdout. Its sibling without the spread cut failed at
+−0.24%.
+
+**It cannot be scaled, and the reason is depth.** Four cents of bias, minus a
+two-cent half-spread, minus a 1.4c fee, leaves one cent — and nothing at all
+above a 2c spread. Meanwhile **51–54% of these markets never trade a single
+contract in their entire life** and 82% trade nothing after the news. That is
+**25 cents a day at one contract**, and the 24 lots a clip needed to make it $6
+would be moving the very quantity Kalshi computes its settlement price from.
+
+Not latency, which was the hypothesis going in: the lineup is public a median
+**184 minutes** before first pitch, the market stays open until a median 100
+minutes after it, and the mid does not move in between. Nobody is racing you.
+An afternoon of free time bought nothing. `docs/SCRATCH-SETTLEMENT-STUDY.md`
+
+### The other rule that works, and why it is not a plan
 
 When a starter records his *s*-th strikeout, "s+ strikeouts" is worth exactly
 100c and cannot change; when a reliever throws his first pitch, every rung
