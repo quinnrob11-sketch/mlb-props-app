@@ -142,3 +142,30 @@ A negative result is the expected outcome and is reported as a result, not as a
 problem to be tuned away. Specifically, the study **fails** if the HOLDOUT does
 not clear both (A) and (B) — including the case where the rebuilt model forecasts
 better than the old one and still cannot beat the price.
+
+## 8. Addendum, committed before any P&L was computed
+
+The trading rule was under-specified in section 3 and has to be pinned down
+before (B) can mean anything. Running the baseline through
+`tools/backtest-kalshi-batters.mjs` produced **zero trades** in every window,
+because `MARKET_WEIGHT` for batter markets was dropped to the measured 0–0.15
+in v36.2: the model can then move a price by at most 1.5–2.25 points and the
+smallest call needs 3. A rule that never trades cannot be tested.
+
+So, fixed now, with no P&L of any kind yet computed or looked at:
+
+- **The headline ROI rule is the one `docs/KALSHI-BATTER-BACKTEST.md` measured
+  at −3.4%**: the bot's own `planOrders` screen at T−120, one bet per player
+  across all series (`botOnePerPlayer`), with `MARKET_WEIGHT` at the values in
+  force for that study — HIT 0.45, TB 0.45, HR 0.50, RBI 0.35, HRR 0.40, and
+  0.40 for stolen bases, which that study did not cover. This keeps the new
+  number directly comparable with the old one.
+- **Secondary, reported alongside:** the same screen at `MARKET_WEIGHT` 1.0,
+  i.e. the model against the price with no blending. This is the sharpest test
+  of whether the model's disagreements carry information, and it produces the
+  most trades.
+- KXMLBSB is not mapped in `src/lib/kalshi.js`, so `planOrders` cannot see it.
+  It is priced and scored in the tool by the same rules and reported in the
+  `every` (every `buildSignal` trade) set. That is stated wherever it appears.
+
+Nothing else in Part 1 changes.
