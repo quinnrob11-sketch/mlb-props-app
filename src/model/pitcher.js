@@ -96,7 +96,9 @@ export function parseInningsPitched(ip) {
  *     better on both fit windows and 2025, WORSE on Aug 16-31 (2.1130 ->
  *     2.1167). Worth re-testing with more data.
  *   - kLevel 0.96-0.97 after the reliever fix: better on fit and 2025, flat or
- *     worse on Aug 16-31. Left at 0.95; strikeouts now run ~1.5% low.
+ *     worse on Aug 16-31. Left at 0.95, and that line used to end "strikeouts
+ *     now run ~1.5% low" — see kLevel below, which measured it at 2.6 points
+ *     and removed it.
  *   - Workload: long rest (>=12/15/20 days) or <3 starts budget cuts, recency-
  *     weighted pitch counts, keeping short outings, opponent pitches per PA,
  *     bullpen outs over the last 1-3 days, a team starter-depth effect, and
@@ -107,10 +109,29 @@ export function parseInningsPitched(ip) {
  *     real in both seasons but too small next to outcome noise to fix this way.
  */
 export const PITCHER_TUNING = {
-  kLevel: 0.95,
+  /**
+   * v37: kLevel and hLevel were 0.95 and 0.97, and both are now 1.0.
+   *
+   * They were market-fitted trims — chosen to sit closer to a price — and the
+   * accuracy audit measured what they cost against OUTCOMES over 9,019 starts
+   * in two seasons: strikeout overs read 2.6 points low [-3.2, -2.1] and
+   * hits-allowed overs 2.0 low. Removing them takes those calibration errors
+   * to 0.81 and 0.34 points. See docs/ACCURACY.md.
+   *
+   * The trade was defensible while the goal was to track a market. It is not
+   * defensible now that the goal is a projection you can read on its own, and
+   * five studies have established the model cannot beat a price anyway — so
+   * paying accuracy for closeness to one buys nothing.
+   *
+   * outsLevel stays at 0.98 deliberately. The same audit found that removing
+   * it re-centres the level but leaves a genuine SHAPE error — the outs
+   * distribution is too wide at both ends — which needs a narrower budget
+   * distribution, not another constant set to 1.
+   */
+  kLevel: 1.0,
   bbLevel: 1.0,
   outsLevel: 0.98,
-  hLevel: 0.97,
+  hLevel: 1.0,
   /** Batters-faced spread of the three-point strikeout mixture. */
   bfSpread: 5,
   /** Pitch-budget spread of the three-point outs mixture. */
