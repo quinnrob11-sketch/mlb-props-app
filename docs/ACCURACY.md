@@ -30,8 +30,8 @@ the number to beat if the projection is to be worth anything as a ranking.
 
 | Market | Sample | Calibration error | Typical miss (vs "everyone is average") | Verdict |
 |---|---|---|---|---|
-| **Pitcher strikeouts** | 9,019 starts | **2.7 pts, every over reads LOW** | 1.76 K vs 1.99 | **Trustworthy only after adding ~3 points to any "over".** Best ranking power in the whole model (corr 0.44) — the level is wrong, the ordering is right |
-| **Pitcher outs recorded** | 9,019 | **2.0 pts, and the tails go both ways** | 2.80 outs vs 3.19 | **Trustworthy between 15.5 and 17.5 outs only.** From 12.5 to 14.5 it reads 5–6 points low; from 18.5 up it reads 2–3 points high |
+| **Pitcher strikeouts** | 9,019 starts | **2.7 pts, every over reads LOW** | 1.76 K vs 1.99 | **Trustworthy only after adding ~3 points to any "over".** Real ranking power (corr 0.44, second only to outs) — the level is wrong, the ordering is right |
+| **Pitcher outs recorded** | 9,019 | **2.0 pts, and the tails go both ways** | 2.80 outs vs 3.19 (best ranking power in the model, corr 0.52) | **Trustworthy between 15.5 and 17.5 outs only.** From 12.5 to 14.5 it reads 5–6 points low; from 18.5 up it reads 2–3 points high |
 | **Pitcher hits allowed** | 9,019 | **2.0 pts, every over reads LOW** | 1.70 hits vs 1.80 | **Trustworthy after adding ~2 points to any "over".** Weak ranking power (corr 0.34) |
 | **Pitcher walks** | 9,019 | 1.1 pts | 1.01 BB vs 1.06 | Trustworthy standalone. Almost no ranking power (corr 0.25) — it is a league-average walk rate with a small tilt |
 | **Pitcher earned runs** | 9,019 | 1.1 pts, centred | 1.57 ER vs 1.61 | Trustworthy as a probability; **useless as a ranking** (corr 0.19, 3% better than the slate average) |
