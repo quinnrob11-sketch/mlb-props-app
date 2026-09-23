@@ -30,6 +30,15 @@ Pooled: **1,232 prop trades, −3.7%**. In all seven series the exchange's price
 forecast the outcome better than the model did, and the interval on that
 difference excludes zero in every one.
 
+The batter model behind those rows was replaced on 2026-09-23
+(`docs/BATTER-PORT.md`): the platoon multiplier is deleted and runs, RBI and
+H+R+RBI now come from one plate-appearance distribution. It forecasts better
+than its predecessor on an untouched holdout in every series (pooled 0.0003 of
+Brier, interval excluding zero) and **it still loses to the price in every
+series**, so no verdict in the table above changes and no weight was raised.
+The H+R+RBI tail, the worst cell here, is where most of the gain landed: the
+under-read at the 2.5 line falls from 1.9 points to 0.5.
+
 A second entry for game lines was added on 2026-09-23. Better per-game inputs —
 starters regressed component by component, the prior season in the team line,
 the posted card, wind direction — were fitted on 2025 plus 2026 to 08-09,

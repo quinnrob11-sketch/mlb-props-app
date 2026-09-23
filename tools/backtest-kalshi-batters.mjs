@@ -21,6 +21,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { buildRows, schedule, boxes } from './backtest-batters.mjs';
 import { BATTER_MARKETS } from '../src/lib/markets.js';
 import { matchName, normalizeName } from '../src/lib/names.js';
@@ -54,6 +55,27 @@ const SB_SERIES = 'KXMLBSB';
 const BATTER_DIST = { KXMLBHIT: 'hits', KXMLBTB: 'tb', KXMLBHR: 'hr', KXMLBRBI: 'rbi', KXMLBHRR: 'hrr', KXMLBSB: 'sb' };
 /** The model variant under test. `--tuning FILE` overrides BATTER_TUNING. */
 const TUNING = arg('tuning', null) ? readJson(arg('tuning', null)) : null;
+/**
+ * The REFERENCE model, scored on the same rows as `proj2` so one pass answers
+ * both "does it beat the price" and "is it better than the other model".
+ *
+ * By default the reference is this repo's own `projectBatter` at the shipped
+ * `BATTER_TUNING`, which is what `--tuning` is measured against. That only
+ * works while the alternative is reachable through a tuning knob. When the
+ * comparison is against code that has since CHANGED — docs/BATTER-PORT.md
+ * deletes the platoon term outright, so no setting can restore it —
+ * `--reference FILE` imports `projectBatter` from another module instead:
+ *
+ *   git show <sha>:src/model/batter.js > src/model/batter-preport.mjs
+ *   node tools/backtest-kalshi-batters.mjs ... --reference src/model/batter-preport.mjs
+ *
+ * The file has to sit where its own relative imports resolve (i.e. beside the
+ * model it is a copy of). `--tuning` wins if both are given.
+ */
+const REFERENCE = arg('reference', null);
+const referenceProject = REFERENCE
+  ? (await import(pathToFileURL(path.resolve(REFERENCE)).href)).projectBatter
+  : null;
 /**
  * Window scheme. `orig` is docs/KALSHI-BATTER-BACKTEST.md (A/B/A1/A2/OOS);
  * `edge` is the docs/BATTER-EDGE-SEARCH.md pre-registration (FIT/VAL/HOLD).
@@ -224,8 +246,9 @@ async function main() {
         proj: projectBatter(TUNING ? { ...r.input, tuning: TUNING } : r.input),
         // Reference model, scored beside the one under test so a single pass
         // over the holdout answers both "does it beat the price" and "is it
-        // better than what shipped". Same inputs; only `tuning` differs.
-        proj2: TUNING ? projectBatter(r.input) : null,
+        // better than the other model". Same inputs; only the tuning (or, with
+        // `--reference`, the model code itself) differs.
+        proj2: TUNING ? projectBatter(r.input) : referenceProject ? referenceProject(r.input) : null,
         actual: r.actual,
       };
     });

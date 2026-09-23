@@ -126,10 +126,19 @@ export default function MethodologyView() {
       <h3>Adjustments</h3>
       <p>
         Opponent K% (40% weight), opponent BB tendency (30%), opponent AVG
-        (35%), platoon splits (±5%), and Statcast-style park factors applied at
-        70% of their deviation (K factors at 50%). Batters get an
+        (35%), and Statcast-style park factors applied at 70% of their
+        deviation (K factors at 50%), scaled 1.25x for batters. Batters get an
         opposing-starter quality adjustment weighted by the ~60% of PAs that
         come against the starter.
+      </p>
+      <p>
+        <b>Batters get no platoon multiplier.</b> They used to get ±5%. Over
+        31,986 batter-games the model spread "1 or more hits" across 4.2 points
+        between its platoon groups and the real spread was 1.3 points{" "}
+        <i>in the opposite direction</i> — because a hitter's season line
+        already averages over the matchups his manager gave him, and the
+        hitters who start against a same-handed pitcher are the ones who can
+        hit them. Per-hitter splits regressed to the mean were worse still.
       </p>
 
       <h3>Probabilities, not gut feel</h3>
