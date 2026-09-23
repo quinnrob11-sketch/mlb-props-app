@@ -64,7 +64,7 @@ const MONTH_SPANS = (season) => [
 const PITCH_FIELDS = ['gamesStarted', 'gamesPlayed', 'battersFaced', 'strikeOuts', 'baseOnBalls', 'hits', 'homeRuns', 'hitByPitch', 'numberOfPitches', 'earnedRuns', 'runs', 'outs', 'strikes', 'balls'];
 
 /** Fetch (cached) everything both seasons need. */
-export async function loadRaw({ cacheDir, seasons = [2025, 2026], through }) {
+export async function loadRaw({ cacheDir, seasons = [2025, 2026], through, batters = true }) {
   const cached = makeCache(cacheDir);
   const games = new Map();          // gamePk -> context
   const pitcherIds = new Set();
@@ -162,7 +162,31 @@ export async function loadRaw({ cacheDir, seasons = [2025, 2026], through }) {
     for (const p of body.people || []) hands.set(p.id, { bat: p.batSide?.code || null, throws: p.pitchHand?.code || null, name: p.fullName });
   }
 
-  return { games, pitcherLogs, teamLogs, hands, pitcherIds, teamIds };
+  // Hitting game logs for every player who ever appeared in a posted lineup.
+  // This is what lets the opponent adjustment read the nine men actually
+  // playing tonight instead of a team-season aggregate.
+  const batterLogs = new Map();    // id -> [{date, season, pa, k, bb, h, ab, hr}]
+  if (batters) {
+    const bids = [...lineupPlayerIds];
+    for (const season of seasons) {
+      const tag = season === latest ? `_${through}` : '';
+      await pool(bids, 8, async (id) => {
+        const body = await cached(`blog_${id}_${season}${tag}`, `${API}/people/${id}/stats?stats=gameLog&group=hitting&season=${season}`);
+        if (!batterLogs.has(id)) batterLogs.set(id, []);
+        for (const g of body.stats?.[0]?.splits || []) {
+          const s = g.stat || {};
+          batterLogs.get(id).push({
+            date: g.date, season,
+            pa: Number(s.plateAppearances || 0), k: Number(s.strikeOuts || 0), bb: Number(s.baseOnBalls || 0),
+            h: Number(s.hits || 0), ab: Number(s.atBats || 0), hr: Number(s.homeRuns || 0),
+          });
+        }
+      });
+    }
+    for (const [, logs] of batterLogs) logs.sort((a, b) => (a.date < b.date ? -1 : 1));
+  }
+
+  return { games, pitcherLogs, teamLogs, batterLogs, hands, pitcherIds, teamIds };
 }
 
 // ── as-of aggregates ────────────────────────────────────────────────────────
