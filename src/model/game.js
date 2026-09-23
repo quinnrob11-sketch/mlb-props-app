@@ -305,8 +305,21 @@ export const SIGMA_TEAM_TOTAL = 0.24;
  * projected team runs across a slate measured 0.116 (2026-09-16, 30 sides) and
  * 0.121 (2026-09-17, 18 sides) — `node tools/run-slate.mjs <date> --json` —
  * so only the remainder is integrated here.
+ *
+ * MEASURED AGAIN (v37, the ported inputs). The richer inputs below separate
+ * teams more than the old ones did, so they explain more of the spread: the
+ * standard deviation of the log projected team runs over the 7,810 team-games
+ * of the FIT window is 0.1310 (`tools/fit-game-v2.mjs` reports it, and the
+ * number is in docs/GAME-EDGE-SEARCH.md). Leaving this at 0.12 while the model
+ * got sharper would have integrated a tenth of the spread twice.
+ *
+ * `SIGMA_TEAM_TOTAL` is NOT changed with it. The study refitted the four
+ * structural constants on its FIT window alone, deliberately, so that the
+ * holdout could not appear in them; the shipped 0.24 is fitted on the whole
+ * 2026 season, which is more data for the season the board actually serves,
+ * and it is what test/gameFit.test.js pins to the measured league rates.
  */
-export const EXPLAINED_TEAM_SD = 0.12;
+export const EXPLAINED_TEAM_SD = 0.131;
 export const SIGMA_TEAM = Math.sqrt(SIGMA_TEAM_TOTAL ** 2 - EXPLAINED_TEAM_SD ** 2);
 
 const GAUSS_HERMITE_3 = [
@@ -521,65 +534,270 @@ export function runsAllowedTalent(seasons, leagueRa9, priorInnings, fipConstant 
 }
 
 /**
+ * The fitted per-game input coefficients: the `core` configuration of
+ * docs/GAME-EDGE-SEARCH.md, ported here in v37.
+ *
+ * Every number is a Poisson maximum-likelihood fit to the runs each team
+ * actually scored, over the 7,810 team-games of that study's FIT window (all
+ * of 2025 plus 2026 through 08-09). No price appears anywhere in the fit, and
+ * neither the validation window nor the holdout does. Reproduce with
+ *
+ *   node tools/fit-game-v2.mjs --config core \
+ *     --features .backtest-cache/features_2025.json \
+ *     --features .backtest-cache/features_2026.json \
+ *     --out .backtest-cache/params-core.json
+ *
+ * Measured on the untouched holdout (2026-09-02..09-22, 5,649 Kalshi markets
+ * in 273 games), paired on identical markets, these inputs forecast better
+ * than the ones they replace by 0.0025 of Brier pooled [-0.0045, -0.0005],
+ * 0.0036 on totals and 0.0052 on the first inning. They do NOT beat the
+ * exchange price — see docs/GAME-PORT.md — so `MARKET_WEIGHT` and
+ * `PLAY_RULES.gameLinesInformationOnly` are deliberately untouched. This is a
+ * better displayed number, not a reason to bet.
+ *
+ * Two entries are zero on purpose and are not dead code:
+ *
+ *   - `top4Exp` 0. The first inning was fitted on first-inning runs alone
+ *     (7,062 half-innings). The exponent on the top four's OPS came out at
+ *     zero and the exponent on the starter's quality at 1.4: the first inning
+ *     is more about the arm than an average inning is, and no more about the
+ *     bats. The term is kept at its measured weight so the next person can see
+ *     it was tried rather than forgotten.
+ *   - `defExp`, `umpExp`, bullpen availability and rest/travel are absent
+ *     entirely. Each was built, fitted on two seasons and measured; none
+ *     earned its place. The table in docs/GAME-EDGE-SEARCH.md says what each
+ *     was worth.
+ */
+export const GAME_INPUTS = {
+  // ── team offence ──────────────────────────────────────────────────────────
+  offPriorGames: 70, // games of league-average prior (was a flat 25)
+  offPriorSeasonGames: 30, // games of LAST season's line, at its own league level
+  offExp: 0.9,
+  // ── the posted card ───────────────────────────────────────────────────────
+  lineupExp: 1.7, // runs ~ OPS^1.7, unchanged
+  top4Exp: 0, // the top four, in the first inning only — measured at zero
+  lineupClamp: 0.05, // +-5% (was +-10%)
+  firstInningAdjust: 1.03,
+  // ── the starting pitcher, regressed component by component ────────────────
+  spKPriorBF: 10, // strikeouts are taken almost at face value
+  spBbPriorBF: 400,
+  spHrPriorBF: 4000, // home runs are regressed almost to nothing
+  spEraPriorIP: 60,
+  spPriorSeasonWeight: 0.6,
+  spEraWeight: 0.5, // ERA half against the component (FIP-style) half
+  spExp: 1,
+  spLo: 0.55,
+  spHi: 1.7,
+  spFirstInningExp: 1.4, // how much of his edge is already showing in inning one
+  spRestCoef: 0.02, // per day of rest away from five
+  // ── bullpen (unchanged from v36) ──────────────────────────────────────────
+  bpPriorIP: 120,
+  bpLo: 0.7,
+  bpHi: 1.4,
+  // ── environment ───────────────────────────────────────────────────────────
+  parkExp: 1.5, // the park wants to be STRONGER, not damped to 0.7
+  tempCoef: 0.004, // per degree F above 72 (was 0.0025)
+  windCoef: 0.004, // per mph, signed by direction
+};
+
+/**
+ * Which way the wind plays. MLB reports it as free text — "8 mph, Out To LF",
+ * "4 mph, In From CF", "11 mph, L To R" — so out of the park is +1, in from it
+ * -1, and anything across the field, calm or unknown is 0.
+ *
+ * A forecast that carries speed but no direction therefore contributes
+ * nothing, which is exactly right: wind blowing in is worth the opposite of
+ * wind blowing out, so an unsigned speed is not weak information, it is none.
+ */
+export function windSign(dir) {
+  const d = String(dir || '').toLowerCase();
+  if (d.startsWith('out')) return 1;
+  if (d.startsWith('in')) return -1;
+  return 0;
+}
+
+/**
+ * A pitcher's rate components from a statsapi season line. Returns null when
+ * the payload has no batters faced, which is the signal to fall back to the
+ * older whole-line regression.
+ */
+function rateLine(stat) {
+  if (!stat) return null;
+  const ip = innings(stat.inningsPitched);
+  const bf = num(stat.battersFaced);
+  if (!(ip > 0) || !(bf > 0)) return null;
+  return {
+    ip,
+    bf,
+    er: stat.earnedRuns || 0,
+    hr: stat.homeRuns || 0,
+    bb: (stat.baseOnBalls || 0) + (stat.hitByPitch || 0),
+    k: stat.strikeOuts || 0,
+  };
+}
+
+/** Does `league` carry the per-batter-faced starter rates the new fit needs? */
+const hasStarterRates = (league) =>
+  league?.spKRate > 0 && league?.spBbRate > 0 && league?.spHrRate > 0 && league?.spBfPerIp > 0;
+
+/**
+ * The starter's runs allowed per nine, regressed COMPONENT BY COMPONENT.
+ *
+ * Strikeouts settle down long before home runs do. The older treatment shrank
+ * the finished ERA/FIP blend as one lump with 60 innings of league average,
+ * which over-trusts a hot home-run rate and under-trusts a real strikeout
+ * rate; the fit put 10 batters faced of prior on strikeouts and 4,000 on home
+ * runs, which is roughly what the sabermetrics would predict.
+ *
+ * Returns null when the inputs are not there, so the caller can fall back.
+ */
+function starterComponentRa9(starter, league, park) {
+  if (!starter || !hasStarterRates(league)) return null;
+  const cur = rateLine(starter.s26);
+  if (!cur) return null;
+  const prior = rateLine(starter.s25);
+  const w = GAME_INPUTS.spPriorSeasonWeight;
+  const sum = (f) => cur[f] + (prior ? w * prior[f] : 0);
+  const bf = sum('bf');
+  const ip = sum('ip');
+  const reg = (count, priorBf, leagueRate) => (count + priorBf * leagueRate) / (bf + priorBf);
+  const kRate = reg(sum('k'), GAME_INPUTS.spKPriorBF, league.spKRate);
+  const bbRate = reg(sum('bb'), GAME_INPUTS.spBbPriorBF, league.spBbRate);
+  const hrRate = reg(sum('hr'), GAME_INPUTS.spHrPriorBF, league.spHrRate);
+  // Rates per batter faced back to a per-inning FIP, through the league's own
+  // batters per inning so the units match the constant.
+  const fip = (13 * hrRate + 3 * bbRate - 2 * kRate) * league.spBfPerIp + league.fipConstant;
+  const eraRaw = (9 * sum('er')) / ip;
+  const era = (ip * eraRaw + GAME_INPUTS.spEraPriorIP * league.spRa9) / (ip + GAME_INPUTS.spEraPriorIP);
+  // The pitcher's own line carries his home park; the league prior does not.
+  let ra9 = (GAME_INPUTS.spEraWeight * era + (1 - GAME_INPUTS.spEraWeight) * fip) / park;
+  if (GAME_INPUTS.spRestCoef && starter.restDays != null) {
+    ra9 *= 1 + GAME_INPUTS.spRestCoef * (clamp(starter.restDays, 3, 9) - 5);
+  }
+  return ra9;
+}
+
+/**
  * Everything the game model needs, derived from the slate the app already
  * loads. Pure: no I/O.
+ *
+ * EVERY new field is optional and every one of them degrades to the v36
+ * behaviour on its own, because the board must survive a card that is not
+ * posted and a forecast that does not carry direction:
+ *
+ *   `offensePrior` / `league.priorSeasonRpg` missing  -> last season counts as
+ *        league average at the same weight, which is what a missing prior
+ *        means; the team is still regressed by the full 100 games.
+ *   `lineupTop4OpsRatio` missing                      -> 1 (and the fitted
+ *        exponent on it is 0 anyway).
+ *   `lineupOpsRatio` missing                          -> 1, as before.
+ *   `starter.s26.battersFaced` or the league per-BF
+ *        rates missing                                -> the v36 whole-line
+ *        ERA/FIP regression, `runsAllowedTalent`.
+ *   `starter.restDays` missing                        -> no rest term.
+ *   `wx.windDir` missing or across the field          -> no wind term, which
+ *        is the v36 behaviour exactly.
+ *   `wx.tempF` missing                                -> no temperature term.
  *
  * @param {object} input
  * @param {object} input.away / input.home  per-side context:
  *   {
- *     offense:  { runs, gamesPlayed, ops },          team season hitting
+ *     offense:  { runs, gamesPlayed, ops },            team season hitting
+ *     offensePrior: { runs, gamesPlayed } | null,      last season's, optional
  *     homePark: string,                                team's own home venue
  *     lineupOpsRatio: number|null,                     lineup OPS / team OPS, slate-centred
- *     starter:  { s26, s25, projIP } | null,           this side's starter
+ *     lineupTop4OpsRatio: number|null,                 the same for the top four
+ *     starter:  { s26, s25, projIP, restDays } | null, this side's starter
  *     bullpen:  object|null,                           team relief split (season)
  *   }
- * @param {object} input.league { rpg, spRa9, rpRa9, allRa9, fipConstant }
+ * @param {object} input.league
+ *   { rpg, spRa9, rpRa9, allRa9, fipConstant,
+ *     spKRate?, spBbRate?, spHrRate?, spBfPerIp?, priorSeasonRpg? }
  * @param {string} input.park   venue name
- * @param {object} [input.wx]   { indoor, tempF }
+ * @param {object} [input.wx]   { indoor, tempF, windMph, windDir }
  */
 export function projectGame({ away, home, league, park, wx }) {
-  const env = parkFactor(park, 'runs', 0.7) * weatherFactor(wx);
-
-  const offenseIndex = (side) => {
-    const o = side.offense;
-    if (!o?.gamesPlayed || o.runs == null) return { value: 1, parts: {} };
-    const raw = o.runs / o.gamesPlayed / ownPark(side) / league.rpg;
-    const shrunk = (o.gamesPlayed * raw + 25) / (o.gamesPlayed + 25);
-    // Tonight's nine against the team's season line. Runs scale with roughly
-    // the square of OPS, damped here to 1.7 and clamped to +-10% because a
-    // projected lineup is a guess. `lineupOpsRatio` arrives already centred
-    // across the slate (see loadSlate), because nine regulars always out-hit a
-    // season line that includes the bench.
-    const lineup = side.lineupOpsRatio ? clamp(side.lineupOpsRatio ** 1.7, 0.9, 1.1) : 1;
-    return { value: shrunk * lineup, parts: { season: shrunk, lineup } };
-  };
+  const P = GAME_INPUTS;
+  const env = parkFactor(park, 'runs', P.parkExp) * weatherFactor(wx);
 
   // Half of a team's games are in its own park, and its season lines carry that
   // park in both directions: Rockies hitters look better and Rockies pitchers
   // look worse than they are. Both are neutralised with the same factor, so the
   // park is counted once — for tonight's venue, through `env`.
-  const ownPark = (side) => 0.5 + 0.5 * parkFactor(side.homePark, 'runs', 0.7);
+  const ownPark = (side) => 0.5 + 0.5 * parkFactor(side.homePark, 'runs', P.parkExp);
+
+  /**
+   * Tonight's card against the team's season line. Both ratios arrive already
+   * centred across the slate (see loadSlate): nine regulars always out-hit a
+   * season line that carries the bench, so the raw ratio has a LEVEL in it,
+   * and a level is not information.
+   */
+  const lineupFactor = (ratio, exp) =>
+    ratio ? clamp(ratio ** exp, 1 - P.lineupClamp, 1 + P.lineupClamp) : 1;
+
+  /**
+   * Team offence: this season's park-neutral runs per game, LAST season's at
+   * its own league level, and a league-average prior, each weighted by how
+   * many games it is worth. In April last season is nearly all that is known;
+   * in September it is a footnote, and the weights do that on their own.
+   */
+  const offenseIndex = (side) => {
+    const o = side.offense;
+    if (!o?.gamesPlayed || o.runs == null) return { value: 1, parts: {} };
+    const ownParkFactor = ownPark(side);
+    const raw = o.runs / o.gamesPlayed / ownParkFactor / league.rpg;
+    let weighted = o.gamesPlayed * raw;
+    let den = o.gamesPlayed;
+    if (P.offPriorSeasonGames > 0) {
+      const prior = side.offensePrior;
+      // Last year is expressed against LAST year's league by dividing by its
+      // own runs per game; using this year's would import last year's run
+      // environment along with the team's share of it.
+      const usable = prior?.gamesPlayed > 0 && prior.runs != null && league.priorSeasonRpg > 0;
+      const weight = usable
+        ? Math.min(P.offPriorSeasonGames, prior.gamesPlayed)
+        : P.offPriorSeasonGames;
+      weighted += weight * (usable
+        ? prior.runs / prior.gamesPlayed / ownParkFactor / league.priorSeasonRpg
+        : 1);
+      den += weight;
+    }
+    weighted += P.offPriorGames;
+    den += P.offPriorGames;
+    const shrunk = (weighted / den) ** P.offExp;
+    const lineup = lineupFactor(side.lineupOpsRatio, P.lineupExp);
+    // The first inning is batted by the top of the order, not by the nine.
+    const top4 = lineupFactor(side.lineupTop4OpsRatio ?? side.lineupOpsRatio, P.top4Exp);
+    return {
+      value: shrunk * lineup,
+      first: shrunk * top4 * P.firstInningAdjust,
+      parts: { season: shrunk, lineup, top4 },
+    };
+  };
 
   const pitchingIndex = (side) => {
-    const park = ownPark(side);
-    const starter = side.starter
-      ? runsAllowedTalent(
-          [
-            { stat: side.starter.s26, weight: 1 },
-            { stat: side.starter.s25, weight: 0.6 },
-          ],
-          league.spRa9,
-          60,
-          league.fipConstant,
-          park,
-        )
-      : { ra9: league.spRa9, ip: 0 };
+    const ownParkFactor = ownPark(side);
+    const component = starterComponentRa9(side.starter, league, ownParkFactor);
+    const starter = component != null
+      ? { ra9: component, ip: innings(side.starter.s26?.inningsPitched) }
+      : side.starter
+        ? runsAllowedTalent(
+            [
+              { stat: side.starter.s26, weight: 1 },
+              { stat: side.starter.s25, weight: 0.6 },
+            ],
+            league.spRa9,
+            60,
+            league.fipConstant,
+            ownParkFactor,
+          )
+        : { ra9: league.spRa9, ip: 0 };
     const bullpen = side.bullpen
-      ? runsAllowedTalent([{ stat: side.bullpen, weight: 1 }], league.rpRa9, 120, league.fipConstant, park)
+      ? runsAllowedTalent([{ stat: side.bullpen, weight: 1 }], league.rpRa9, P.bpPriorIP, league.fipConstant, ownParkFactor)
       : { ra9: league.rpRa9, ip: 0 };
     return {
-      starter: clamp(starter.ra9 / league.allRa9, 0.55, 1.7),
-      bullpen: clamp(bullpen.ra9 / league.allRa9, 0.7, 1.4),
+      starter: clamp((starter.ra9 / league.allRa9) ** P.spExp, P.spLo, P.spHi),
+      bullpen: clamp(bullpen.ra9 / league.allRa9, P.bpLo, P.bpHi),
       starterRa9: starter.ra9,
       bullpenRa9: bullpen.ra9,
       // No probable, or a probable with no workload estimate: assume an
@@ -597,8 +815,13 @@ export function projectGame({ away, home, league, park, wx }) {
   const halfMeans = (base, batting, fielding) =>
     base.map((leagueMean, i) => {
       const starterShare = clamp(fielding.projIP - i, 0, 1);
-      const pitching = starterShare * fielding.starter + (1 - starterShare) * fielding.bullpen;
-      return leagueMean * level * batting.value * pitching * env;
+      // The first inning is the starter's best: he has not been seen yet.
+      // `spFirstInningExp` says how much of his edge is already showing, and
+      // it fitted at 1.4 — more than an average inning, not less.
+      const sp = i === 0 ? fielding.starter ** P.spFirstInningExp : fielding.starter;
+      const pitching = starterShare * sp + (1 - starterShare) * fielding.bullpen;
+      const offence = i === 0 ? (batting.first ?? batting.value) : batting.value;
+      return leagueMean * level * offence * pitching * env;
     });
 
   const awayHalfMeans = halfMeans(AWAY_HALF_MEANS, off.away, pit.home);
@@ -664,12 +887,31 @@ function medianLine(summary) {
 }
 
 /**
- * Temperature on run scoring: about +2.5% per 10F above 72, clamped. Weaker
- * than the batter home-run term because most runs are not fly balls. Wind is
- * not used — the forecast has speed but not direction relative to the field,
- * and wind blowing in is worth the opposite of wind blowing out.
+ * Temperature and wind on run scoring.
+ *
+ * Temperature is about +4% per 10F above 72, clamped — refitted from the
+ * 0.0025 this used to carry, and the single largest term in the whole
+ * per-game fit (16.2 nats).
+ *
+ * Wind is now used, which the note here used to say it could not be. The
+ * reason it could not was real and has not gone away: an unsigned speed is
+ * worthless, because blowing in is worth the opposite of blowing out. What
+ * changed is that the slate now carries a DIRECTION when MLB publishes one
+ * ("8 mph, Out To LF"), so the speed can be signed. When it cannot be —
+ * a forecast with speed only, a wind across the field, a park with no
+ * reading — `windSign` is 0 and this returns exactly what v36 returned.
+ *
+ * @param {object} [wx] { indoor, tempF, windMph, windDir }
  */
 export function weatherFactor(wx) {
-  if (!wx || wx.indoor || wx.tempF == null) return 1;
-  return clamp(1 + 0.0025 * (wx.tempF - 72), 0.94, 1.06);
+  if (!wx || wx.indoor) return 1;
+  let factor = 1;
+  if (wx.tempF != null) {
+    factor *= clamp(1 + GAME_INPUTS.tempCoef * (wx.tempF - 72), 0.94, 1.06);
+  }
+  const sign = windSign(wx.windDir);
+  if (sign && wx.windMph != null) {
+    factor *= clamp(1 + GAME_INPUTS.windCoef * sign * wx.windMph, 0.9, 1.1);
+  }
+  return factor;
 }

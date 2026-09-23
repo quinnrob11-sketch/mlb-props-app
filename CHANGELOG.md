@@ -1,3 +1,56 @@
+# v37 — the improved game model, shipped and re-measured
+
+`docs/GAME-EDGE-SEARCH.md` rebuilt the game model's per-game inputs and found
+they forecast significantly better than the shipped ones while still only
+drawing level with the exchange price. It could not ship them: three terms need
+inputs `src/data/loadSlate.js` did not fetch. This ships them and measures what
+survived the port.
+
+**The port reproduces the study**, on the same holdout (2026-09-02..09-22, 273
+games, 5,675 priced Kalshi markets), paired against a frozen copy of the v36
+model:
+
+| paired Brier, ported − v36 | pooled | `KXMLBTOTAL` | `KXMLBRFI` |
+|---|---|---|---|
+| the study, as published | −0.0025 [−0.0045, −0.0005] | −0.0036 [−0.0068, −0.0005] | −0.0052 [−0.0087, −0.0017] |
+| **the ported `src/model/game.js`** | **−0.0026 [−0.0047, −0.0005]** | −0.0036 [−0.0069, −0.0004] | −0.0050 [−0.0085, −0.0014] |
+| **decision-time inputs only** | **−0.0021 [−0.0041, −0.0003]** | −0.0029 [−0.0060, +0.0000] | −0.0045 [−0.0078, −0.0010] |
+
+The last row is the one that predicts what the board gets: the study's lineup
+term saw the card that took the field and its weather term saw the conditions
+recorded at first pitch, and neither is available at T−120. Hindsight is worth
+about 0.0005 of the 0.0026. The first-inning gain contains none of it, because
+the fitted exponent on the top of the order is zero — the first inning is about
+the arm.
+
+**Changed:** team offence now carries 30 games of last season at last season's
+own league level; the starter is regressed component by component (10 batters
+faced of prior on strikeouts, 4,000 on home runs); the park factor is applied
+at 1.5 rather than damped to 0.7; temperature is 4%/10°F; **wind is used when
+MLB publishes a direction**; the first inning raises the starter's index to
+1.4. `EXPLAINED_TEAM_SD` 0.12 → 0.131, measured from the new model's own
+spread. `loadSlate` fetches last season's team hitting (one request, in a wave
+that already ran), the top four of each card and `weather` on the schedule
+hydrate (no new requests).
+
+**Not changed, deliberately:** `MARKET_WEIGHT` and `PLAY_RULES`. The in-sample
+optimal weight on (model − market) rose to 0.55 pooled once the new inputs were
+in; acting on that is the overfitting this programme exists to prevent. The
+model is level with the price, not ahead of it. Game lines stay information
+only and the bot screened **0 contracts** on all 273 holdout games, as before.
+The four structural constants also stay at their whole-2026 fit, which is what
+`test/gameFit.test.js` pins to the measured league rates.
+
+**League-aggregate calibration** is unchanged where it is pinned (two
+league-average teams still give home win 52.94%, NRFI 50.12%, over 8.5 49.65%,
+home −1.5 36.04%) and better where it is measured on real holdout games: NRFI
+51.10% → 48.92% against 45.49% actual, over 8.5 47.36% → 50.27% against 54.21%.
+The run line moves half a point the wrong way. 221 tests pass, 8 of them new
+and all of them about what happens when an input is missing. Details:
+`docs/GAME-PORT.md`.
+
+---
+
 # v36.1 — fresh out-of-sample week, cheap-contract floor raised
 
 `bot/state` now carries a real paper record, and the week after every model fit

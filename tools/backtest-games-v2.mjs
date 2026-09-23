@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import { argv } from './backtest-common.mjs';
 import { validateGames as validate } from './backtest-common.mjs';
 import { buildLeagueContext, projectGameV2, projectGameV1FromRow } from './game-model-v2.mjs';
+import { projectGameSrcFromRow } from './game-model-src.mjs';
 
 export { validate };
 
@@ -24,8 +25,24 @@ const featureFiles = process.argv
   .map((a, i) => (a === '--features' ? process.argv[i + 1] : null))
   .filter(Boolean);
 const PARAMS_FILE = argv('params', '.backtest-cache/params-core.json');
-/** `--as-v1` prices the SHIPPED model on the same rows, as a control. */
+/** `--as-v1` prices the FROZEN v36 model on the same rows, as a control. */
 const AS_V1 = process.argv.includes('--as-v1');
+/**
+ * `--src` prices `src/model/game.js` — the ported model the board runs —
+ * instead of the study's candidate. That is the difference between "the recipe
+ * works" and "the thing that shipped works", and only the second one matters
+ * once the port exists.
+ *
+ * `--lineup` and `--weather` choose which inputs it is allowed to see:
+ * `posted`/`recorded` is the study's optimism, `projected`/`forecast` is what
+ * was really knowable at the decision time (tools/game-features-asof.mjs),
+ * `none` is the hard bound with the term switched off.
+ */
+const USE_SRC = process.argv.includes('--src');
+const LINEUP_MODE = argv('lineup', 'posted');
+const WEATHER_MODE = argv('weather', 'recorded');
+const ASOF_FILE = argv('asof', null);
+const ASOF = ASOF_FILE ? JSON.parse(fs.readFileSync(ASOF_FILE, 'utf8')).games : null;
 
 export const USE_LINEUPS = true;
 
@@ -34,7 +51,11 @@ for (const f of featureFiles) rows.push(...JSON.parse(fs.readFileSync(f, 'utf8')
 rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 const ctxByDate = buildLeagueContext(rows);
 const PARAMS = JSON.parse(fs.readFileSync(PARAMS_FILE, 'utf8')).params;
-process.stderr.write(`v2 replay: ${rows.length} feature rows, params ${PARAMS_FILE}${AS_V1 ? ' (priced AS V1)' : ''}\n`);
+const which = AS_V1 ? 'the frozen v36 model' : USE_SRC ? 'src/model/game.js (the port)' : 'the v2 candidate';
+process.stderr.write(
+  `v2 replay: ${rows.length} feature rows, params ${PARAMS_FILE}, pricing ${which}`
+  + `${USE_SRC ? `, lineup=${LINEUP_MODE} weather=${WEATHER_MODE}${ASOF ? ' (as-of table loaded)' : ''}` : ''}\n`,
+);
 
 export function buildGames() {
   const out = [];
@@ -44,7 +65,16 @@ export function buildGames() {
     if (r.actual.scheduledInnings !== 9) { bump('not a nine-inning game'); continue; }
     if (!(r.away.off?.gamesPlayed >= 10) || !(r.home.off?.gamesPlayed >= 10)) { bump('under ten games played'); continue; }
     const ctx = ctxByDate.get(r.date);
-    const model = AS_V1 ? projectGameV1FromRow(r, ctx) : projectGameV2(r, ctx, PARAMS);
+    const srcInputs = {
+      lineup: LINEUP_MODE,
+      weather: WEATHER_MODE,
+      asof: ASOF ? ASOF[r.gamePk] : null,
+    };
+    const model = AS_V1
+      ? projectGameV1FromRow(r, ctx)
+      : USE_SRC
+        ? projectGameSrcFromRow(r, ctx, srcInputs)
+        : projectGameV2(r, ctx, PARAMS);
     // The shipped model on the identical row, carried alongside so the price
     // study can score v2 against v1 paired on the same markets.
     const modelV1 = AS_V1 ? null : projectGameV1FromRow(r, ctx);

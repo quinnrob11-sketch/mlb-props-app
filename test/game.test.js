@@ -530,3 +530,133 @@ test('home/away terms are neutral unless the caller says which side', () => {
   assert.ok(home.projOuts > neutral.projOuts && neutral.projOuts > away.projOuts);
   assert.equal(projectPitcher({ season26: s26, season25: null, gameLog, park: 'Target Field', isHome: true, tuning: { homeK: 0, homeBudget: 0 } }).projK, neutral.projK);
 });
+
+// ── v37: the ported per-game inputs (docs/GAME-PORT.md) ────────────────────
+
+import { GAME_INPUTS, windSign, weatherFactor } from '../src/model/game.js';
+
+const PORT_LEAGUE = {
+  rpg: 4.49, spRa9: 4.1, rpRa9: 3.9, allRa9: 4.0, fipConstant: 3.1,
+  spKRate: 0.222, spBbRate: 0.086, spHrRate: 0.031, spBfPerIp: 4.25,
+  priorSeasonRpg: 4.45,
+};
+const PORT_OFF = { runs: 675, gamesPlayed: 150, ops: 0.72 };
+const PORT_SP = {
+  inningsPitched: '150.0', earnedRuns: 62, homeRuns: 18, baseOnBalls: 45,
+  hitByPitch: 6, strikeOuts: 150, battersFaced: 610,
+};
+const portSide = (over = {}) => ({
+  offense: PORT_OFF, homePark: 'Target Field',
+  starter: { s26: PORT_SP, s25: null, projIP: 6 }, bullpen: null, ...over,
+});
+const portGame = (over = {}, league = PORT_LEAGUE, wx = null) =>
+  projectGame({ away: portSide(), home: portSide(over), league, park: 'Target Field', wx });
+
+test('every new input is optional: the board survives a card, a prior season and a direction it does not have', () => {
+  const bare = portGame();
+  const explicitlyNothing = portGame({
+    offensePrior: null, lineupOpsRatio: null, lineupTop4OpsRatio: null,
+    starter: { s26: PORT_SP, s25: null, projIP: 6, restDays: null },
+  });
+  close(bare.pHome, explicitlyNothing.pHome, 1e-12, 'absent equals null');
+  for (const v of [bare.pHome, bare.projTotal, bare.nrfi.nrfiProb]) assert.ok(Number.isFinite(v), `${v}`);
+  // A wind with speed and no direction, and a weather object with nothing in
+  // it at all, are both the v36 behaviour exactly.
+  const speedOnly = portGame({}, PORT_LEAGUE, { indoor: false, tempF: 72, windMph: 25 });
+  close(speedOnly.projTotal, bare.projTotal, 1e-9, 'unsigned wind is worth nothing');
+  assert.equal(weatherFactor({ indoor: false, tempF: 72, windMph: 25 }), 1);
+  assert.equal(weatherFactor({ indoor: false, tempF: 72, windMph: 25, windDir: 'L To R' }), 1);
+  assert.equal(weatherFactor({ indoor: true, tempF: 95, windMph: 25, windDir: 'Out To CF' }), 1);
+});
+
+test('wind only counts once it is signed, and it is symmetric', () => {
+  assert.equal(windSign('Out To LF'), 1);
+  assert.equal(windSign('In From CF'), -1);
+  assert.equal(windSign('Varies'), 0);
+  assert.equal(windSign(null), 0);
+  const at = (windDir) => portGame({}, PORT_LEAGUE, { indoor: false, tempF: 72, windMph: 15, windDir }).projTotal;
+  const out = at('Out To CF');
+  const inward = at('In From RF');
+  const across = at('R To L');
+  assert.ok(out > across && across > inward, `${inward} < ${across} < ${out}`);
+  close(out - across, across - inward, 0.02, 'symmetric about calm');
+});
+
+test('a missing prior season is league average, not a free pass out of the shrink', () => {
+  const great = portGame({ offensePrior: { runs: 900, gamesPlayed: 162 } });
+  const poor = portGame({ offensePrior: { runs: 550, gamesPlayed: 162 } });
+  const unknown = portGame({ offensePrior: null });
+  assert.ok(great.projHome > unknown.projHome && unknown.projHome > poor.projHome,
+    `${poor.projHome} < ${unknown.projHome} < ${great.projHome}`);
+  // Unknown must sit near the middle, not near either extreme: an absent prior
+  // is a league-average prior carrying the same weight, so the team stays
+  // regressed by the full 100 games rather than silently by 70.
+  const middle = (great.projHome + poor.projHome) / 2;
+  close(unknown.projHome, middle, 0.05, 'unknown prior is the middle');
+});
+
+test('the component starter regression needs batters faced, and degrades to the whole-line one without them', () => {
+  const noBf = { s26: { ...PORT_SP, battersFaced: undefined }, s25: null, projIP: 6 };
+  const withoutRates = portGame({}, { ...PORT_LEAGUE, spKRate: undefined });
+  const withoutBf = projectGame({
+    away: portSide({ starter: noBf }), home: portSide({ starter: noBf }),
+    league: PORT_LEAGUE, park: 'Target Field',
+  });
+  close(withoutBf.pHome, withoutRates.pHome, 1e-12, 'both fall back to the same v36 path');
+  // And the fallback is a real number, not a neutral one: the starter index
+  // still reads his line.
+  assert.ok(Number.isFinite(withoutBf.inputs.pitching.home.starterRa9));
+  assert.notEqual(withoutBf.inputs.pitching.home.starterRa9, PORT_LEAGUE.spRa9);
+});
+
+test('a strikeout is nearly taken at face value; a home-run rate is not', () => {
+  const ra9 = (over) => projectGame({
+    away: portSide(), home: portSide({ starter: { s26: { ...PORT_SP, ...over }, s25: null, projIP: 6 } }),
+    league: PORT_LEAGUE, park: 'Target Field',
+  }).inputs.pitching.home.starterRa9;
+  const base = ra9({});
+  // 30 more strikeouts in the same 610 batters faced, against 10 fewer home
+  // runs — roughly equal in raw FIP, nothing like it after the regression.
+  const moreK = base - ra9({ strikeOuts: PORT_SP.strikeOuts + 30 });
+  const fewerHr = base - ra9({ homeRuns: PORT_SP.homeRuns - 10 });
+  assert.ok(moreK > 0 && fewerHr > 0);
+  assert.ok(moreK > 3 * fewerHr, `K ${moreK} vs HR ${fewerHr}`);
+});
+
+test('the first inning leans on the starter, and measurably not on the top of the order', () => {
+  const ace = { ...PORT_SP, earnedRuns: 40, homeRuns: 10, baseOnBalls: 30, strikeOuts: 210 };
+  const gap = () => portGame({ starter: { s26: ace, s25: null, projIP: 6 } }).nrfi.nrfiProb
+    - portGame().nrfi.nrfiProb;
+  const fitted = gap();
+  const restore = GAME_INPUTS.spFirstInningExp;
+  GAME_INPUTS.spFirstInningExp = 1;
+  const flat = gap();
+  GAME_INPUTS.spFirstInningExp = restore;
+  assert.ok(fitted > flat, `first-inning exponent ${restore}: ${fitted} vs flat ${flat}`);
+  // The top four are passed and measured at an exponent of zero, so moving
+  // them moves nothing. The nine still move the game.
+  close(portGame({ lineupTop4OpsRatio: 1.08 }).projHome, portGame().projHome, 1e-12, 'top four at exponent 0');
+  assert.ok(portGame({ lineupOpsRatio: 1.08 }).projHome > portGame().projHome);
+});
+
+test('the lineup clamp is the fitted +-5%, not the old +-10%', () => {
+  const hot = portGame({ lineupOpsRatio: 1.5 });
+  const capped = portGame({ lineupOpsRatio: 1 + GAME_INPUTS.lineupClamp ** (1 / GAME_INPUTS.lineupExp) });
+  assert.ok(hot.projHome >= capped.projHome);
+  close(hot.inputs.offense.home.parts.lineup, 1 + GAME_INPUTS.lineupClamp, 1e-12, 'clamped');
+  assert.equal(GAME_INPUTS.lineupClamp, 0.05);
+});
+
+test('days of rest are read with the sign the fit measured, and an unknown rest is neutral', () => {
+  const at = (restDays) => portGame({ starter: { s26: PORT_SP, s25: null, projIP: 6, restDays } })
+    .inputs.pitching.home.starterRa9;
+  // The fitted coefficient is POSITIVE: +2% of runs allowed per day of rest
+  // above five. Extra rest does not help, which is the opposite of the
+  // folk wisdom and is why it is worth pinning — a starter on nine days is
+  // usually a man coming back from something, not a man who is fresher.
+  assert.ok(GAME_INPUTS.spRestCoef > 0);
+  assert.ok(at(9) > at(5) && at(5) > at(3), `${at(3)} < ${at(5)} < ${at(9)}`);
+  close(at(null), at(5), 1e-12, 'unknown rest is the neutral five');
+  close(at(2), at(3), 1e-12, 'clamped below three');
+  close(at(12), at(9), 1e-12, 'clamped above nine');
+});
