@@ -371,3 +371,179 @@ pre-registered rule has a positive point estimate, so **no rule reaches conditio
 The holdout is used below for what it is still good for: checking that the two
 things this window did say — that the book is never internally inconsistent, and
 that a certainty stays mispriced for about a minute — say the same thing again.
+
+---
+
+# Confirmation (2026-09-02 .. 2026-09-22, read once)
+
+No rule was eligible under condition 2 of the pass/fail test, because no rule had
+a positive point estimate. The holdout is therefore used for the two questions it
+can still answer: does the book stay internally consistent, and does the
+box-score lag replicate?
+
+## Family A — two violations in the whole holdout, worth about half a cent each
+
+| | discovery | confirmation |
+|---|---|---|
+| ladder-hours | 198,727 | 156,562 |
+| simultaneous nested pairs | 1,290,284 | 761,742 |
+| exactly locked | 5 | 11 |
+| crossed but the fee ate it | 5 | 0 |
+| **riskless violations** | **0** | **5 snapshots / 2 distinct** |
+
+The five confirmation-window snapshots are two mispricings, each standing for a
+few hours, both on 2026-09-16, both on the deep end of a game-total ladder:
+
+| game | buy | at | sell | at | gross | **net after both fees** | hours it stood |
+|---|---|---|---|---|---|---|---|
+| PHI@WSH | Over 1.5 runs | 96c | Over 2.5 runs | 97c | 1c | **+0.53c** | 3 |
+| BOS@TEX | Over 1.5 runs | 95c | Over 2.5 runs | 96c | 1c | **+0.40c** | 2 |
+
+That is the entire arbitrage yield of the exchange's MLB book over 68 days and
+2,052,026 nested pairs: **two opportunities, about half a cent each on 99c of
+capital, roughly 0.5% for a few hours of tied-up money.** Under the
+pre-registered Family A rule the family fails: violations are not repeatable —
+zero in the discovery window, two in the holdout — and they are not material.
+
+One thing the holdout does settle in the method's favour: both violations
+persisted for **two to three consecutive hourly snapshots**. The worry that an
+hourly scan is blind to real inconsistencies is therefore weaker than it looked —
+when one does happen, it sits there for hours. Sub-hour flickers remain invisible.
+
+## Family B — the box-score lag replicates, at the same rate and the same size
+
+| | discovery (47 days) | confirmation (21 days) |
+|---|---|---|
+| B1 certain-YES contracts | 3,706 | 1,630 |
+| still buyable one minute after the strikeout | 145 (**3.9%**) | 54 (**3.3%**) |
+| of those, book printed after the news | 106 | 38 |
+| mean free money per contract | **7.03c** | **7.49c** |
+| total at one contract | 1,019c | 405c |
+| still buyable at two minutes | 6 | 1 |
+| B2 certain-NO contracts | 4,816 | 1,981 |
+| still sellable one minute after the change | 34 (**0.7%**) | 8 (**0.4%**) |
+| mean free money per contract | **15.76c** | **18.37c** |
+| total at one contract | 536c | 147c |
+
+Both the hit rate and the size replicate. Over the full 68 days: **241
+opportunities, about 3.5 a day, $21.07 total at one contract each.**
+
+And the shape of it is the point. At one minute the edge is there; at two minutes
+it is gone — 7 of 241 opportunities survive to the two-minute mark. **The whole
+thing lives inside a window of about sixty to ninety seconds.**
+
+# Verdict
+
+**There is no rule here that makes money after costs, with one exception that is
+real, riskless, replicated, and worth about $21 a season at one contract.**
+
+What was tested and what it returned:
+
+| | hypothesis | result |
+|---|---|---|
+| A1–A8 | ladder arbitrage, eight series | **dead.** 0 violations in 1.29M discovery pairs; 2 in the holdout worth 0.5c each |
+| A9 | moneyline sums to 100 | **dead.** 5 near-misses in 9,357 pairs, fees larger than every gap |
+| A10 | moneyline against run line | **dead.** 0 in 55,993 pairs |
+| B1 | price lags a recorded strikeout | **REAL.** 3.9% / 3.3% of certainties buyable at +1 min, 7.0c / 7.5c each |
+| B2 | price lags a pitching change | **REAL but thin.** 0.7% / 0.4% at +1 min, 15.8c / 18.4c each |
+| C1–C9 | price-level bias, both sides | **dead.** Every bucket loses on both sides; six survive Bonferroni, all negative |
+| D1 | beat the closing mid | **dead, and it raises the bar.** A 6-hour round trip costs 3.66c a contract |
+| D2 | over-reaction and reversion | **dead.** −17.0% / −16.3% |
+| D3 | early listings mispriced | **dead.** −2.1% against −3.0% for same-day, overlapping |
+| E1 | scalar settlement predictable | **look-ahead, not implementable.** Settles 5.1c above the last mid |
+| E2 | doubleheaders mispriced | **dead.** −0.9% / −1.4%, intervals spanning zero |
+
+26 pre-registered tests, Benjamini-Hochberg at q = 0.10 over all of them. Ten
+survived. **All ten are negative**, and every one of them is a measurement of the
+spread and the fee rather than a property of anybody's forecast. Nothing reached
+the confirmation stage on merit.
+
+## The one rule, stated exactly
+
+> Listen to the MLB StatsAPI play feed. When a starting pitcher records his *s*-th
+> strikeout, buy YES on his "s+ strikeouts" contract at any ask below 100 within
+> sixty seconds. When a reliever throws his first pitch, sell YES on every rung
+> above the departing starter's final strikeout total, at any bid above 1c, within
+> sixty seconds.
+
+- **Does it make money after costs?** Yes, necessarily. The outcome is already
+  determined when the order goes in, so there is no variance to interval: the only
+  uncertainty is whether the order fills.
+- **How large?** 7.0c a contract on B1 (discovery) and 7.5c (confirmation);
+  15.8c and 18.4c on B2. As a return on the capital each trade ties up, that is
+  about **7.5% on B1** (about 93c paid for a certain 100c) and about **19% on B2**.
+- **How often?** 241 opportunities in 68 days — **about 3.5 a day**, and only
+  0.7% to 3.9% of the moments when a contract becomes certain.
+- **What is the interval?** There is no sampling interval on the profit of a
+  single fill, because it is arithmetic. The interval that matters is on the rate:
+  3.9% of certainties in the discovery window, 3.3% in the confirmation window,
+  which agree.
+- **What is the whole prize?** **$21.07 over 68 days at one contract.** Mean
+  volume traded in the minute after a strikeout is 135 contracts, so size is not
+  obviously capped at one; at twenty contracts a clip this is roughly **$6 a day**,
+  and that figure assumes every opportunity is taken and every order fills.
+
+## What would have to be true for this to be worth building
+
+1. **Sub-minute reaction.** At two minutes the edge is gone: 7 opportunities out
+   of 241 survive that long. This is a latency race, not a research problem.
+2. **Depth that is really there.** Candles show volume, not the size resting at
+   the top of book. The 7c on a 145-contract sample could be 7c on one lot.
+3. **Markets that stay open.** 96% of certainties had no quoted ask a minute
+   later at all, which mostly means Kalshi had already closed or fully repriced
+   the market. The edge exists only in the 4% of cases where it had not.
+
+None of that is a reason not to try it, and all of it is a reason not to size it.
+
+## The one door left open
+
+`E1` is the only pre-registered test whose sign points somewhere and whose
+implementable version was not measured. Cancelled-player markets settle **5.14c
+above the last quoted mid**, across 3,073 of them, with a median absolute error
+of 4c. The side that pays is buying, and the trade needs to know the scratch
+before the market does — which is a lineup-posting timestamp, not a price.
+This study did not collect those timestamps. It is the same shape as Family B
+(be first to a piece of public news), on a much larger population: **4,506
+cancelled markets in 68 days against 241 stale-price moments**. That is where the
+next hour of work should go, and it should be pre-registered the same way.
+
+## What this does not say
+
+- It does not say the model is right. `docs/AUDIT.md` still stands.
+- It does not say Kalshi is efficient in general — only that on MLB, in this
+  68-day window, at hourly resolution, its book is internally consistent and its
+  price level carries no exploitable bias at the sizes and speeds tested here.
+- It does not test the one thing `docs/AUDIT.md` names as still open: the spread
+  between sportsbooks. That needs a multi-book archive, which does not exist yet.
+
+## Caveats
+
+- **68 days.** The live tier serves nothing before 2026-07-17, so this is one
+  window in one season, with the confirmation arm only 21 days long.
+- **Hourly snapshots in Family A.** Sub-hour inconsistencies are invisible. Both
+  violations actually found lasted hours, which is reassuring but not proof.
+- **Depth is assumed, never observed.** Every result is one contract at the
+  quoted top of book.
+- **Family B's clock is StatsAPI's, not the ballpark's.** The strikeout timestamp
+  is when the play was recorded, and the pitching-change timestamp is the
+  replacement's first pitch — both are later than the moment a person watching
+  the game knew. The measured lag is therefore an underestimate of the real
+  opportunity and the counts are a lower bound.
+- **19 contradictions in 12,152 checks (0.16%)** between StatsAPI's strikeout
+  count and Kalshi's settlement. They are excluded from Family B by the
+  `result` filter; at that rate they cannot change anything.
+- **Taker prices throughout.** `docs/KALSHI-MAKER-STUDY.md` measured what resting
+  instead would be worth: 2.66c a contract, filling on the wrong half.
+
+## Reproduce
+
+```
+node tools/market-edge.mjs fetch   --kcache ecache
+node tools/market-edge.mjs candles --kcache ecache      # ~750 series-days, hourly
+node tools/edge-scan.mjs  --kcache ecache --split 2026-09-01 [--confirm] --json out.json
+node tools/stale-scan.mjs --kcache ecache --split 2026-09-01 [--confirm] --json b.json
+```
+
+Without `--confirm` both scanners refuse to print the holdout. The cache is about
+280 MB and is not committed. A cold run takes a few hours, almost all of it
+waiting on `GET /markets/candlesticks`.
