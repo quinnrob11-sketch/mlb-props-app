@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 
 import { fmt } from "../lib/format.js";
 import { matchesQuery } from "./rows.js";
-import { explainEmpty } from "./filters.js";
+import { explainEmpty, rowLineupSource } from "./filters.js";
 import VerdictChip, { WhyNote } from "./VerdictChip.jsx";
 import VenueLinks, { VenueLegend } from "./VenueLinks.jsx";
 import MakerPanel, { useKalshiBooks } from "./MakerPanel.jsx";
@@ -257,7 +257,10 @@ export default function PropTable({
     kind === "batter"
       ? new Set(
           unfilteredRows
-            .filter((r) => r.lineupSource && r.lineupSource !== "confirmed")
+            .filter((r) => {
+              const src = rowLineupSource(r);
+              return src && src !== "confirmed";
+            })
             .map((r) => r.team),
         ).size
       : 0;
