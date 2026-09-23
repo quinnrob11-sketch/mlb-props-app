@@ -12,3 +12,7 @@ bot/STOP
 *.pem
 *.key
 .backtest-cache
+
+# Study caches: public API responses, hundreds of MB, refetchable
+ecache/
+scratchtmp/
