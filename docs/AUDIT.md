@@ -1,6 +1,6 @@
 # Full audit: what is worth taking, category by category
 
-Last run 2026-09-23. Every number here was measured by a tool in this repo
+Last run 2026-09-23, after four pre-registered edge searches reported. Every number here was measured by a tool in this repo
 against settled contracts and real box scores. Nothing is projected, assumed or
 carried over from an earlier version of the model.
 
@@ -24,7 +24,44 @@ several contracts on one game are not independent bets.
 | Batter RBIs | 14 | +35% | worse | no signal — n=14 |
 | Game lines (ML, run line, total) | 0 | — | 3.1–3.2 pts from market, no lean | **not playable** — zero contracts ever clear the hurdle, by arithmetic |
 | First inning (NRFI/YRFI) | 0 | — | model spans 47–52% | **not playable** — never far enough from the market to call |
-| Game lines, rebuilt model (2026-09-23) | 102 | +0.1% [−18.0, +19.2] | **level**, pooled −0.0002 [−0.0025, +0.0019] | **no edge** — a pre-registered holdout, failed on both legs. `docs/GAME-EDGE-SEARCH.md` |
+| Batter stolen bases | 15 | **−64%** | worst of the six, +0.0016 [0.0005, 0.0028] | **AVOID** — listed as KXMLBSB since v36.4; it is mapped for completeness, not because it should be traded |
+
+## The four searches (2026-09-23)
+
+Each split the data before looking at it, committed its success bar before
+computing any profit, and touched the final window once. **All four failed the
+bar.** Two produced a better model anyway, and one found a real rule that is
+too small to build on.
+
+| Search | Bar | Result | What it left behind |
+|---|---|---|---|
+| Game model | Brier beats the price AND positive ROI, intervals excluding zero | **FAIL** — pooled −0.0002 [−0.0025, +0.0019], ROI +0.1% [−18.0, +19.2] on 102 contracts | A model that is **level** with the price rather than 0.0023 behind it: paired vs shipped, −0.0025 [−0.0045, −0.0005] |
+| Batter model | same | **FAIL** — price wins all six series, pooled +0.0008 [0.0002, 0.0014]; ROI +24.8% [−0.1, 49.5] on 74 trades | Platoon term measured as noise; runs/RBI/H+R+RBI rebuilt from one plate-appearance distribution. Paired vs shipped, 0.0003 [0.0000, 0.0006] |
+| Market microstructure | a rule that clears fees, BH-corrected over 26 tests | **FAIL** for 25 of 26 | One real rule: the price lags the box score. See below |
+| Pitcher model | same as game | *running at the time of writing* | |
+
+### The one rule that works, and why it is not a plan
+
+When a starter records his *s*-th strikeout, "s+ strikeouts" is worth exactly
+100c and cannot change; when a reliever throws his first pitch, every rung
+above the starter's final total is worth exactly 0c. Buying or selling those
+inside sixty seconds paid 7.5c and 18.4c per contract in the confirmation
+window. No forecast is involved — the outcome is already settled.
+
+**241 opportunities in 68 days. $21.07 total at one contract.** About $6/day at
+twenty lots, and 97% are gone within sixty seconds. It is a latency race
+against faster bots, not a research result, and collecting it needs live order
+placement with sub-second reaction. `tools/stale-watch.mjs` watches for it live
+without placing anything, to establish whether it still exists at all.
+
+### What these searches killed, which is worth as much as what they kept
+
+- **Arbitrage inside Kalshi**: zero riskless violations in 1,290,284 nested pairs.
+- **The platoon multiplier**: the model spread hits-1+ over 4.2 points; reality spreads 1.3 and points the other way. Selection, not skill — a hitter's line already averages over the matchups he was given.
+- **Bullpen availability**: fitted to zero. The median team already has 93.7% of its relief innings in available arms.
+- **Top-of-order for the first inning**: exponent fitted to zero. The first inning is more about the arm, not more about the bats.
+- **Umpires, team defence, rest and travel, recent form, lineup slot as a talent signal**: each gained on the fit window and lost on validation.
+- **Predicting the closing price instead of the game**: a six-hour round trip with no view costs 3.66c, so it raises the bar rather than lowering it.
 
 Pooled: **1,232 prop trades, −3.7%**. In all seven series the exchange's price
 forecast the outcome better than the model did, and the interval on that
