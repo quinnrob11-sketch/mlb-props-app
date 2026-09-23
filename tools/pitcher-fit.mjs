@@ -449,11 +449,10 @@ function marginalMean(f, M, market) {
   let s = 0;
   for (let o = 0; o < 28; o++) {
     if (pmf[o] < 1e-9) continue;
-    s += pmf[o] * Math.exp(dot(condX(f, o, rates, market), beta_(M, key)));
+    s += pmf[o] * Math.exp(dot(condX(f, o, rates, market), M.cond[key]));
   }
   return s;
 }
-const beta_ = (M, key) => M.cond[key];
 
 /** Per-BF rates for one start, from the rate half of a fitted model. */
 function ratesOf(f, M) {

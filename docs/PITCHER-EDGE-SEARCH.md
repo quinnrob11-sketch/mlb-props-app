@@ -115,9 +115,122 @@ re-run with different settings in search of a better one.
 
 ---
 
-## Part 2 — What was built and what the validation said
+## Part 2 — What was built, and what the fit window said
 
-*(written after Part 1 was committed)*
+### The data
+
+`tools/pitcher-data.mjs` builds **9,574 starts** (4,860 in 2025, 4,714 in 2026
+through 09-22) from the public MLB Stats API, each carrying the pitcher's own
+game log for both seasons, the opponent's, the **posted lineup** for that game
+(every batter's id and hitting hand), the pitcher's **catcher**, the **home-plate
+umpire**, the park and the final **weather**. Coverage of lineup, umpire,
+catcher and temperature is 9,574 of 9,574 — the schedule endpoint hydrates all
+four, so none of this needed a per-game fetch. Every aggregate a start reads is
+rebuilt from games strictly before that start's date.
+
+### The model (M2)
+
+`tools/pitcher-fit.mjs` and `tools/pitcher-model2.mjs`. Against the shipped
+`projectPitcher`:
+
+1. **One recency-weighted, partially pooled estimate per rate, over both
+   seasons.** The offseason is compressed to a fitted `offDays` so a September
+   2025 start and an April 2026 start are not 179 days apart in the model's
+   eyes. Fitted on FIT: **half-life parameter 400 days for the per-BF rates,
+   20 days for depth**, offseason gap 60 days. The implied weight on a
+   2025-07-01 start, seen from 2026-08-01, is **0.50** — near the 0.6 the
+   shipped blend uses flat — but a 2026-06-01 start gets 0.86 and an April 2026
+   start much less, which a flat blend cannot express.
+2. **Pooling strengths, fitted, in batters faced:** strikeouts **150**, walks
+   **80**, hits allowed **1,200**, home runs 200. That ordering is the whole
+   point: a starter's strikeout rate is worth trusting after a couple of
+   hundred batters, his hit rate essentially never is.
+3. **The opponent is the nine men posted**, each with his own recency-weighted
+   pooled rate, plus a fitted term on the share of the lineup holding the
+   platoon advantage.
+4. **Umpire and catcher** effects, each partially pooled over the starts they
+   worked.
+5. **Depth first, then everything else.** Predicted outs comes from a fitted
+   linear model; the DISTRIBUTION of outs around it is the empirical
+   distribution of fit-window starts at that predicted depth, kernel-smoothed.
+   The spikes on multiples of three, the cliff after 18 outs and the left skew
+   are therefore measured, not modelled, which is what the brief meant by
+   respecting the hook.
+6. **Each market's dispersion is fitted by log loss**, not assumed. Given depth,
+   hits and walks are *under*dispersed (var/mean 0.85-0.86 — a start that lasted
+   18 outs cannot have had twelve hits), earned runs *over*dispersed (1.25), and
+   strikeouts close to Poisson. One number per market replaces four separately
+   argued distribution choices.
+
+### The one finding that changed the design
+
+Conditioning hits, walks and earned runs on depth made them WORSE, and the
+coefficients said why: fitted conditionally, the earned-run model came back with
+a **negative** coefficient on the pitcher's own run-value rate. Realised depth
+is a collider — among starts that reached 18 outs, the pitcher who "should" have
+been hit was having a good night, so within that slice his rate predicts fewer
+runs. It is a true statement about a conditional and a useless one for pricing,
+because at the decision time depth is not known either.
+
+So each market gets whichever route wins on the fit window: **strikeouts use
+depth-conditioning** (K/outs is flat at 0.31 across depths — strikeouts really
+are a share of the outs), **hits, walks and earned runs use a direct marginal**
+with predicted depth as a covariate.
+
+### Outcomes: M2 vs the shipped model
+
+Coefficients fitted on 2025 + 2026 through 06-30 (7,262 starts), scored on the
+fit tail 2026-07-01..08-09 (990 starts) that they never saw. Brier over the
+lines Kalshi lists; lower is better. **No price data is involved in this table.**
+
+| market | M2 | shipped `projectPitcher` |
+|---|---|---|
+| strikeouts | **0.1537** | 0.1581 |
+| outs recorded | **0.1641** | 0.1680 |
+| hits allowed | **0.1820** | 0.1842 |
+| walks | **0.1562** | 0.1574 |
+| earned runs | **0.1806** | 0.1817 |
+
+M2 is better on all five. It is also better calibrated in level: on the fit
+window the shipped model projects 4.53 strikeouts against an actual 4.77 and
+15.26 outs against 15.43, while M2 matches both by construction.
+
+### Ablation: what each idea was actually worth
+
+Same 990 fit-tail starts, coefficients fitted on the 7,262 before them. Each row
+zeroes one set of coefficients and leaves everything else alone. Total is mean
+log loss across the five markets; larger is worse.
+
+| | strikeouts | hits | walks | ER | total |
+|---|---|---|---|---|---|
+| full model | 0.4681 | 0.5423 | 0.4811 | 0.5420 | **0.50574** |
+| no opponent at all | 0.4757 | 0.5427 | 0.4825 | 0.5416 | 0.50757 |
+| no home/away | 0.4692 | 0.5426 | 0.4816 | 0.5423 | 0.50617 |
+| no catcher | 0.4686 | 0.5428 | 0.4813 | 0.5413 | 0.50586 |
+| no lineup handedness | 0.4682 | 0.5424 | 0.4816 | 0.5418 | 0.50585 |
+| no home-plate umpire | 0.4681 | 0.5423 | 0.4811 | 0.5420 | 0.50575 |
+| no temperature | 0.4679 | 0.5420 | 0.4810 | 0.5419 | **0.50563** |
+
+Read plainly:
+
+- **The opponent carries almost everything** — and it has to be the posted
+  lineup; that one term is ten times the size of the next.
+- **The home-plate umpire is worth nothing.** 0.00001 of log loss, which is
+  zero. Its fitted coefficient also has the wrong sign. An umpire's own
+  strikeout rate, however carefully pooled, is noise at this sample size.
+- **The catcher is worth 0.0001**, and even that is suspect: a catcher's
+  measured strikeout rate is mostly his own pitching staff's, which the model
+  already has.
+- **Lineup handedness is worth 0.0001**, all of it in walks. Composition alone,
+  without per-batter platoon splits, does not carry a strikeout signal.
+- **Temperature is worth less than nothing** — removing it improves the score.
+
+(The ablation zeroes rate coefficients only, so the outs column is unchanged by
+construction and is left out of the table.)
+
+Pitch mix and velocity were not tested: the Stats API game log carries pitch
+counts and strike counts but no pitch type or velocity, and the Statcast feed
+that does is outside the two APIs this study is allowed to call.
 
 ## Part 3 — Holdout
 
