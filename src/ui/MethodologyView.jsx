@@ -174,11 +174,26 @@ export default function MethodologyView() {
         trade made sense while the goal was tracking a price; it makes none now.
       </p>
       <p>
-        <b>Do not use the batter point projections to rank players.</b> The probabilities are
-        excellent and the ordering is nearly worthless: every batter market's projected total
-        sits within 0–4% of simply giving each player the slate average, and projected hits
-        ties that baseline to three decimal places. Only strikeouts and stolen bases carry real
-        ranking power. If you are picking a DFS slate, use the probabilities, not the totals.
+        <b>The batter ordering is as good as it can get; the spread is too narrow.</b> An
+        earlier version of this page said the point projections were nearly worthless for
+        ranking, on the grounds that they barely beat giving every player the slate average.
+        That was the wrong test — projecting total bases <i>20% low</i> also beats the honest
+        projection on that measure, so it rewards shrinking rather than knowing. Measured
+        properly across 935 hitter-seasons, the model's correlation with what hitters actually
+        did is <code>0.810</code> on hits against a measurable ceiling of <code>0.792</code>:
+        the order is right. What is wrong is the scale — the gap between the best and worst
+        hitter is about <b>1.44× too narrow</b> (1.12× for strikeouts and steals, which is why
+        those two looked like exceptions). Widening it was tried and made the ranking worse, so
+        it stays. Read the order as meaningful and the spacing as compressed.
+      </p>
+      <p>
+        <b>A hitter with a short book is discounted, and it is not just uncertainty.</b> Under
+        50 plate appearances this season, hits, total bases and H+R+RBI used to read about 2
+        points high. Two real effects, both repeating season over season: he takes about 3%
+        fewer trips to the plate than his slot implies — he is the one who gets pinch-hit for —
+        and per trip he gets 7.5% fewer hits and 12% fewer runs while striking out 7% more.
+        Correcting both takes that cell from the worst-calibrated in the model to better than
+        the regulars, who are untouched above 70 plate appearances.
       </p>
 
       <h3>Probabilities, not gut feel</h3>
