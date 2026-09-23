@@ -232,9 +232,116 @@ Pitch mix and velocity were not tested: the Stats API game log carries pitch
 counts and strike counts but no pitch type or velocity, and the Statcast feed
 that does is outside the two APIs this study is allowed to call.
 
-## Part 3 — Holdout
+## Part 3 — Validation (2026-08-10 .. 2026-09-01), against real prices
 
-*(one run, at the end)*
+Run with `--stage validate` at T−120, fee 0.07.
+
+### Coverage (measured)
+
+| | |
+|---|---|
+| Settled pitcher-prop markets whose game is in the window | 9,701 |
+| Matched to a replayed start | **9,485** (the 216 unmatched are markets on a pitcher who did not end up starting) |
+| With a two-sided decision quote and binary settlement | **6,954** |
+| Decision quote age | median 2 min, p90 24 min, max 230 min |
+
+Two-sided quote coverage is not the same across series, and this turns out to
+matter more than anything else in the study:
+
+| series | matched rows | two-sided at T−120 | one side only | no candle at all |
+|---|---|---|---|---|
+| KXMLBKS | 4,140 | **4,115 (99%)** | 11 | 14 |
+| KXMLBOUTS | 568 | **562 (99%)** | 0 | 6 |
+| KXMLBHA | 1,944 | **720 (37%)** | 812 | 412 |
+| KXMLBERA | 1,744 | **898 (51%)** | 562 | 284 |
+| KXMLBWA | 1,089 | **659 (61%)** | 331 | 99 |
+
+Strikeouts and outs are quoted on both sides essentially always. Hits allowed,
+earned runs and walks — which Kalshi only opened on **2026-08-17** — are quoted
+on one side or not at all most of the time.
+
+**Settlement vs the box score: 5 disagreements in 9,485**, and all five are in
+the new series (three earned runs, two hits allowed). Those are precisely the
+two stats an official scorer can revise — hit or error, earned or unearned — so
+the honest reading is that Kalshi settles the scorer's call on the night and the
+Stats API serves the corrected line. P&L below uses Kalshi's settlement, which
+is what a trader would have been paid.
+
+### Forecast skill: does the model beat the decision mid?
+
+Paired Brier difference (model − market); **negative means the model is
+better**; cluster bootstrap over pitcher-start.
+
+| slice | n | M2 | market | M2 − market | shipped − market |
+|---|---|---|---|---|---|
+| pooled | 6,954 | **0.1758** | 0.1794 | **−0.0035 [−0.0061, −0.0009]** | −0.0014 [−0.0045, +0.0018] |
+| KXMLBKS strikeouts | 4,115 | 0.1513 | **0.1479** | +0.0035 [+0.0011, +0.0058] | +0.0042 [+0.0006, +0.0080] |
+| KXMLBOUTS outs | 562 | 0.2514 | **0.2429** | +0.0085 [+0.0005, +0.0161] | +0.0150 [+0.0054, +0.0245] |
+| KXMLBHA hits allowed | 720 | **0.2018** | 0.2132 | **−0.0114 [−0.0215, −0.0016]** | −0.0063 [−0.0168, +0.0044] |
+| KXMLBERA earned runs | 898 | **0.2054** | 0.2338 | **−0.0284 [−0.0378, −0.0196]** | −0.0246 [−0.0346, −0.0150] |
+| KXMLBWA walks | 659 | **0.1956** | 0.2107 | **−0.0151 [−0.0225, −0.0075]** | −0.0131 [−0.0213, −0.0049] |
+
+Two things are true at once, and they pull in opposite directions:
+
+- **On strikeouts and outs the price still wins**, exactly as
+  `docs/KALSHI-BACKTEST.md` found. M2 narrows the gap on both (strikeouts
+  +0.0042 → +0.0035, outs +0.0150 → +0.0085) but does not close it.
+- **On the three new series the model wins, and so does the shipped model.**
+  That is the tell. If M2's modelling work were doing this, the shipped model
+  would not also beat the price on the same contracts. What is actually
+  happening is that KXMLBHA / KXMLBERA / KXMLBWA are five weeks old and barely
+  quoted, so the "decision mid" is the midpoint of a wide, thin spread — and a
+  wide mid is easy to beat.
+
+### Does beating the mid make money?
+
+No. Same window, the pre-registered trade rule, one contract per signal, taker
+at the ask, fee 0.07.
+
+| weight w | trades | ROI [95% CI] |
+|---|---|---|
+| 0.0 – 0.2 | 0 | (nothing clears the hurdle) |
+| 0.3 | 3 | −100% |
+| 0.4 | 118 | +13.9% [−3.9, +31.9] |
+| 0.5 | 271 | +0.4% [−12.2, +13.3] |
+| 0.6 | 434 | −0.3% [−10.9, +9.8] |
+| **0.7** | **563** | **+2.7% [−6.8, +12.1]** |
+| 0.8 | 680 | +0.8% [−7.5, +8.9] |
+| 0.9 | 772 | +0.4% [−7.0, +7.9] |
+| 1.0 | 876 | −2.5% [−9.7, +4.6] |
+
+The shipped model on the same contracts is negative at every weight, and
+significantly so from w=0.7 up (−9.4% [−16.8, −2.4] at 0.7, −9.9% [−15.9, −3.8]
+at 1.0). So the modelling work is worth roughly **10 ROI points** here — and
+that still only gets to "not clearly losing".
+
+Per market at w=1.0, where the sample is largest:
+
+| | trades | ROI [95% CI] |
+|---|---|---|
+| KXMLBKS strikeouts | 401 | −2.4% [−13.8, +9.4] |
+| KXMLBOUTS outs | 253 | +7.7% [−4.3, +19.8] |
+| KXMLBHA hits allowed | 83 | −17.5% [−36.9, +2.4] |
+| KXMLBERA earned runs | 48 | −8.7% [−33.8, +15.8] |
+| KXMLBWA walks | 91 | −12.8% [−30.7, +5.0] |
+
+**The three markets where the model beats the mid by the widest margin are the
+three that lose the most money.** That is not a contradiction; it is the whole
+lesson. The mid of a market quoted on one side 40-60% of the time is not a price
+anyone can trade. You pay the ask, and in those series the ask is far enough from
+the mid to eat an edge several times the size of the one the Brier score shows.
+
+### The configuration chosen, and how
+
+**w = 0.7**, chosen as the pooled Brier-optimal weight on VALIDATE. It is not
+the best ROI on VALIDATE — that was w = 0.4, at +13.9% on 118 trades. Picking
+0.4 would be choosing a number by looking at 118 noisy outcomes, which is the
+exact failure mode this study was set up to avoid. Everything else in the rule
+was fixed in Part 1 and is unchanged.
+
+## Part 4 — Holdout (2026-09-02 .. 2026-09-22), one run
+
+*(to follow)*
 
 ## Verdict
 

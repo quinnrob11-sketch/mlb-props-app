@@ -468,8 +468,16 @@ async function stagePrices(which) {
   console.log('coverage:', JSON.stringify({ marketsInWindow: coverage.marketsInWindow, matched: coverage.matched, skip: coverage.skip }));
   console.log(`settlement vs box score disagreements: ${coverage.settleDisagrees.length}`, coverage.settleDisagrees.slice(0, 5));
 
-  const q = quoteRows(rows, DECISION_MIN).filter((r) => r.dq?.bid != null && r.dq?.ask != null && (r.settle === 0 || r.settle === 1));
+  const quoted = quoteRows(rows, DECISION_MIN);
+  const q = quoted.filter((r) => r.dq?.bid != null && r.dq?.ask != null && (r.settle === 0 || r.settle === 1));
   console.log(`two-sided decision quote and binary settlement: ${q.length} of ${rows.length}`);
+  console.log('quote coverage by series (rows / two-sided / one-sided only / no candle at all):');
+  for (const k of Object.keys(SERIES)) {
+    const sub = quoted.filter((r) => r.series === k);
+    const two = sub.filter((r) => r.dq?.bid != null && r.dq?.ask != null).length;
+    const none = sub.filter((r) => !r.dq).length;
+    console.log(`  ${k.padEnd(10)} ${String(sub.length).padStart(5)} ${String(two).padStart(6)} ${String(sub.length - two - none).padStart(6)} ${String(none).padStart(6)}`);
+  }
   const ages = q.map((r) => Math.round((r.startMs - DECISION_MIN * 60e3 - r.dq.ts * 1000) / 60e3)).sort((a, b) => a - b);
   console.log(`decision quote age (min): median ${ages[Math.floor(ages.length / 2)]}, p90 ${ages[Math.floor(ages.length * 0.9)]}, max ${ages[ages.length - 1]}`);
 
