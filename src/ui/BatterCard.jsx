@@ -34,13 +34,15 @@ export default function BatterCard({ b }) {
         )}
         <div className="kv">
           <span>Matchup</span>
+          {/*
+            No platoon annotation: the model no longer applies a platoon
+            multiplier to a batter (src/model/batter.js section 3 — a hitter's
+            season line already averages over the matchups he was given, and
+            the term was measured to point the wrong way). The handedness is
+            still shown because it is a fact about tonight's game.
+          */}
           <span>
-            {b.batSide} vs {b.vsHand}HP{" "}
-            {proj.platoon > 1
-              ? "(platoon +)"
-              : proj.platoon < 1
-                ? "(platoon −)"
-                : ""}
+            {b.batSide} vs {b.vsHand}HP
           </span>
         </div>
         <div className="kv">

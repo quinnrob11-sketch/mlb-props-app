@@ -692,6 +692,15 @@ shipped projection is unchanged until someone turns them on):
 - `jointScoring`: section 11b, runs / RBI / H+R+RBI from one plate-appearance
   outcome distribution.
 
+> **Superseded on 2026-09-23, later the same day: the rebuild was ported into
+> `src/model/batter.js` and is now what the board runs.** The platoon term was
+> deleted outright rather than set to zero, `jointScoring` is on, and every
+> prior strength moved. `MARKET_WEIGHT`, the hurdle and `PLAY_RULES` were still
+> not touched. The port was re-measured on this same holdout and reproduces the
+> paired Brier improvement below to the fourth decimal in every series —
+> `docs/BATTER-PORT.md`. Everything in this section describes the state of the
+> code when this study was written and is left as the record of it.
+
 **Not changed:** `BATTER_TUNING`'s defaults, `MARKET_WEIGHT`, the hurdle, the
 bounds, `PLAY_RULES`. The rebuilt configuration is a better forecaster and it
 still loses to the price, so switching the board over to it buys nothing a

@@ -49,6 +49,27 @@
  *      over-reading, and calibration.js no longer patches it.
  *  R2  HR shrinkage 100 -> 300 PA; run/RBI levels, H+R+RBI shape and SB
  *      dispersion re-fitted.
+ *
+ * BATTER PORT (2026-09-23) — docs/BATTER-PORT.md, from the pre-registered
+ * search in docs/BATTER-EDGE-SEARCH.md (fitted on 31,986 posted-lineup
+ * batter-games through 2026-08-09, chosen on 08-10..09-01, tested once on
+ * 09-02..09-22). Three changes, in descending order of what they are worth:
+ *
+ *  P1  THE PLATOON MULTIPLIER IS DELETED, not disabled (section 3). It was
+ *      measured against outcomes and it points the wrong way.
+ *  P2  Runs, RBI and H+R+RBI come from ONE plate-appearance outcome
+ *      distribution (section 11b, `jointScoring`), which is the structural fix
+ *      for the H+R+RBI tail — the worst market in docs/AUDIT.md — and puts
+ *      `rates.bb` to work for the first time.
+ *  P3  Every prior strength re-fitted (`priorStrength`, `hrPriorStrength`),
+ *      with `powerShare`, `runLevel`, `rbiLevel` and `parkStrength` moved with
+ *      them. The regression slopes of actual on projected go from 0.68-0.83 to
+ *      ~1.0. The 0.6 weight on the prior season was searched and kept.
+ *
+ * What this buys: on the untouched holdout the ported model forecasts better
+ * than the model it replaces in every Kalshi series. What it does NOT buy: it
+ * still loses to the exchange price in every series, so `MARKET_WEIGHT`, the
+ * hurdle and `PLAY_RULES` are deliberately unchanged.
  */
 
 import {
@@ -255,6 +276,10 @@ export const SB_PER_GAME_PRIOR = 0.069;
  * Re-measure with:  node tools/backtest.mjs --from <start> --to <end> --kind batter
  */
 const CONTACT_SHARE = 0.989;
+// POWER_SHARE SUPERSEDED by the 2026-09-23 port: BATTER_TUNING.powerShare 1.06,
+// re-fitted on 31,986 batter-games with the platoon amplifier gone and the
+// home-run prior at 200. Kept for the measurement record above. CONTACT_SHARE
+// did not move and is still the live value.
 const POWER_SHARE = 1.022;
 
 /**
@@ -352,24 +377,37 @@ const SB_SCALE = 0.969;
  */
 export const BATTER_TUNING = {
   contactShare: CONTACT_SHARE,
-  powerShare: POWER_SHARE,
+  /**
+   * PORT: `POWER_SHARE` was 1.022, fitted beside the platoon amplifier and the
+   * 300-PA home-run prior. With both of those re-derived, the FIT search moved
+   * it to 1.06. `contactShare` did not move.
+   */
+  powerShare: 1.06,
   hrLevel: HR_LEVEL,
   /**
    * Was R_LEVEL 0.933 / RBI_LEVEL 0.963 (Aug 3-22 replay). Fit window now reads
    * runs +1.6% / RBI +1.1% under-projected at those values. Holdout log loss:
    * runs 0.9057 -> 0.9050, RBI 0.9149 -> 0.9146. Small, and in the direction of
    * the season-average run environment (4.49 R/G through Aug 9).
+   *
+   * PORT: 0.98 / 1.0, re-fitted on FIT with the 400-strength run and RBI
+   * priors and the joint scoring model in place. Both levels exist to absorb a
+   * bias the shrinkage was creating, and most of that bias is now gone.
    */
-  runLevel: 0.95,
-  rbiLevel: 0.98,
+  runLevel: 0.98,
+  rbiLevel: 1.0,
   sbScale: SB_SCALE,
   /**
    * Shrinkage strength (PA) of the home-run rate toward its 0.03 prior. Was
    * 100: projected-HR slope on actual was 0.81 (fit) / 0.87 (holdout), i.e.
    * the model believed hitters' HR differences more than they held up. 300 was
    * best of 60-600 on fit; holdout HR+TB log loss 2.0180 -> 2.0169.
+   *
+   * PORT: re-fitted at 200 on the six-times-larger FIT window (31,986
+   * batter-games against 5,274). Slope 1.09 -> 0.98, FIT log-loss gain
+   * 0.00037. The 300 above was fitted on three weeks in August.
    */
-  hrPriorStrength: 300,
+  hrPriorStrength: 200,
   /**
    * Weight on the PRIOR SEASON in the shrinkage blend, and the prior strength
    * (in denominator units) of every other rate. These were fixed inside
@@ -379,27 +417,34 @@ export const BATTER_TUNING = {
    */
   seasonPriorWeight: 0.6,
   /**
-   * Strength of the platoon multiplier (1 = the shipped +-5% / +2% for switch
-   * hitters) and how much more platoon-sensitive home runs are (1.8 shipped).
-   */
-  platoonStrength: 1,
-  platoonHrAmp: 1.8,
-  /**
    * Strength of the park term and of the opposing-starter term, as multipliers
    * on the shipped park weights (0.7 / 0.5) and on `PITCHER_INFLUENCE` (0.6).
-   * 1 reproduces the shipped model.
+   * 1 is the pre-2026-09-23 model.
+   *
+   * PORT: park was mildly UNDER-applied. 1.25-1.5 improves FIT log loss by
+   * 0.0006 and the curve is nearly flat above 1.25, so 1.25 is what the search
+   * kept. `pitcherInfluence` stays at 1: 0.6x and 1.4x are both worse on FIT,
+   * i.e. the starter term is already at its optimum.
    */
-  parkStrength: 1,
+  parkStrength: 1.25,
   pitcherInfluence: 1,
   /**
-   * Section 11b. `jointScoring` switches runs / RBI / H+R+RBI over to the
-   * joint plate-appearance outcome model; false keeps the shipped Poisson,
-   * negative binomial and inflated-convolution marginals. The weights below
-   * are the measured decomposition (see 11b) and are ratios only: the scales
-   * are solved per hitter so the means are unchanged.
+   * Section 11b. `jointScoring` draws runs / RBI / H+R+RBI from ONE
+   * plate-appearance outcome distribution; false falls back to the
+   * pre-2026-09-23 Poisson, negative binomial and inflated-convolution
+   * marginals (sections 11 and 12). The weights below are the measured
+   * decomposition (see 11b) and are ratios only: the scales are solved per
+   * hitter so the means are unchanged.
+   *
+   * PORT: on by default. This is the structural fix for H+R+RBI, the worst
+   * market in docs/AUDIT.md. FIT, predicted vs observed:
+   *   H+R+RBI 2+/3+/4+   marginals 44.7 / 27.7 / 16.4
+   *                      joint     45.6 / 28.8 / 16.9
+   *                      observed  45.4 / 29.1 / 17.3
+   * `scoreSpread` is the game-level scoring latent, fitted at 0.6.
    */
-  jointScoring: false,
-  scoreSpread: 0,
+  jointScoring: true,
+  scoreSpread: 0.6,
   /**
    * The batting order as a TALENT signal, not just a plate-appearance one.
    * `exp(-slotPower * (slot - 5))` multiplies the home-run rate and
@@ -423,8 +468,29 @@ export const BATTER_TUNING = {
   rbiWeights: { out: 0.0202, hit: 0.2674, hrExtra: 0.5868 },
   rbiHitShares: [0.784, 0.196, 0.020],
   hrExtraShares: [0.652, 0.288, 0.056],
+  /**
+   * PORT (docs/BATTER-PORT.md, from the FIT search in
+   * docs/BATTER-EDGE-SEARCH.md). The model believed hitters' differences more
+   * than they hold up: the regression slope of actual on projected was 0.76
+   * for hits, 0.74 for singles, 0.68 for RBI, 0.81 for runs and 0.83 for
+   * H+R+RBI. Re-fitting each strength on FIT alone, one rate at a time, by log
+   * loss, moves every slope to ~1:
+   *
+   *   rate      was  now   slope, was -> now   FIT log-loss gain
+   *   hit        60  200   0.76 -> 0.86        0.00047
+   *   single     60  600   0.74 -> 0.81        0.00029
+   *   double     80  400   flat                0.00024
+   *   triple    120  120   flat                —
+   *   run        60  400   0.81 -> 1.21        0.00143
+   *   rbi        60  400   0.68 -> 1.06        0.00117
+   *   k          60   60   1.04                —
+   *   sb         30   15   1.12 -> 0.99        0.00067   (GAMES, not PA)
+   *
+   * `seasonPriorWeight` was searched over 0 .. 1.3 in the same pass and 0.6 —
+   * the value already shipped — is the FIT optimum exactly, so it did not move.
+   */
   priorStrength: {
-    hit: 60, single: 60, double: 80, triple: 120, run: 60, rbi: 60, k: 60, bb: 60, sb: 30,
+    hit: 200, single: 600, double: 400, triple: 120, run: 400, rbi: 400, k: 60, bb: 60, sb: 15,
   },
   /** NB dispersion of RBI (k) and of stolen bases. */
   rbiK: 0.85,
@@ -581,8 +647,6 @@ function tailFromPmf(pmf, line) {
  * @param {object} input.season25    prior-season hitting split
  * @param {number} input.slot        1-9 lineup position (anything else => estimate)
  * @param {boolean} input.isAway     away team bats a guaranteed 9 innings
- * @param {string} input.batSide     "L" | "R" | "S"
- * @param {string} input.pitcherHand "L" | "R" — opposing starter
  * @param {object} input.spRates     opposing starter's rates. Either the raw
  *                                   talent rates {kRate, hRate, hrRate} from
  *                                   `projectPitcher` (preferred), or the
@@ -600,8 +664,8 @@ export function projectBatter(input) {
     season25,
     slot,
     isAway,
-    batSide,
-    pitcherHand,
+    // `batSide` and `pitcherHand` are still passed by every caller and are no
+    // longer read: the platoon term they fed was measured out (section 3).
     spRates,
     park,
     wx,
@@ -704,30 +768,56 @@ export function projectBatter(input) {
     ) * T.sbScale;
 
   // ---------------------------------------------------------------------
-  // 3. Platoon multiplier.
+  // 3. THE PLATOON MULTIPLIER IS GONE. It was measured to be noise, and the
+  //    measurement is the reason this section is empty rather than set to a
+  //    neutral constant.
   //
-  //    1.05 with the platoon advantage (opposite hands), 0.95 without,
-  //    1.02 for switch hitters (who always have the advantage but give some
-  //    back for the weaker side being a trained-up one). 1.00 when either
-  //    hand is unknown.
+  //    The model used to multiply a hitter's rates by 1.05 with the platoon
+  //    advantage, 0.95 without and 1.02 for a switch hitter, amplified 1.8x
+  //    for home runs, inverted for strikeouts and passed through at 0.4 to
+  //    runs and RBI. Grouping 31,986 posted-lineup batter-games by that
+  //    multiplier (docs/BATTER-EDGE-SEARCH.md, "the platoon multiplier is
+  //    noise"):
   //
-  //    NOTE(recon): switch hitters get 1.02 > 1, so they ALWAYS receive the
-  //    "PLATOON+" flag. Unchanged (analysis #4.3).
+  //      platoon term        n        hits 1+ pred/obs   TB 2+ pred/obs
+  //      0.95 (same hand)    12,127   58.8 / 61.5        33.3 / 35.2
+  //      1.02 (switch)        3,437   60.6 / 59.8        34.6 / 33.6
+  //      1.05 (opp. hand)    16,422   63.0 / 60.2        37.6 / 35.4
+  //
+  //    The model spread hits-1-or-more over 4.2 points across the three
+  //    groups. Reality spreads 1.3 points AND POINTS THE OTHER WAY.
+  //
+  //    Not because the platoon effect does not exist, but because this is a
+  //    selected population and the season line already contains the effect:
+  //
+  //      - a hitter's season rate is a plate-appearance-weighted average over
+  //        the matchups his manager actually gave him, so a left-handed
+  //        platoon bat whose season is 80% against right-handers is carrying
+  //        what is essentially his vs-RHP rate already. Multiplying by another
+  //        1.05 counts the same edge twice;
+  //      - the hitters who START against a same-handed pitcher are the ones
+  //        who can hit them. Conditional on being in the posted card, the
+  //        disadvantage largely disappears.
+  //
+  //    Removing the term was the single largest improvement found anywhere in
+  //    that study (FIT traded log loss 6.13274 -> 6.12797, VALIDATE hits Brier
+  //    0.14819 -> 0.14785), and a strength of -0.25 was no better than 0.
+  //
+  //    PER-HITTER SPLITS DO NOT RESCUE IT. Each hitter's own completed-2025
+  //    vs-LHP / vs-RHP OPS (`stats=statSplits&sitCodes=vl,vr`, so no
+  //    lookahead), regressed to the mean and applied relative to the mix he
+  //    actually played, was worse than no platoon term at all at every
+  //    strength and every regression constant tried (511 hitters, k = 40/150/
+  //    400 PA). That is why `input.platoonOverride` is gone too: the hook it
+  //    existed for was built, measured and rejected.
+  //
+  //    Do not add this back on intuition. Re-measure it first:
+  //      node tools/batter-research.mjs --mode base --cache DIR
+  //
+  //    The pitcher-side platoon term (`src/model/platoon.js`, a pitcher's own
+  //    measured split applied to the opposing CARD) is a different object and
+  //    is untouched.
   // ---------------------------------------------------------------------
-  let platoon = 1;
-  if (batSide && pitcherHand) {
-    if (batSide === 'S') platoon = 1.02;
-    else if (batSide !== pitcherHand) platoon = 1.05;
-    else platoon = 0.95;
-  }
-  // `platoonStrength` scales the whole deviation from 1 (1 = the values above,
-  // 0 = no platoon term at all). See docs/BATTER-EDGE-SEARCH.md: the season
-  // line a platooned hitter carries is already an average over the matchups his
-  // manager actually gives him, so a second multiplier double-counts.
-  platoon = 1 + (platoon - 1) * T.platoonStrength;
-  // `input.platoonOverride` replaces the table entirely, for a caller that has
-  // the hitter's own vs-LHP / vs-RHP split regressed to the mean.
-  if (Number.isFinite(input.platoonOverride)) platoon = input.platoonOverride;
 
   // ---------------------------------------------------------------------
   // 4. Opposing-starter quality — from de-duplicated talent rates, see
@@ -823,11 +913,8 @@ export function projectBatter(input) {
   //    reshuffling it.
   // ---------------------------------------------------------------------
 
-  // HR rate: the platoon term is AMPLIFIED. `(platoon - 1) * 1.8 + 1` turns
-  // 1.05 into 1.09 and 0.95 into 0.91 — home-run rate is roughly twice as
-  // platoon-sensitive as batting average. The `platoon === 1 ? 1 : ...` guard
-  // keeps an unknown matchup at exactly 1 (algebraically identical, but
-  // preserved verbatim).
+  // HR rate. The platoon term used to sit here, amplified 1.8x; section 3 says
+  // why it does not any more.
   //
   // FIX(v31) — the CONTACT/POWER SPLIT. See the constants below.
   const slotCentre = slot >= 1 && slot <= 9 ? slot - 5 : 0;
@@ -835,12 +922,11 @@ export function projectBatter(input) {
   const slotContactMult = T.slotContact ? Math.exp(-T.slotContact * slotCentre) : 1;
 
   const hrPARaw = clamp(
-    rates.hr * (platoon === 1 ? 1 : (platoon - 1) * T.platoonHrAmp + 1) * spHr * parkHrWeather *
-      slotPowerMult * T.powerShare * T.hrLevel,
+    rates.hr * spHr * parkHrWeather * slotPowerMult * T.powerShare * T.hrLevel,
     0.002, 0.1,
   );
 
-  // Non-HR hit rate: platoon x starter x park. `rates.hit - rates.hr` is
+  // Non-HR hit rate: starter x park. `rates.hit - rates.hr` is
   // strictly positive (HR are a subset of hits, and the hit prior contributes
   // 13.32 synthetic hits against the HR prior's 3.0), so nothing has to be
   // floored.
@@ -863,7 +949,7 @@ export function projectBatter(input) {
   // measured answer is neither 0.975 nor 1.0.
   const nonHrHitPARaw = Math.max(
     0,
-    (rates.hit - rates.hr) * platoon * spHit * parkHits * slotContactMult * T.contactShare,
+    (rates.hit - rates.hr) * spHit * parkHits * slotContactMult * T.contactShare,
   );
 
   // The [0.05, 0.42] clamp still applies to the TOTAL hit rate, as before. When
@@ -875,10 +961,9 @@ export function projectBatter(input) {
   const hrPA = hrPARaw * clampScale;
   const nonHrHitPA = nonHrHitPARaw * clampScale;
 
-  // K rate: platoon INVERTS via `2 - platoon` (1.05 -> 0.95, 0.95 -> 1.05).
-  // A batter with the platoon advantage strikes out less. Note this is an
-  // additive reflection, not the multiplicative inverse 1/platoon.
-  const kPA = clamp(rates.k * (2 - platoon) * spK * parkSo, 0.05, 0.45);
+  // K rate. The platoon term used to invert here (`2 - platoon`, so a batter
+  // with the advantage struck out less); section 3 says why it is gone.
+  const kPA = clamp(rates.k * spK * parkSo, 0.05, 0.45);
 
   // ---------------------------------------------------------------------
   // 7. Hit-type decomposition.
@@ -907,12 +992,13 @@ export function projectBatter(input) {
   const projHR = pa * hrPA;
   const projTB = pa * (singlePA + 2 * doublePA + 3 * triplePA + 4 * hrPA);
 
-  // Runs and RBI: shrunk rate x PA x a DAMPED platoon term
-  // (`platoon * 0.4 + 0.6` passes through only 40% of the platoon edge because
-  // runs/RBI depend as much on teammates as on the batter) x the run context
-  // from step 5. RBI keeps the same unexplained 0.975 haircut as hits.
-  const projR = pa * rates.run * (platoon * 0.4 + 0.6) * runContext * T.runLevel;
-  const projRBI = pa * rates.rbi * (platoon * 0.4 + 0.6) * runContext * 0.975 * T.rbiLevel;
+  // Runs and RBI: shrunk rate x PA x the run context from step 5. (A damped
+  // platoon term, `platoon * 0.4 + 0.6`, used to sit between the two; section 3
+  // says why it is gone. `RUN_CONTEXT_PASSTHROUGH` below keeps the 0.4 it was
+  // measured at, for the weather leg that still uses it.) RBI keeps the same
+  // unexplained 0.975 haircut as hits.
+  const projR = pa * rates.run * runContext * T.runLevel;
+  const projRBI = pa * rates.rbi * runContext * 0.975 * T.rbiLevel;
 
   // H+R+RBI is a plain sum of the three means (correct in expectation: a solo
   // HR contributes 1 + 1 + 1 = 3).
@@ -1094,7 +1180,11 @@ export function projectBatter(input) {
   })();
 
   // ---------------------------------------------------------------------
-  // 11. H+R+RBI: the model's own mean, with the real correlation restored.
+  // 11. H+R+RBI from three glued marginals — THE FALLBACK PATH SINCE THE
+  //     2026-09-23 PORT. With `jointScoring` on (the default) section 11b
+  //     replaces everything below; this runs only for `jointScoring: false`,
+  //     which is how the research tools reproduce the old model. It is kept
+  //     because it is the thing the joint model is measured against.
   //
   //     FIX(3) — v20. `projHRR` is `projH + projR + projRBI`, but the shipped
   //     distribution was a fitted NB(k=2.2) whose mean did not match it, so the
@@ -1147,7 +1237,7 @@ export function projectBatter(input) {
   const hrrMean = projHRR;
   const hrrVar = T.hrrVarianceInflation * (hitsVar + runsVar + rbiVar);
 
-  const hrrTail = (() => {
+  const hrrTail = T.jointScoring ? null : (() => {
     // A negative binomial needs variance strictly above the mean. For any
     // realistic hitter the inflated variance clears it comfortably (the
     // measured var/mean for this market is 2.09), but a hitter projected at
@@ -1193,9 +1283,17 @@ export function projectBatter(input) {
 
 
   // ---------------------------------------------------------------------
-  // 11b. JOINT SCORING (opt-in, `jointScoring`). Runs, RBI and H+R+RBI from
-  //      ONE plate-appearance outcome distribution instead of three marginals
-  //      glued together by a variance constant.
+  // 11b. JOINT SCORING (`jointScoring`, ON by default since 2026-09-23).
+  //      Runs, RBI and H+R+RBI from ONE plate-appearance outcome distribution
+  //      instead of three marginals glued together by a variance constant.
+  //
+  //      This is the structural fix for H+R+RBI, the worst market this system
+  //      has (docs/AUDIT.md: 149 trades, -14.6% [-30.8, +0.8], the largest
+  //      Brier gap to the price of any series). The old shape was right in the
+  //      mean and wrong in the tail — on FIT it read 27.9% at the 2.5 line
+  //      against 29.1% observed and 16.6% at 3.5 against 17.3%, because a
+  //      shared variance constant cannot know that ONE swing is +1 hit, +1 run
+  //      and +1 RBI at the same instant.
   //
   //      Each plate appearance is a draw from {out, walk, non-HR hit, home
   //      run}. Attached to that draw, resolved at the same plate appearance:
@@ -1308,10 +1406,13 @@ export function projectBatter(input) {
   // ---------------------------------------------------------------------
   // 12. Market tail distributions: each returns P(stat > line).
   //
-  //     Families: binomial (mixed over the PA distribution) for hits / HR / singles /
-  //     K; exact multinomial for TB; Poisson for runs; NB for RBI (k=0.85) and
-  //     SB (k=1, geometric); and the convolution above for H+R+RBI. Every one
-  //     of them now has mean exactly equal to the `proj*` displayed next to it.
+  //     Families: binomial (mixed over the PA distribution) for hits / HR /
+  //     singles / K; exact multinomial for TB; NB for SB; and — since the
+  //     2026-09-23 port — the ONE joint plate-appearance object of section 11b
+  //     for runs, RBI and H+R+RBI. With `jointScoring: false` those three fall
+  //     back to the old Poisson / NB(k=0.85) / inflated-convolution marginals.
+  //     Every one of them has mean exactly equal to the `proj*` displayed next
+  //     to it.
   // ---------------------------------------------------------------------
   const dist = {
     hits:    (line) => tailFromPmf(hitsPmf, line),
@@ -1329,13 +1430,14 @@ export function projectBatter(input) {
   };
 
   // ---------------------------------------------------------------------
-  // 13. Flags (exact strings; note PLATOON− uses U+2212 MINUS SIGN, not a
-  //     hyphen — the UI filters on these literals).
+  // 13. Flags. `PLATOON+` / `PLATOON−` went with the platoon term (section 3):
+  //     the model no longer believes the matchup moves the projection, so
+  //     flagging it would be advertising an edge that was measured not to
+  //     exist. The UI's filters on those literals are left in place; they now
+  //     match nothing.
   // ---------------------------------------------------------------------
   const flags = [];
   if (pa26 < 100 && pa25 < 250) flags.push('SMALL SAMPLE');
-  if (platoon > 1) flags.push('PLATOON+');
-  if (platoon < 1) flags.push('PLATOON−');
 
   return {
     pa,
@@ -1360,7 +1462,6 @@ export function projectBatter(input) {
     proj1B,
     dist,
     flags,
-    platoon,
   };
 }
 
@@ -1384,7 +1485,15 @@ export function projectBatter(input) {
  *   #12 `SMALL SAMPLE` uses `&&`; there is no zero-2026-data flag.
  *   #13 `windMph` is collected and never read; `weatherHrFactor` and
  *       `projectNrfi` use two different temperature models.
- *   #14 No cross-market correlation; `pa` is a point estimate for the mean
- *       (the mixture models which integer it lands on, not season variance).
- *   #15 `rates.bb` is computed and never consumed.
+ *   #14 No cross-market correlation BETWEEN the hits/TB/K families; `pa` is a
+ *       point estimate for the mean (the mixture models which integer it lands
+ *       on, not season variance). Runs, RBI and H+R+RBI are no longer in this
+ *       list: since 2026-09-23 they come out of one object (section 11b).
+ *
+ * No longer true, and left here so the change is visible:
+ *
+ *   #15 `rates.bb` was computed and never consumed. The joint scoring model
+ *       reads it — a walk is a plate appearance from which the batter scores
+ *       26.2% of the time, which is most of what separates a leadoff hitter's
+ *       runs from his hits.
  */
