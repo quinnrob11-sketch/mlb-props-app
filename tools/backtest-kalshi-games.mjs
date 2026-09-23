@@ -39,7 +39,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildGames, validate, USE_LINEUPS } from './backtest-games.mjs';
+// `--v2` swaps the replay for the candidate improved model (see
+// docs/GAME-EDGE-SEARCH.md). Everything downstream — the ticker parsing, the
+// decision quote, the screen, the statistics — is identical either way, which
+// is the point: the two models are put through the same study.
+const { buildGames, validate, USE_LINEUPS } = await import(
+  process.argv.includes('--v2') ? './backtest-games-v2.mjs' : './backtest-games.mjs'
+);
 import { planOrders, modelProbability, GAME_SERIES } from '../bot/plan.mjs';
 import { normalizeMarket, normalizeOrderbook } from '../src/lib/kalshi.js';
 import { buildSignal, blendedProbability } from '../src/trade/signals.js';
@@ -391,7 +397,11 @@ async function main() {
     : null;
 
   const report = {
-    window: { from: FROM, to: TO, decisionMinutesBeforeFirstPitch: DECISION_MIN, lineups: USE_LINEUPS },
+    window: {
+      from: FROM, to: TO, decisionMinutesBeforeFirstPitch: DECISION_MIN, lineups: USE_LINEUPS,
+      model: process.argv.includes('--v2') ? (process.argv.includes('--as-v1') ? 'v2-replay-priced-as-v1' : 'v2') : 'v1',
+      params: process.argv.includes('--v2') ? arg('params', null) : null,
+    },
     seriesSpanLiveTier: seriesSpan,
     replayValidation: validation,
     coverage,
