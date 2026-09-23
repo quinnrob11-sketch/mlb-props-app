@@ -16,6 +16,17 @@ strikeouts, outs recorded, hits allowed, earned runs and walks.
 **Part 1 below was written and committed before any profit number, any Brier
 comparison against a price, and any look at the validation or holdout windows.**
 
+**Short answer: no, and the reason is the spread, not the model.** A model
+fitted properly on two seasons does beat the shipped one against outcomes in all
+five markets, and it takes strikeouts from measurably worse than the Kalshi
+price to level with it. It still does not beat the price. On the holdout the
+pooled Brier difference is −0.0023 [−0.0055, +0.0009] — interval contains zero
+— and post-fee ROI is −8.4% [−17.2, +0.6] on 543 trades. Both halves of the
+pre-registered bar FAIL. The one market where the model clearly beats the quoted
+midpoint, earned runs, is a book with a **38-cent median spread**, so beating
+its mid buys nothing; the two markets with a one-cent spread, strikeouts and
+outs, are the two the price still wins.
+
 ---
 
 ## Part 1 — Pre-registration
@@ -344,10 +355,185 @@ the best ROI on VALIDATE — that was w = 0.4, at +13.9% on 118 trades. Picking
 exact failure mode this study was set up to avoid. Everything else in the rule
 was fixed in Part 1 and is unchanged.
 
-## Part 4 — Holdout (2026-09-02 .. 2026-09-22), one run
+## Part 4 — Holdout (2026-09-02 .. 2026-09-22)
 
-*(to follow)*
+Run once at T−120, fee 0.07, w = 0.7 — the configuration fixed in the previous
+commit. **Disclosure, as the brief requires: the holdout was then looked at
+three times more** — twice for the secondaries Part 1 pre-declared (T−30, and
+fee 0.035), and once to print the quoted spread, which is a property of the book
+and not of the model. The primary numbers below were not revised, and no setting
+was changed in response to anything seen.
+
+### Coverage (measured)
+
+| | |
+|---|---|
+| Settled pitcher-prop markets in the window | 10,176 |
+| Matched to a replayed start | **10,005** (171 unmatched: pitcher did not start) |
+| Two-sided decision quote and binary settlement at T−120 | **7,004** |
+| Decision quote age | median 2 min, p90 22 min, max 236 min |
+| Settlement vs the final box score | 4 disagreements in 10,005, again all in hits allowed and earned runs |
+
+| series | rows | two-sided | one side only | no candle |
+|---|---|---|---|---|
+| KXMLBKS | 3,638 | 3,558 | 72 | 8 |
+| KXMLBOUTS | 504 | 499 | 4 | 1 |
+| KXMLBHA | 2,468 | 807 | 567 | **1,094** |
+| KXMLBERA | 2,058 | 1,334 | 446 | 278 |
+| KXMLBWA | 1,337 | 806 | 334 | 197 |
+
+### (A) Forecast skill, model vs decision mid
+
+Negative = model better. Cluster bootstrap over pitcher-start, 20,000 resamples.
+
+| market | n | M2 | market | M2 − market [95%] | shipped − market [95%] |
+|---|---|---|---|---|---|
+| **pooled** | 7,004 | 0.1921 | 0.1945 | **−0.0023 [−0.0055, +0.0009]** | −0.0001 [−0.0032, +0.0031] |
+| strikeouts | 3,558 | 0.1675 | 0.1646 | +0.0029 [−0.0012, +0.0070] | +0.0075 [+0.0031, +0.0120] |
+| outs recorded | 499 | 0.2509 | 0.2412 | +0.0097 [−0.0005, +0.0203] | +0.0093 [−0.0014, +0.0202] |
+| hits allowed | 807 | 0.2150 | 0.2159 | −0.0009 [−0.0082, +0.0067] | −0.0007 [−0.0082, +0.0071] |
+| **earned runs** | 1,334 | 0.2141 | 0.2346 | **−0.0206 [−0.0294, −0.0116]** | −0.0206 [−0.0295, −0.0114] |
+| walks | 806 | 0.2055 | 0.2096 | −0.0042 [−0.0107, +0.0026] | −0.0045 [−0.0111, +0.0021] |
+
+**(A) FAILS pooled** — the interval contains zero. It passes in exactly one
+market, **earned runs**, where the model's Brier is 0.0206 better than the mid
+with the interval clear of zero. Note the column beside it: the **shipped**
+model does exactly as well there (−0.0206). Whatever is happening in earned
+runs, the new modelling work is not what causes it.
+
+### (B) P&L, the pre-registered rule, w = 0.7
+
+| market | trades | starts | P&L / contract | ROI [95% CI] |
+|---|---|---|---|---|
+| **pooled** | **543** | 373 | −3.92c | **−8.4% [−17.2, +0.6]** |
+| strikeouts | 291 | 291 | −1.20c | −2.9% [−15.2, +9.8] |
+| outs recorded | 144 | 144 | −3.92c | −7.5% [−22.6, +7.7] |
+| hits allowed | 47 | 47 | −7.61c | −14.0% [−40.1, +11.8] |
+| earned runs | 22 | 22 | −11.18c | −21.5% [−57.7, +19.6] |
+| walks | 39 | 39 | −15.71c | −29.0% [−57.2, +0.7] |
+
+**(B) FAILS everywhere.** Every market is negative and the pooled point estimate
+is −8.4%. Closing-line value is +0.14c per contract pooled — nothing.
+
+**The bar is FAILED. Both halves, pooled; and the one market that clears (A)
+loses 21.5% of money staked.**
+
+### Why: the spread
+
+The one number that explains the whole study is the quoted width of the book at
+the decision time.
+
+| series | median spread, holdout | median spread, validate |
+|---|---|---|
+| KXMLBKS strikeouts | **1c** | 1c |
+| KXMLBOUTS outs | **1c** | 1c |
+| KXMLBHA hits allowed | 9c | 13c |
+| KXMLBWA walks | 13c | 11c |
+| KXMLBERA earned runs | **38c** | 58c |
+
+Where the market is tight — strikeouts and outs, both quoted a cent wide — the
+price forecasts better than the model, on both windows, for the shipped model
+and for M2 alike. Where the model beats the mid — earned runs — the mid is the
+midpoint of a thirty-eight-cent quote, and to buy you pay the ask. A two-point
+Brier advantage over a number nobody will trade at is not an edge; it is a
+description of an empty book.
+
+The T−30 secondary makes the same point from the other side. By half an hour
+before first pitch the thin books have filled in, coverage rises from 7,004 to
+8,596 rows, and the model's apparent advantage in hits allowed and walks
+**reverses**: −0.0009 → +0.0021 for hits, −0.0042 → +0.0025 for walks. Only
+earned runs survives (−0.0244), and its P&L at T−30 is −15.3%.
+
+### Secondaries, as pre-declared
+
+| | trades | ROI [95% CI] |
+|---|---|---|
+| primary: T−120, fee 0.07 | 543 | −8.4% [−17.2, +0.6] |
+| T−30, fee 0.07 | 582 | −4.8% [−13.4, +3.6] |
+| T−120, fee 0.035 | 715 | −3.2% [−10.6, +4.2] |
+
+Halving the fee moves the result about five points and does not change the sign
+of the point estimate, let alone the verdict. At fee 0.035 the strikeout cell is
++2.2% [−9.8, +14.2] on 339 trades — the only positive cell anywhere in the
+holdout, with an interval reaching ten points either side of nothing.
+
 
 ## Verdict
 
-*(to follow)*
+**The improved pitcher model does not beat the price. The pre-registered bar
+fails on both halves.**
+
+- **(A) Brier vs the exchange mid:** pooled −0.0023 [−0.0055, +0.0009] — the
+  interval contains zero. FAIL. It passes in one market only, earned runs
+  (−0.0206 [−0.0294, −0.0116]), where the shipped model does equally well, so
+  the modelling work is not the cause.
+- **(B) ROI after the 0.07 fee:** −8.4% [−17.2, +0.6] on 543 trades. FAIL, and
+  negative in all five markets.
+
+Three things are nevertheless established, and they are worth keeping.
+
+1. **The model is genuinely better than the shipped one, against outcomes.**
+   On 990 fit-tail starts it wins all five markets, and on the holdout it cuts
+   the strikeout Brier gap to the price from **+0.0075 [+0.0031, +0.0120]**
+   (shipped — measurably worse than the market) to **+0.0029 [−0.0012, +0.0070]**
+   (indistinguishable from the market). That is the largest modelling gain in
+   this study: two seasons, recency weighting, partial pooling and the posted
+   lineup take strikeouts from "beaten by the price" to "level with the price".
+   Level is not ahead, and level does not pay a 1-cent spread plus a 1.7-cent
+   fee.
+
+2. **The three new markets are not an opportunity.** Hits allowed, earned runs
+   and walks looked like the find of the study on the validation window — the
+   model beat the mid on all three with intervals clear of zero. The holdout,
+   the T−30 secondary and the spread table together say why that was not real:
+   those books carry a median spread of 9 to 38 cents, are quoted on one side
+   or not at all 40-60% of the time at T−120, and the advantage disappears once
+   the book fills in. **Do not raise `MARKET_WEIGHT.pitcher_earned_runs` or its
+   neighbours on the strength of a Brier score measured against the midpoint of
+   an empty quote.** Nothing in `src/` was changed by this study, and that is
+   deliberate.
+
+3. **The answer to "why can't the model win" now has a number attached.**
+   `docs/AUDIT.md` said the price is sharper; this says where. On the two
+   pitcher markets Kalshi actually makes — strikeouts and outs, quoted one cent
+   wide — the price is already better than a properly fitted two-season
+   hierarchical model that reads the posted lineup. On the markets where a model
+   *can* beat the quote, the quote is thirty-eight cents wide and there is
+   nothing to trade.
+
+**Recommendation: leave the pitcher model where the audit left it.** The
+strikeout and outs weights (0 and 0.1) are still what the evidence supports, and
+the new series should not be added to the board as plays. If anything here is
+worth shipping it is M2's *projections* — they are better forecasts of baseball,
+and the board displays projections — but that is a display improvement, not a
+trading one, and it belongs in a separate, separately tested change.
+
+### Caveats
+
+- **The holdout is 21 days and 543 trades.** A −8.4% point estimate with a
+  17-point interval cannot separate "loses 8%" from "loses nothing".
+- **Fills are idealised**: one contract, taker at the quoted top of book, depth
+  assumed sufficient, no queue, no latency. This flatters the rule.
+- **Only actual starters.** Markets on scratched pitchers are excluded.
+- **The replay has no in-game information**, and it reads the posted lineup,
+  which at T−120 is usually but not always up.
+- **Settlement is Kalshi's**, and it disagreed with the final box score on 9 of
+  19,490 matched markets across both windows, all of them in hits allowed and
+  earned runs — the two stats an official scorer can revise.
+- **The holdout was looked at four times**: once for the primary, twice for the
+  pre-declared secondaries, once for the spread table. No setting was changed in
+  response to any of them.
+
+### Reproduce
+
+```
+node tools/pitcher-edge.mjs --stage fit      --cache <statsapi cache> --out model.json
+node tools/pitcher-edge.mjs --stage ablate   --cache <statsapi cache> --model model.json
+node tools/pitcher-edge.mjs --stage validate --cache <statsapi cache> --kcache <kalshi cache> --model model.json
+node tools/pitcher-edge.mjs --stage holdout  --cache <statsapi cache> --kcache <kalshi cache> --model model.json --weight 0.7
+```
+
+The statsapi cache must be fetched after the last date in the window. Kalshi
+responses are cached under `--kcache` (about 25 MB for both windows; candles are
+pulled only for the six hours before first pitch, a tenth of what the older
+tools fetch). Public endpoints only, no auth, no orders.

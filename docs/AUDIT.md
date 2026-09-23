@@ -25,6 +25,15 @@ several contracts on one game are not independent bets.
 | Game lines (ML, run line, total) | 0 | — | 3.1–3.2 pts from market, no lean | **not playable** — zero contracts ever clear the hurdle, by arithmetic |
 | First inning (NRFI/YRFI) | 0 | — | model spans 47–52% | **not playable** — never far enough from the market to call |
 
+Pitcher props were re-tested from scratch in September with a model built
+properly — two seasons, recency weighting, partial pooling, the posted lineup,
+catcher, umpire, park and weather, and a joint depth-first distribution. It is a
+better forecaster than the shipped one in all five pitcher markets, and it still
+does not beat the price: pooled Brier difference −0.0023 [−0.0055, +0.0009] and
+ROI −8.4% [−17.2, +0.6] on a clean 21-day holdout. Three further Kalshi series
+(hits allowed, earned runs, walks) were priced for the first time and lost 14%,
+22% and 29%. `docs/PITCHER-EDGE-SEARCH.md`.
+
 Pooled: **1,232 prop trades, −3.7%**. In all seven series the exchange's price
 forecast the outcome better than the model did, and the interval on that
 difference excludes zero in every one.

@@ -480,6 +480,14 @@ async function stagePrices(which) {
   }
   const ages = q.map((r) => Math.round((r.startMs - DECISION_MIN * 60e3 - r.dq.ts * 1000) / 60e3)).sort((a, b) => a - b);
   console.log(`decision quote age (min): median ${ages[Math.floor(ages.length / 2)]}, p90 ${ages[Math.floor(ages.length * 0.9)]}, max ${ages[ages.length - 1]}`);
+  // How wide the book is. A mid you cannot trade is easy to beat, so the
+  // spread is the difference between a Brier win and a P&L win.
+  console.log('quoted spread at the decision, cents (median / mean), on the two-sided rows:');
+  for (const k of Object.keys(SERIES)) {
+    const w = q.filter((r) => r.series === k).map((r) => r.dq.ask - r.dq.bid).sort((a, b) => a - b);
+    if (!w.length) continue;
+    console.log(`  ${k.padEnd(10)} median ${w[Math.floor(w.length / 2)]}  mean ${(w.reduce((a, b) => a + b, 0) / w.length).toFixed(1)}`);
+  }
 
   // Baseline model probabilities on exactly the same contracts.
   const qBase = q.map((r) => {
