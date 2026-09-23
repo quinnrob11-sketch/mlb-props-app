@@ -200,6 +200,14 @@ async function extractGames() {
       nrfi: x.bothStarters && x.actual.firstInningRuns != null
         ? [Math.round(1e5 * x.model.nrfi.nrfiProb) / 1e5, x.actual.firstInningRuns === 0 ? 1 : 0]
         : null,
+      // The per-game run-environment terms the model built the total out of,
+      // so a calibration gap can be traced to the part that caused it rather
+      // than only observed. `sp`/`bp` are the run-PREVENTION indices (below 1
+      // is better than league), `of` the offence indices, `env` park x weather.
+      sp: [r3(x.model.inputs?.pitching?.away?.starter), r3(x.model.inputs?.pitching?.home?.starter)],
+      bp: [r3(x.model.inputs?.pitching?.away?.bullpen), r3(x.model.inputs?.pitching?.home?.bullpen)],
+      of: [r3(x.model.inputs?.offense?.away?.value), r3(x.model.inputs?.offense?.home?.value)],
+      env: r3(x.model.inputs?.env),
     });
   }
 }

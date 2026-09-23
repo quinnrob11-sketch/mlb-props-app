@@ -290,8 +290,45 @@ const SLICES = {
     lineups: (r) => (r.lu ? 'both cards posted' : 'a card missing'),
     month: (r) => monthOf(r.d),
     season: (r) => r.d.slice(0, 4),
+    projtotal: (r) => projBucket(r.tot[0]),
+    starters: (r) => starterBucket(r),
   },
 };
+
+// ── where the run environment comes from ────────────────────────────────────
+// A total that is right on average can still be wrong at the ends, and the
+// ends are where the board disagrees with a price. These two cut the games by
+// what the model itself said about them, so a gap can be traced to the part
+// of the projection that produced it.
+
+/** The half-run band the model put the game in. */
+export function projBucket(t) {
+  if (t == null) return 'unknown';
+  if (t < 7.5) return 'a  proj < 7.5';
+  if (t < 8.0) return 'b  proj 7.5-8.0';
+  if (t < 8.5) return 'c  proj 8.0-8.5';
+  if (t < 9.0) return 'd  proj 8.5-9.0';
+  if (t < 9.5) return 'e  proj 9.0-9.5';
+  if (t < 10.0) return 'f  proj 9.5-10.0';
+  return 'g  proj 10.0+';
+}
+
+/**
+ * How good the two starters are, as the model reads them. `sp` is a
+ * run-prevention index against league average, so BELOW one is better than
+ * league; the pair is summarised by its mean. "Low totals usually mean two
+ * strong starters" is exactly this slice.
+ */
+export function starterBucket(r) {
+  const sp = r.sp;
+  if (!sp || sp[0] == null || sp[1] == null) return 'unknown';
+  const m = (sp[0] + sp[1]) / 2;
+  if (m < 0.88) return 'a  two strong starters (<0.88)';
+  if (m < 0.96) return 'b  above average (0.88-0.96)';
+  if (m < 1.04) return 'c  around league (0.96-1.04)';
+  if (m < 1.12) return 'd  below average (1.04-1.12)';
+  return 'e  two weak starters (1.12+)';
+}
 
 function sliceReport(recs, t, name) {
   const fn = SLICES[t][name];
@@ -347,6 +384,196 @@ function parkReport(recs, t, market, lines, minN = 400) {
   return out.sort((a, b) => b.bias - a.bias);
 }
 
+// ── the total, at the lines that get posted ─────────────────────────────────
+/**
+ * `--totals` answers a narrower question than the market tables above: is the
+ * projected total centred on reality, and is its SHAPE right?
+ *
+ * The overall per-line row ("over 6.5 was quoted at 67.8% and happened 67.6%
+ * of the time") is dominated by ordinary games, because almost every game
+ * clears 6.5. What a 6.5 board actually asks is the conditional question:
+ * among the games the model itself puts NEAR 6.5, how often did it go over?
+ * Both are printed, plus the point projection bucketed by the band the model
+ * put the game in, which is where a level error and a shape error separate:
+ *
+ *   level error  every band biased the same way
+ *   shape error  the low bands biased one way and the high bands the other
+ */
+function totalsReport(recs, label) {
+  const g = recs.filter((r) => r.t === 'g' && r.tot && r.tot[0] != null && r.tot[1] != null);
+  if (!g.length) return null;
+  console.log(`\n=== TOTALS: the run environment — ${label} (${g.length} games) ===`);
+
+  const band = (list) => {
+    const proj = mean(list.map((r) => r.tot[0]));
+    const act = mean(list.map((r) => r.tot[1]));
+    return { n: list.length, proj, act, bias: act - proj };
+  };
+  const all = band(g);
+  console.log(
+    `  overall   proj ${all.proj.toFixed(3)}  actual ${all.act.toFixed(3)}`
+    + `  bias ${all.bias >= 0 ? '+' : ''}${all.bias.toFixed(3)} runs`,
+  );
+
+  // 1. Bucketed by what the model said.
+  console.log('\n  by projected band   n     proj   actual    bias   [95% on the bias]');
+  const byBand = new Map();
+  for (const r of g) {
+    const k = projBucket(r.tot[0]);
+    if (!byBand.has(k)) byBand.set(k, []);
+    byBand.get(k).push(r);
+  }
+  for (const [k, list] of [...byBand].sort()) {
+    const b = band(list);
+    const ci = clusterBoot(list, (r) => r.g, (xs) => mean(xs.map((x) => x.tot[1] - x.tot[0])), 400);
+    console.log(
+      `    ${k.padEnd(18)} ${String(b.n).padStart(5)}  ${b.proj.toFixed(2)}   ${b.act.toFixed(2)}`
+      + `   ${b.bias >= 0 ? '+' : ''}${b.bias.toFixed(3)}   [${ci[0] >= 0 ? '+' : ''}${ci[0].toFixed(3)}, ${ci[1] >= 0 ? '+' : ''}${ci[1].toFixed(3)}]`,
+    );
+  }
+
+  // 2. Bucketed by what happened, which catches a model whose projections are
+  //    centred but do not MOVE with the games that were actually low or high.
+  console.log('\n  by actual total     n     proj   actual    bias');
+  const ACT = [[0, 5], [5, 7], [7, 9], [9, 11], [11, 14], [14, 99]];
+  for (const [lo, hi] of ACT) {
+    const list = g.filter((r) => r.tot[1] >= lo && r.tot[1] < hi);
+    if (list.length < 30) continue;
+    const b = band(list);
+    console.log(
+      `    ${`actual ${lo}-${hi - 1}`.padEnd(18)} ${String(b.n).padStart(5)}  ${b.proj.toFixed(2)}   ${b.act.toFixed(2)}`
+      + `   ${b.bias >= 0 ? '+' : ''}${b.bias.toFixed(3)}`,
+    );
+  }
+
+  // 3. The posted ladder, unconditionally and then on the games where that
+  //    line is the one a book would hang.
+  console.log('\n  line   ALL GAMES  n   pred -> obs   gap        NEAR THE LINE (|proj-line|<=0.75)  n   pred -> obs   gap');
+  const perLine = [];
+  TOTAL_LINES.forEach((L, i) => {
+    const row = (list) => {
+      if (!list.length) return null;
+      const pred = mean(list.map((r) => r.tot[2][i]));
+      const k = list.filter((r) => r.tot[1] > L).length;
+      const [lo, hi] = wilson(k, list.length);
+      return { n: list.length, pred, obs: k / list.length, ci: [lo, hi], off: pred < lo || pred > hi };
+    };
+    const a = row(g);
+    const near = row(g.filter((r) => Math.abs(r.tot[0] - L) <= 0.75));
+    perLine.push({ line: L, all: a, near });
+    const fmt = (o) => (o
+      ? `n=${String(o.n).padStart(5)}  ${(100 * o.pred).toFixed(1).padStart(5)} -> ${(100 * o.obs).toFixed(1).padStart(5)}`
+        + `  ${pct(o.pred - o.obs).padStart(5)}pts${o.off ? ' *' : '  '}`
+      : 'n=    0');
+    console.log(`   ${String(L).padEnd(5)} ${fmt(a)}      ${fmt(near)}`);
+  });
+
+  // 4. The slice the board's disagreement lives in: the games the model itself
+  //    calls low. If the over-lean is real it should show up here as an
+  //    UNDER-projection, and if it is a bias, as an over-projection.
+  console.log('\n  the low end, cumulatively (the games a 6.5-7.5 board is drawn from)');
+  for (const cut of [7.0, 7.25, 7.5, 7.75, 8.0]) {
+    const list = g.filter((r) => r.tot[0] < cut);
+    if (list.length < 25) { console.log(`    proj < ${cut}   n=${list.length} (too few)`); continue; }
+    const b = band(list);
+    const ci = clusterBoot(list, (r) => r.g, (xs) => mean(xs.map((x) => x.tot[1] - x.tot[0])), 400);
+    const o65 = mean(list.map((r) => r.tot[2][0]));
+    const a65 = list.filter((r) => r.tot[1] > 6.5).length / list.length;
+    const o75 = mean(list.map((r) => r.tot[2][1]));
+    const a75 = list.filter((r) => r.tot[1] > 7.5).length / list.length;
+    console.log(
+      `    proj < ${cut}   n=${String(b.n).padStart(4)}  proj ${b.proj.toFixed(2)}  actual ${b.act.toFixed(2)}`
+      + `  bias ${b.bias >= 0 ? '+' : ''}${b.bias.toFixed(3)} [${ci[0] >= 0 ? '+' : ''}${ci[0].toFixed(2)}, ${ci[1] >= 0 ? '+' : ''}${ci[1].toFixed(2)}]`
+      + `   over6.5 ${(100 * o65).toFixed(1)}->${(100 * a65).toFixed(1)}`
+      + `   over7.5 ${(100 * o75).toFixed(1)}->${(100 * a75).toFixed(1)}`,
+    );
+  }
+
+  // 5. Does the projection move enough? Regressing what happened on what was
+  //    projected: a slope above one means the model does not spread far
+  //    enough and is too high at the bottom of its own range.
+  const p = g.map((r) => r.tot[0]);
+  const a = g.map((r) => r.tot[1]);
+  const mp = mean(p);
+  const ma = mean(a);
+  const varP = mean(p.map((x) => (x - mp) ** 2));
+  const cov = mean(p.map((x, i) => (x - mp) * (a[i] - ma)));
+  const slope = cov / varP;
+  const slopeCi = clusterBoot(g, (r) => r.g, (xs) => {
+    const q = xs.map((r) => r.tot[0]);
+    const y = xs.map((r) => r.tot[1]);
+    const mq = mean(q);
+    const my = mean(y);
+    const v = mean(q.map((x) => (x - mq) ** 2));
+    return v ? mean(q.map((x, i) => (x - mq) * (y[i] - my))) / v : NaN;
+  }, 400);
+  console.log(
+    `\n  spread   sd(projected) ${Math.sqrt(varP).toFixed(3)} runs`
+    + `   slope of actual on projected ${slope.toFixed(2)} [${slopeCi[0].toFixed(2)}, ${slopeCi[1].toFixed(2)}]`
+    + `   (1.00 = the projection moves exactly as far as reality does)`,
+  );
+  const gam = amplification(g.map((r) => ({ mu: r.tot[0], y: r.tot[1] })));
+  console.log(
+    `  amplification   gamma ${gam.g.toFixed(2)} [${gam.lo.toFixed(2)}, ${gam.hi.toFixed(2)}]`
+    + `   (mu' = L (mu/L)^gamma; above one = the model damps a signal it already has)`,
+  );
+
+  // 6. The width of the per-game distribution, which the tables above cannot
+  //    see: they read each line against the whole field. Bucketing every
+  //    (game, line) pair by how far the line sits from THAT game's own
+  //    projection asks whether the distribution around the projection is the
+  //    right size. Too narrow and the model quotes too few overs well above
+  //    its projection and too many well below it.
+  console.log('\n  line minus this game\'s projection    n      model -> actual    gap   [95% on actual]');
+  const pairs = [];
+  g.forEach((r) => TOTAL_LINES.forEach((L, i) => pairs.push({ d: L - r.tot[0], p: r.tot[2][i], y: r.tot[1] > L ? 1 : 0 })));
+  const CUTS = [-99, -2.5, -1.5, -0.75, -0.25, 0.25, 0.75, 1.5, 2.5, 99];
+  for (let i = 0; i < CUTS.length - 1; i++) {
+    const l = pairs.filter((q) => q.d >= CUTS[i] && q.d < CUTS[i + 1]);
+    if (l.length < 150) continue;
+    const pred = mean(l.map((q) => q.p));
+    const k = l.filter((q) => q.y).length;
+    const [lo, hi] = wilson(k, l.length);
+    console.log(
+      `    ${String(CUTS[i]).padStart(5)} .. ${String(CUTS[i + 1]).padEnd(5)}  ${String(l.length).padStart(7)}`
+      + `    ${(100 * pred).toFixed(1).padStart(5)} -> ${(100 * (k / l.length)).toFixed(1).padStart(5)}`
+      + `  ${pct(pred - k / l.length).padStart(5)}pts  [${(100 * lo).toFixed(1)}, ${(100 * hi).toFixed(1)}]`
+      + `${pred < lo || pred > hi ? '  MISCALIBRATED' : ''}`,
+    );
+  }
+  return { all, perLine, slope, slopeCi, gamma: gam, sdProj: Math.sqrt(varP) };
+}
+
+/**
+ * The one-parameter shape test. Replace every projection by
+ * `L * (mu / L)^gamma`, where `L` is the mean projection, and find the gamma
+ * that best explains the counts actually scored (Poisson log-likelihood, with
+ * a profile-likelihood 95% interval).
+ *
+ * gamma = 1 means the projection already moves exactly as far as it should.
+ * Above one means the model has the signal and is damping it — the shape error
+ * a one-sided lean at the ends of the board would be made of. Below one means
+ * it is spreading further than the runs support.
+ */
+export function amplification(pts) {
+  const L = mean(pts.map((p) => p.mu));
+  const ll = (gamma) => mean(pts.map((p) => {
+    const m = L * (p.mu / L) ** gamma;
+    return p.y * Math.log(m) - m;
+  }));
+  let best = { g: 1, v: -Infinity };
+  for (let gamma = 0.2; gamma <= 2.6; gamma += 0.005) {
+    const v = ll(gamma);
+    if (v > best.v) best = { g: gamma, v };
+  }
+  const target = best.v - 1.92 / pts.length;
+  let lo = best.g;
+  let hi = best.g;
+  for (let gamma = best.g; gamma > 0.1; gamma -= 0.005) { if (ll(gamma) < target) { lo = gamma; break; } }
+  for (let gamma = best.g; gamma < 3.5; gamma += 0.005) { if (ll(gamma) < target) { hi = gamma; break; } }
+  return { g: best.g, lo, hi };
+}
+
 // ── run ─────────────────────────────────────────────────────────────────────
 const inHoldout = (r) => r.d >= HOLDOUT_FROM && r.d <= HOLDOUT_TO;
 const main = rows.filter((r) => !inHoldout(r));
@@ -394,6 +621,33 @@ const reportMain = score(main);
 const reportHold = hold.length ? score(hold) : null;
 printMarkets(reportMain, `EVERYTHING EXCEPT THE HOLDOUT (through ${HOLDOUT_FROM} exclusive)`);
 if (reportHold) printMarkets(reportHold, `HOLDOUT ${HOLDOUT_FROM}..${HOLDOUT_TO}`);
+
+const totals = {};
+if (has('totals')) {
+  totals.main = totalsReport(main, `EVERYTHING EXCEPT THE HOLDOUT (through ${HOLDOUT_FROM} exclusive)`);
+  if (hold.length) totals.hold = totalsReport(hold, `HOLDOUT ${HOLDOUT_FROM}..${HOLDOUT_TO}`);
+  // Split the same way the study did, so a level that drifts with the season
+  // cannot hide inside a two-season average.
+  const seasons = [...new Set(rows.filter((r) => r.t === 'g').map((r) => r.d.slice(0, 4)))].sort();
+  for (const s of seasons) totals[s] = totalsReport(main.filter((r) => r.d.startsWith(s)), `season ${s}, excluding the holdout`);
+  const months = [...new Set(rows.filter((r) => r.t === 'g').map((r) => monthOf(r.d)))].sort();
+  console.log('\n=== TOTALS by month (every game, holdout included) ===');
+  console.log('  month      n     proj   actual    bias   [95%]        over8.5 pred -> obs');
+  for (const m of months) {
+    const list = rows.filter((r) => r.t === 'g' && monthOf(r.d) === m && r.tot?.[0] != null);
+    if (list.length < 30) continue;
+    const proj = mean(list.map((r) => r.tot[0]));
+    const act = mean(list.map((r) => r.tot[1]));
+    const ci = clusterBoot(list, (r) => r.g, (xs) => mean(xs.map((x) => x.tot[1] - x.tot[0])), 400);
+    const pred = mean(list.map((r) => r.tot[2][2]));
+    const obs = list.filter((r) => r.tot[1] > 8.5).length / list.length;
+    console.log(
+      `  ${m}  ${String(list.length).padStart(5)}  ${proj.toFixed(2)}   ${act.toFixed(2)}`
+      + `   ${act - proj >= 0 ? '+' : ''}${(act - proj).toFixed(3)}  [${ci[0] >= 0 ? '+' : ''}${ci[0].toFixed(2)}, ${ci[1] >= 0 ? '+' : ''}${ci[1].toFixed(2)}]`
+      + `    ${(100 * pred).toFixed(1)} -> ${(100 * obs).toFixed(1)}`,
+    );
+  }
+}
 
 const slices = {};
 if (has('slices')) {
