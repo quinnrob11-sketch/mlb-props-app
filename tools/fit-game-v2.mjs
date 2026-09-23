@@ -185,6 +185,11 @@ const CONFIGS = {
   v1refit: [],
   // The terms with a mechanism and a clear likelihood gain.
   core: ['offence', 'park', 'starter', 'lineup', 'weather'],
+  // `core` without the weather terms. The feature table's weather is what was
+  // RECORDED at first pitch, not the forecast that existed at the decision
+  // time, so `core`'s weather term is the optimistic case; this is the
+  // pessimistic one, and both are carried to the holdout.
+  coreNoWx: ['offence', 'park', 'starter', 'lineup'],
   coreRest: ['offence', 'park', 'starter', 'lineup', 'weather', 'rest'],
   all: Object.keys(GROUPS),
 };
