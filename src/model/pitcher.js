@@ -398,6 +398,85 @@ export const PITCHER_FIT = {
     // 0.442 -> 0.447), not in the level.
     outs: [15.5074, 0.8756, 0.9952],
   },
+  /**
+   * ROLE (v38). The one thing the depth model did not know: whether tonight's
+   * starter is a starter.
+   *
+   * `cal.outs` above shrinks every start's projected depth toward a single
+   * anchor, 15.5 outs, as though starts came from one population. They come
+   * from two. Over the FIT split, 298 of 8,405 starts were made by a pitcher
+   * whose last three appearances had all been one- or two-inning relief
+   * outings. Those starts averaged **5.44 outs**. The other 8,107 averaged
+   * 15.81. Fitting one straight line through both flattens the shrink from
+   * 0.688 to 0.879 — and that flattened shrink is then applied to the 8,107
+   * real starters, who are consequently under-shrunk at both ends:
+   *
+   *     raw outs     8.1   11.2   13.3   14.6   15.5   16.5   17.4   18.6
+   *     actual      10.1   13.7   14.3   14.8   15.4   16.2   16.9   17.9
+   *     v37 ships    9.0   11.7   13.5   14.6   15.5   16.3   17.1   18.1
+   *
+   * — a 2.0-out under-projection at the bottom and a 0.3-out over-projection
+   * at the top, from one line doing the work of two.
+   *
+   * So the fix is not a bullpen-game distribution. The distribution was never
+   * the problem: measured inside buckets of the model's own projection, the
+   * hook PMF's sd is 3.2-3.7 against a realised rmse of 3.5-4.3, which is
+   * right. The problem is one anchor for two populations, and the fix is two
+   * anchors — the SAME shrink-to-mean the model already uses, fitted once per
+   * population.
+   *
+   * `window` / `openerOuts` are the read: the longest outing among his last
+   * `window` appearances, RELIEF INCLUDED. At or below `openerOuts` he is not
+   * currently a starter. The threshold was swept 3..9 on the fit split; 6 is
+   * where the two fitted lines separate most cleanly (at 3 the relief class is
+   * too small to fit, from 7 up it starts swallowing real short starts).
+   *
+   * `pass` is how much of the depth change the counting stats carry. Strikeouts,
+   * hits, walks and earned runs are all `projBF x a rate`, and the role read
+   * moved `projBF`, not the rate — so a start that is now projected 15% deeper
+   * should be projected 15% more of each, which is `pass: 1`. Each is a
+   * switch measured per market in docs/OPENER-FIX.md, not a free coefficient.
+   *
+   * ALL OF THIS NEEDS `input.appearanceLog`, the pitcher's every appearance
+   * this season with relief outings left in. `src/data/loadSlate.js` already
+   * fetches exactly that log and throws the relief rows away to build
+   * `gameLog`; it now keeps a copy. **Without that input this whole term is
+   * inert and the model is byte-for-byte v37** — `test/pitcher.test.js` pins
+   * it.
+   */
+  role: {
+    /** Appearances read back from tonight, relief included. */
+    window: 3,
+    /** Longest outing in that window, in outs, at or below which he is a reliever. */
+    openerOuts: 6,
+    /**
+     * `[anchor, slope, level]` on projected outs, replacing `cal.outs` for a
+     * start the log says is a relief outing. Fitted on the FIT split, 298
+     * starts, with the slope held at 1: a class that size supports a level and
+     * not a slope, and fitted freely it comes back at 1.008 anyway.
+     */
+    opener: [6, 1, 0.8978],
+    /**
+     * The same, for a start the log says is a real start. Same anchor as
+     * `cal.outs` — only the shrink changes, and it changes because the relief
+     * starts are no longer in the regression that fits it.
+     */
+    starter: [15.5, 0.688, 1.0047],
+    /**
+     * And again, for a pitcher with NO appearance at all this season — a debut,
+     * a call-up, a return from the injured list. 455 of them on the fit split,
+     * and the finding is the slope: **0.19**. His projection is built entirely
+     * from last season and a league prior, and against what actually happened
+     * that carries almost no information — the honest projection is close to
+     * the class's own mean of 14.6 outs whatever last year says. Left on the
+     * starter line he is over-projected by 0.85 outs.
+     *
+     * Set to null to put debuts back on the starter line.
+     */
+    debut: [15.5, 0.1852, 0.9469],
+    /** Pass-through of the depth change to the counting stats. */
+    pass: { k: 1, hits: 1, bb: 1, er: 1 },
+  },
   progress: {
     ref: 0.8862,
     outs: -0.0257,
@@ -481,6 +560,13 @@ export function projectPitcher(input) {
      * v36 `shrunkRate` blend.
      */
     rateLog,
+    /**
+     * Every appearance this season, RELIEF INCLUDED, as `{date, outs}` (extra
+     * fields ignored). This is the input that tells the model whether tonight's
+     * starter is a starter; see `PITCHER_FIT.role`. Optional, and without it
+     * every role term below is inert.
+     */
+    appearanceLog,
     /** The slate date, 'YYYY-MM-DD'. Required for `rateLog` to be read. */
     date,
     /** The slate season. Defaults to the year in `date`. */
@@ -974,19 +1060,85 @@ export function projectPitcher(input) {
     const days = (Date.parse(`${date}T00:00:00Z`) - Date.parse(`${yr}-03-20T00:00:00Z`)) / 864e5;
     return Number.isFinite(days) ? days / 100 : null;
   })();
-  const calibrated = (value, floor, market, anchor, slope, level) => {
-    const [a, s, l] = calOf(market, anchor, slope, level);
-    const drift = progress != null && F.progress?.[market] != null
+  const driftFor = (market) =>
+    progress != null && F.progress?.[market] != null
       ? Math.exp(F.progress[market] * (progress - (F.progress.ref ?? 0)))
       : 1;
-    return Math.max(floor, shrinkToMean(value, a, s) * l * drift);
+  const calibrated = (value, floor, market, anchor, slope, level) => {
+    const [a, s, l] = calOf(market, anchor, slope, level);
+    return Math.max(floor, shrinkToMean(value, a, s) * l * driftFor(market));
   };
 
-  const projOutsAdj = calibrated(projOuts, 3, 'outs', 15.5, 0.89, T.outsLevel);
-  const projHAdj = calibrated(projH, 0.2, 'hits', 4.88, 0.89, T.hLevel);
-  const projKAdj = calibrated(projK, 0.2, 'k', 4.78, 0.96, K_LEVEL);
-  const projERAdj = calibrated(projER, 0.2, 'er', 2.44, 0.78, 1);
-  const projBBAdj = calibrated(projBB, 0.1, 'bb', 1.72, 0.75, BB_LEVEL);
+  const projOutsCal = calibrated(projOuts, 3, 'outs', 15.5, 0.89, T.outsLevel);
+
+  // ---------------------------------------------------------------------
+  // 5a. ROLE (v38) — is tonight's starter a starter?
+  //
+  // `PITCHER_FIT.role` carries the whole argument. In one line: `cal.outs`
+  // above is one shrink-to-mean fitted through two populations, and this
+  // splits it into the two it was always trying to be. The read is his own
+  // recent usage, relief outings included, which is the one thing that tells a
+  // bullpen game from a rookie on a short leash BEFORE first pitch.
+  //
+  // Everything here is gated on `input.appearanceLog`. Without it `role` is
+  // null, `depthShift` is exactly 1, and every projection below is the v37
+  // number to the last bit.
+  // ---------------------------------------------------------------------
+  const role = (() => {
+    if (!F.role || !Array.isArray(appearanceLog) || !date) return null;
+    const before = [];
+    let dated = 0;
+    for (const a of appearanceLog) {
+      if (!a || !a.date) continue;
+      dated++;
+      if (a.date < date) before.push(a);
+    }
+    // A log with nothing datable in it is a log the model cannot read, and an
+    // unreadable input is a missing input: fall straight back to `cal.outs`.
+    if (appearanceLog.length && !dated) return null;
+    // An EMPTY log is a different thing, and not a missing one: it says he has
+    // not pitched at all this season, which is a real thing to know and its
+    // own population. So is a log whose every entry is tonight or later.
+    if (!before.length) return F.role.debut ? 'debut' : 'starter';
+    before.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    // Not named `window`: this file is bundled for the browser.
+    const lookback = Math.max(1, Math.round(F.role.window ?? 3));
+    let longest = -1;
+    for (const a of before.slice(-lookback)) {
+      const outs = Number(a.outs);
+      if (Number.isFinite(outs) && outs > longest) longest = outs;
+    }
+    // Every entry unreadable: treat the log as absent rather than guess.
+    if (longest < 0) return null;
+    return longest <= (F.role.openerOuts ?? 6) ? 'opener' : 'starter';
+  })();
+
+  const roleCal = role ? F.role[role] : null;
+  const projOutsAdj = roleCal
+    ? Math.max(3, shrinkToMean(projOuts, roleCal[0], roleCal[1]) * (roleCal[2] ?? 1) * driftFor('outs'))
+    : projOutsCal;
+
+  /**
+   * What the role read did to projected depth, as a ratio. Exactly 1 whenever
+   * the role read did not fire, which is what makes every line below a no-op
+   * without `input.appearanceLog`.
+   *
+   * Batters faced ride depth, and every counting stat is `projBF x a rate`.
+   * The role read moved the depth, not the rate, so the counting stats move
+   * with it: `pass` is 1 per market and is a switch, not a fitted coefficient.
+   */
+  const depthShift = projOutsCal > 0 && Number.isFinite(projOutsAdj)
+    ? projOutsAdj / projOutsCal
+    : 1;
+  const carry = (value, market) => {
+    const pass = F.role?.pass?.[market];
+    return pass ? value * depthShift ** pass : value;
+  };
+
+  const projHAdj = carry(calibrated(projH, 0.2, 'hits', 4.88, 0.89, T.hLevel), 'hits');
+  const projKAdj = carry(calibrated(projK, 0.2, 'k', 4.78, 0.96, K_LEVEL), 'k');
+  const projERAdj = carry(calibrated(projER, 0.2, 'er', 2.44, 0.78, 1), 'er');
+  const projBBAdj = carry(calibrated(projBB, 0.1, 'bb', 1.72, 0.75, BB_LEVEL), 'bb');
 
   // Integer BF used as the binomial trial count for strikeouts.
   const bfTrials = Math.max(1, Math.round(projBF));
