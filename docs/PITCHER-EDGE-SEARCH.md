@@ -136,9 +136,11 @@ rebuilt from games strictly before that start's date.
 1. **One recency-weighted, partially pooled estimate per rate, over both
    seasons.** The offseason is compressed to a fitted `offDays` so a September
    2025 start and an April 2026 start are not 179 days apart in the model's
-   eyes. Fitted on FIT: **half-life parameter 400 days for the per-BF rates,
-   20 days for depth**, offseason gap 60 days. The implied weight on a
-   2025-07-01 start, seen from 2026-08-01, is **0.50** — near the 0.6 the
+   eyes. Fitted on FIT: an exponential decay constant of **400 days for the
+   per-BF rates and 20 days for depth** (half-lives of 277 and 14 days), with
+   the offseason worth 60 days. Rates are slow, depth is fast, and one flat
+   blend cannot be both. The implied weight on a 2025-07-01 start, seen from
+   2026-08-01, is **0.50** — near the 0.6 the
    shipped blend uses flat — but a 2026-06-01 start gets 0.86 and an April 2026
    start much less, which a flat blend cannot express.
 2. **Pooling strengths, fitted, in batters faced:** strikeouts **150**, walks
@@ -156,11 +158,14 @@ rebuilt from games strictly before that start's date.
    The spikes on multiples of three, the cliff after 18 outs and the left skew
    are therefore measured, not modelled, which is what the brief meant by
    respecting the hook.
-6. **Each market's dispersion is fitted by log loss**, not assumed. Given depth,
-   hits and walks are *under*dispersed (var/mean 0.85-0.86 — a start that lasted
-   18 outs cannot have had twelve hits), earned runs *over*dispersed (1.25), and
-   strikeouts close to Poisson. One number per market replaces four separately
-   argued distribution choices.
+6. **Each market's dispersion is fitted by log loss**, not assumed. Measured
+   conditional on depth, hits and walks are *under*dispersed (var/mean
+   0.85-0.86 — a start that lasted 18 outs cannot have had twelve hits), earned
+   runs *over*dispersed (1.25), strikeouts close to Poisson. One number per
+   market — below 1 it is a binomial, above 1 a negative binomial, at 1 a
+   Poisson — replaces four separately argued distribution choices. The values
+   that ship are 0.85 for strikeouts, 0.95 for hits and walks and 1.75 for
+   earned runs.
 
 ### The one finding that changed the design
 
