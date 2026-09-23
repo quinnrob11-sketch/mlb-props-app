@@ -316,19 +316,44 @@ test('the minimum-n guard suppresses a 4-0 cell', () => {
   assert.equal(aggregateBy(four, 'market', { minN: 4 }).leader.value, 'batter_home_runs');
 });
 
+test('a winning record whose interval includes zero is not named a leader', () => {
+  // 20-10 at -110 is +27% ROI and p is about 0.10: a real possibility, not a
+  // finding. Ranking on the point estimate alone is how a tab like this talks
+  // someone into a category that has done nothing.
+  const history = [
+    ...rows(20, { result: 'WIN', market: 'batter_hits', label: 'Hits' }),
+    ...rows(10, { result: 'LOSS', market: 'batter_hits', label: 'Hits' }),
+    ...rows(15, { result: 'WIN', market: 'batter_total_bases', label: 'Total bases' }),
+    ...rows(15, { result: 'LOSS', market: 'batter_total_bases', label: 'Total bases' }),
+  ].map((r, i) => ({ ...r, playerId: i + 1 }));
+
+  const out = buildBreakdown(history);
+  assert.equal(out.thin, false, '60 settled is past the history bar');
+  const hits = out.dimensions
+    .find((d) => d.key === 'market')
+    .cells.find((c) => c.value === 'batter_hits');
+  assert.ok(hits.roi > 0.25, 'it did win money');
+  assert.equal(hits.qualified, true, 'and it has the rows');
+  assert.ok(hits.roiCi.low < 0, 'but the interval still reaches below zero');
+  assert.equal(hits.proven, false);
+  assert.equal(out.headline, null, 'so nothing is named');
+  assert.match(out.message, /interval clears zero/i, out.message);
+});
+
 test('a thin overall history is never ranked', () => {
   const out = buildBreakdown(rows(10, { result: 'WIN' }));
   assert.equal(out.thin, true);
   assert.equal(out.headline, null);
-  assert.match(out.message, /not enough to rank/i);
+  assert.match(out.message, /40 short of the 50 needed/i, out.message);
   assert.equal(buildBreakdown([]).message, 'No graded picks yet. Grade your saved slates and this breakdown fills in.');
 });
 
 test('a fat history names the best qualifying cell', () => {
   const history = [
-    // 30 hits picks at -110, 20-10: +8.18 units over 30 = +27.3% ROI.
-    ...rows(20, { result: 'WIN', market: 'batter_hits', label: 'Hits' }),
-    ...rows(10, { result: 'LOSS', market: 'batter_hits', label: 'Hits' }),
+    // 30 hits picks at -110, 24-6: +15.8 units over 30 = +52.7% ROI, and the
+    // 95% interval on it clears zero, which is now what a headline requires.
+    ...rows(24, { result: 'WIN', market: 'batter_hits', label: 'Hits' }),
+    ...rows(6, { result: 'LOSS', market: 'batter_hits', label: 'Hits' }),
     // 30 strikeout picks at -110, 12-18: losing.
     ...rows(12, { result: 'WIN', market: 'pitcher_strikeouts', label: 'Strikeouts', kind: 'pitcher' }),
     ...rows(18, { result: 'LOSS', market: 'pitcher_strikeouts', label: 'Strikeouts', kind: 'pitcher' }),
@@ -338,7 +363,8 @@ test('a fat history names the best qualifying cell', () => {
   assert.equal(out.thin, false);
   assert.equal(out.nSettled, 60);
   assert.equal(out.headline.cell.value, 'batter_hits');
-  near(out.headline.cell.roi, (20 * (100 / 110) - 10) / 30, 1e-12, 'headline roi');
+  near(out.headline.cell.roi, (24 * (100 / 110) - 6) / 30, 1e-12, 'headline roi');
+  assert.ok(out.headline.cell.roiCi.low > 0, 'a headline clears its own error bar');
 
   const market = out.dimensions.find((d) => d.key === 'market');
   assert.deepEqual(

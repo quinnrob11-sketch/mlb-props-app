@@ -31,6 +31,32 @@ const cents = (v) => (v == null || !isFinite(v) ? "—" : signed(v, 1) + "¢");
 
 const sign = (v) => (v == null || !isFinite(v) ? "" : v >= 0 ? "pos" : "neg");
 
+const range = (ci, digits = 0) =>
+  ci == null ? "—" : `${signedPct(ci.low, digits)} … ${signedPct(ci.high, digits)}`;
+
+// CLV is already in cents, so it takes the cents formatter rather than the
+// percentage one.
+const centsRange = (ci) =>
+  ci == null ? "—" : `${cents(ci.low)} … ${cents(ci.high)}`;
+
+/**
+ * What one cell has actually shown, as opposed to what it happens to have
+ * returned. Three of these are findings; "no signal" is the honest majority.
+ */
+function read(cell, minN) {
+  if (!cell.qualified)
+    return {
+      key: "thin",
+      label: `${Math.max(0, minN - cell.decided)} more`,
+      title: `${cell.decided} settled of the ${minN} needed before this category can say anything`,
+    };
+  if (cell.proven)
+    return { key: "edge", label: "EDGE", title: "95% interval on ROI is entirely above zero" };
+  if (cell.roiCi && cell.roiCi.high < 0)
+    return { key: "avoid", label: "AVOID", title: "95% interval on ROI is entirely below zero" };
+  return { key: "none", label: "no signal", title: "the interval spans zero: this could be anything" };
+}
+
 export default function ProfitBreakdown({ version = 0 }) {
   const [dimKey, setDimKey] = useState("market");
 
@@ -103,9 +129,10 @@ export default function ProfitBreakdown({ version = 0 }) {
             {signed(data.headline.cell.units)} units, hit rate{" "}
             {pct(data.headline.cell.hitRate)} (95% CI{" "}
             {pct(data.headline.cell.ci?.lo, 0)}–{pct(data.headline.cell.ci?.hi, 0)}
-            ), CLV {cents(data.headline.cell.avgClvCents)}. That interval is the
-            honest width of what you know — attack this only if its bottom end
-            still clears your break-even price.
+            ), CLV {cents(data.headline.cell.avgClvCents)}. Its ROI range is{" "}
+            {range(data.headline.cell.roiCi)} — the honest width of what you
+            know. It is named here because the bottom of that range is above
+            zero; size it off that bottom end, not off the headline number.
           </div>
         </div>
       ) : (
@@ -127,9 +154,13 @@ export default function ProfitBreakdown({ version = 0 }) {
       </div>
 
       <div className="psub">
-        {dim.blurb} Ranked by ROI; a cell needs {MIN_N} settled picks before it
-        is called an edge, and the whole history needs {MIN_HISTORY} before any
-        leader is named.
+        {dim.blurb} Ordered by the <b>bottom</b> of each ROI range, not by the
+        ROI itself — a 3-for-4 run outranks nothing. A category needs {MIN_N}{" "}
+        settled picks before it can say anything, the history needs{" "}
+        {MIN_HISTORY} before any leader is named, and <b>EDGE</b> means the
+        whole 95% range sits above zero. Most categories will read{" "}
+        <i>no signal</i> for a long time; that is the correct answer, not a
+        missing feature.
         {dim.nUnknown > 0 && (
           <>
             {" "}
@@ -164,10 +195,11 @@ export default function ProfitBreakdown({ version = 0 }) {
                   <th className="num">n</th>
                   <th className="num">W–L–P</th>
                   <th className="num">Hit rate</th>
-                  <th className="num">95% CI</th>
                   <th className="num">Units</th>
                   <th className="num">ROI</th>
+                  <th className="num">ROI 95% range</th>
                   <th className="num">CLV</th>
+                  <th className="num">Read</th>
                 </tr>
               </thead>
               <tbody>
@@ -187,25 +219,35 @@ export default function ProfitBreakdown({ version = 0 }) {
                       {c.pushes ? `–${c.pushes}` : ""}
                     </td>
                     <td className="num">{pct(c.hitRate)}</td>
-                    <td className="num dim">
-                      {c.ci
-                        ? `${pct(c.ci.lo, 0)}–${pct(c.ci.hi, 0)}`
-                        : "—"}
-                    </td>
                     <td className="num">
                       <span className={c.qualified ? sign(c.units) : "dim"}>
                         {signed(c.units)}
                       </span>
                     </td>
                     <td className="num">
-                      <b className={c.qualified ? sign(c.roi) : "dim"}>
+                      <b className={c.proven ? "pos" : c.qualified ? "dim" : "dim"}>
                         {signedPct(c.roi)}
                       </b>
                     </td>
+                    {/* The range, not the point: this column is what decides. */}
+                    <td className="num dim">{range(c.roiCi)}</td>
                     <td className="num">
                       <span className={c.qualified ? sign(c.avgClvCents) : "dim"}>
                         {cents(c.avgClvCents)}
+                        {c.clvCi && c.qualified ? (
+                          <div className="psub">{centsRange(c.clvCi)}</div>
+                        ) : null}
                       </span>
+                    </td>
+                    <td className="num">
+                      {(() => {
+                        const r = read(c, MIN_N);
+                        return (
+                          <span className={`tchip t-${r.key}`} title={r.title}>
+                            {r.label}
+                          </span>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}

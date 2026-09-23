@@ -293,6 +293,19 @@ export const DIMENSIONS = [
     of: (r) => plain(r.book),
   },
   {
+    key: 'books',
+    label: 'Books pricing it',
+    blurb:
+      'Since v36.2 a play exists only where one book is out of line with the others, so this is the dimension the policy turns on. One book means the price was devigged against itself.',
+    of: (r) => {
+      const n = num(r.nBooks);
+      if (n == null) return null;
+      if (n >= 3) return { value: '3+', label: '3+ books' };
+      return { value: String(n), label: n === 1 ? '1 book' : n + ' books' };
+    },
+    order: ['3+', '2', '1'],
+  },
+  {
     key: 'odds',
     label: 'Price taken',
     blurb: 'Whether the edge survives the juice.',
@@ -372,11 +385,34 @@ function emptyAcc() {
     pushes: 0,
     units: 0,
     unpriced: 0,
+    // Per-row unit outcomes as count/sum/sum-of-squares, so every mean below
+    // can report an interval instead of a bare point estimate. A cell's ROI at
+    // n=4 and at n=400 used to look identical on screen.
+    roiN: 0,
+    roiSum: 0,
+    roiSumSq: 0,
     clvCentsSum: 0,
+    clvCentsSq: 0,
     clvCentsN: 0,
     clvPctSum: 0,
     clvPctN: 0,
   };
+}
+
+/**
+ * 95% interval for a mean, from count/sum/sum-of-squares.
+ *
+ * Normal approximation on the sample SD. At the sizes this tool sees that is
+ * close enough, and it is deterministic — a bootstrap would need a seeded
+ * generator to stop the table reordering itself between renders. Null below
+ * n=2, where an interval is not defined.
+ */
+export function meanCi(n, sum, sumSq, z = Z95) {
+  if (!n || n < 2) return null;
+  const mean = sum / n;
+  const variance = Math.max(0, (sumSq - n * mean * mean) / (n - 1));
+  const se = Math.sqrt(variance / n);
+  return { mean, se, low: mean - z * se, high: mean + z * se };
 }
 
 function accumulate(acc, row) {
@@ -392,11 +428,22 @@ function accumulate(acc, row) {
   // for wins and losses alike.
   const priced = toDecimal(row.odds) != null;
   if (result !== 'PUSH' && !priced) acc.unpriced += 1;
-  else acc.units += unitsFor(result, row.odds) ?? 0;
+  else {
+    const units = unitsFor(result, row.odds) ?? 0;
+    acc.units += units;
+    // Pushes return exactly 0 and are out of the ROI denominator, so they are
+    // out of its spread too.
+    if (result !== 'PUSH') {
+      acc.roiN += 1;
+      acc.roiSum += units;
+      acc.roiSumSq += units * units;
+    }
+  }
 
   const cents = clvCents(row.odds, row.closeOdds);
   if (cents != null) {
     acc.clvCentsSum += cents;
+    acc.clvCentsSq += cents * cents;
     acc.clvCentsN += 1;
   }
   const pct = num(row.clv);
@@ -426,20 +473,36 @@ function finish(acc, extra = {}) {
     hitRate: decided > 0 ? acc.wins / decided : null,
     units: acc.units,
     roi: priced > 0 ? acc.units / priced : null,
+    // The interval around that ROI. Read this, not the point estimate: a cell
+    // is evidence of something only when roiCi.low is above zero.
+    roiCi: meanCi(acc.roiN, acc.roiSum, acc.roiSumSq),
     avgClvCents: acc.clvCentsN ? acc.clvCentsSum / acc.clvCentsN : null,
+    clvCi: meanCi(acc.clvCentsN, acc.clvCentsSum, acc.clvCentsSq),
     avgClvPct: acc.clvPctN ? acc.clvPctSum / acc.clvPctN : null,
     ci: wilson(acc.wins, decided),
     qualified: decided >= (extra.minN ?? MIN_N),
+    // Enough rows AND an interval clearing zero. Anything else is a number on
+    // a screen, not a finding.
+    proven:
+      decided >= (extra.minN ?? MIN_N) &&
+      (meanCi(acc.roiN, acc.roiSum, acc.roiSumSq)?.low ?? -Infinity) > 0,
   };
 }
 
 /**
- * Deterministic cell ordering: qualified cells first, then ROI descending, then
- * the larger sample, then the label. Every tiebreak is total, so the same input
- * always produces the same order regardless of insertion sequence.
+ * Deterministic cell ordering: qualified cells first, then by the LOWER BOUND
+ * of the ROI interval, then point ROI, then sample size, then label. Every
+ * tiebreak is total, so the same input always produces the same order.
+ *
+ * Point ROI put a 3-for-4 cell above a 300-row cell earning a real 4%, which
+ * is the exact mistake this tab exists to prevent. The lower bound ranks a
+ * category by what it has demonstrated rather than by what it has managed.
  */
 export function compareCells(a, b) {
   if (a.qualified !== b.qualified) return a.qualified ? -1 : 1;
+  const al = a.roiCi?.low ?? -Infinity;
+  const bl = b.roiCi?.low ?? -Infinity;
+  if (bl !== al) return bl - al;
   const ar = a.roi == null ? -Infinity : a.roi;
   const br = b.roi == null ? -Infinity : b.roi;
   if (br !== ar) return br - ar;
@@ -540,7 +603,10 @@ export function buildBreakdown(rows, opts = {}) {
   if (!thin) {
     for (const dim of dimensions) {
       const leader = dim.leader;
-      if (!leader) continue;
+      // Only a cell whose interval clears zero may be called a finding.
+      // Without this the tab names a "best category" on every history, noise
+      // included.
+      if (!leader || !leader.proven) continue;
       if (!headline || leader.roi > headline.cell.roi) {
         headline = { dimension: dim.key, dimensionLabel: dim.label, cell: leader };
       } else if (
@@ -572,9 +638,9 @@ export function describeState({ nGraded, nSettled, thin, headline, minHistory, m
   if (!nGraded)
     return 'No graded picks yet. Grade your saved slates and this breakdown fills in.';
   if (thin)
-    return `Only ${nSettled} settled pick${nSettled === 1 ? '' : 's'} so far — not enough to rank anything. ${minHistory} is the minimum before a leader is named; keep grading.`;
+    return `Only ${nSettled} settled pick${nSettled === 1 ? '' : 's'} — ${minHistory - nSettled} short of the ${minHistory} needed before any category can be named. The totals below are real; nothing here is ranked yet.`;
   if (!headline)
-    return `${nSettled} settled picks, but no single cell has reached ${minN} yet. The totals below are real; the per-cell ordering is still noise.`;
+    return `${nSettled} settled picks, and no category has earned a return whose 95% interval clears zero at ${minN}+ picks. That is the honest state: the totals are real, the ordering is not a finding.`;
   return `${nSettled} settled picks graded.`;
 }
 

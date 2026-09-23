@@ -7,6 +7,10 @@
 .tchip.t-proven{background:#0d2e1e;color:#4ade80;border:1px solid #4ade8055}
 .tchip.t-ranked{background:#fbbf2414;color:#fbbf24;border:1px solid #fbbf2445}
 .tchip.t-none{background:#1d2331;color:#7a849c;border:1px solid #262d3d}
+/* RESULTS "Read" column: what a category has actually demonstrated. */
+.tchip.t-edge{background:#0d2e1e;color:#4ade80;border:1px solid #4ade8055}
+.tchip.t-avoid{background:#2e0d12;color:#f87171;border:1px solid #f8717155}
+.tchip.t-thin{background:#1d2331;color:#7a849c;border:1px solid #262d3d;font-weight:600}
 .tchip.t-unmeasured{opacity:.75;font-style:italic}
 .trlegend{color:var(--muted);font-size:11.5px;line-height:1.9;margin-top:14px;padding:10px 14px;background:var(--surface);border:1px solid var(--border-soft);border-radius:var(--r)}
 .trlegend b{color:var(--ink)}
