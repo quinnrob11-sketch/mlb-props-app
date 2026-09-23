@@ -976,6 +976,12 @@ export async function loadSlate({
           : undefined;
 
       const proj = projectPitcher({
+        // The slate date. v36.2's workload term weights each logged start by
+        // how long ago it was, and its season-drift term needs to know where
+        // in the season tonight is; both fall back to v36 behaviour without
+        // it. It costs nothing — `date` is the argument this whole load was
+        // made for.
+        date,
         season26: s26,
         season25: s25,
         gameLog,
