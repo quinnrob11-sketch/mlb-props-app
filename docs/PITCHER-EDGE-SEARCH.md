@@ -244,9 +244,20 @@ Read plainly:
 (The ablation zeroes rate coefficients only, so the outs column is unchanged by
 construction and is left out of the table.)
 
-Pitch mix and velocity were not tested: the Stats API game log carries pitch
+Two ideas from the brief are not in that table, for different reasons.
+
+**Pitch mix and velocity were not tested**: the Stats API game log carries pitch
 counts and strike counts but no pitch type or velocity, and the Statcast feed
 that does is outside the two APIs this study is allowed to call.
+
+**Times through the order is not a separate term** because in this model it is
+not a separate quantity. The whole structure conditions on depth, and batters
+faced follows from depth; a start projected to 24 batters is a start projected
+to face the top of the order a third time. Adding an explicit third-time-through
+penalty on top of that would be counting the same thing twice. What the model
+does not have is a per-inning K rate that decays within the start, and that is a
+real omission — it would change the shape of the strikeout distribution at a
+given depth, not its mean.
 
 ## Part 3 — Validation (2026-08-10 .. 2026-09-01), against real prices
 
