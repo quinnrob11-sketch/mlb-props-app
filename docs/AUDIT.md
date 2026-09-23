@@ -155,10 +155,18 @@ Each of these was the obvious escape hatch, and each was tested and closed.
    you. `docs/KALSHI-MAKER-STUDY.md`.
 2. **Fees.** Halving the fee to 0.035 moves every result by about 1.5 points.
    Nothing changes category.
-3. **The projections.** They are well calibrated — quoted probabilities land
-   within about 1 point of observed frequency across 2,025 batter-games and 534
-   starts. Being right about baseball and beating a price are different
-   problems. `docs/BATTER-BACKTEST.md`.
+3. **The projections.** The batter ones are well calibrated — quoted
+   probabilities land within about 1 point of observed frequency, now measured
+   across **86,220 batter-games** over two seasons, not 2,025. Being right
+   about baseball and beating a price are different problems.
+   `docs/BATTER-BACKTEST.md`, `docs/ACCURACY.md`.
+
+   The **pitcher** projections are the exception, and outcome-facing use should
+   know it: `kLevel` 0.95 and `hLevel` 0.97 in `PITCHER_TUNING` put every
+   strikeout over **2.6 points** and every hits-allowed over **2.0 points**
+   below the observed frequency over 9,019 starts. Setting them to 1.0 takes
+   both to 0.8 and 0.3. That is a market-fitted trim costing outcome accuracy,
+   and it is the pitcher port's to reconcile. `docs/ACCURACY.md`.
 
 ## The one thing that is not disproven
 
