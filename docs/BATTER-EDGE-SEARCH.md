@@ -433,7 +433,7 @@ find it again.
 
 ## The rebuilt model
 
-`scratch/rebuilt.json` in the reproduction below is:
+`tools/batter-rebuilt.json` in the reproduction below is:
 
 ```json
 {
@@ -489,7 +489,7 @@ Reproduce (VALIDATE):
 ```
 node tools/backtest-kalshi-batters.mjs --from 2026-07-10 --to 2026-09-01 \
   --scheme edge --bar-window VAL --weights pre362 \
-  --tuning scratch/rebuilt.json --xstat25 0.5 \
+  --tuning tools/batter-rebuilt.json --xstat25 0.5 \
   --cache <statsapi cache> --kcache <kalshi cache>
 ```
 
@@ -538,3 +538,192 @@ to +0.14c, which is the same story as the Brier: better, and not enough.
 **The configuration carried to HOLDOUT is the rebuilt model**, on the
 pre-registered rule of section 4: it has the better pooled model − market Brier
 on VALIDATE (+0.0008 against +0.0011).
+
+## HOLDOUT (2026-09-02 .. 2026-09-22) — touched once
+
+```
+node tools/backtest-kalshi-batters.mjs --from 2026-09-02 --to 2026-09-22 \
+  --scheme edge --bar-window HOLD --weights pre362 \
+  --tuning tools/batter-rebuilt.json --xstat25 0.5 \
+  --cache <statsapi cache> --kcache <kalshi cache> --json hold.json
+```
+
+**The holdout was run exactly once**, with the configuration chosen on FIT and
+carried through VALIDATE, and nothing was changed after seeing it. The run took
+9.8 minutes and 1,179 Kalshi requests, and covers 80,568 matched settled
+contracts over 273 games and 4,841 player-games, of which 56,105 have a
+two-sided quote at T−120.
+
+Because the shipped `BATTER_TUNING` is scored in the same pass as a reference,
+this one run answers both questions: does the rebuilt model beat the price, and
+is it better than what shipped.
+
+### (A) Forecast — **FAIL**
+
+Brier score at T−120, paired differences, 95% cluster bootstrap over 273 games.
+A positive difference means the price was the better forecast.
+
+| series | n | price | rebuilt | shipped | rebuilt − price | shipped − price | rebuilt − shipped |
+|---|---|---|---|---|---|---|---|
+| **all** | 56,105 | **0.1579** | 0.1587 | 0.1590 | **+0.0008 [0.0002, 0.0014]** | +0.0011 [0.0005, 0.0018] | −0.0003 [−0.0006, −0.0000] |
+| KXMLBHIT | 10,374 | **0.1611** | 0.1615 | 0.1620 | +0.0004 [−0.0002, 0.0010] | +0.0010 [0.0001, 0.0018] | −0.0006 [−0.0010, −0.0002] |
+| KXMLBTB | 14,525 | **0.1520** | 0.1528 | 0.1530 | +0.0007 [0.0001, 0.0014] | +0.0010 [0.0003, 0.0017] | −0.0002 [−0.0006, 0.0001] |
+| KXMLBHR | 4,069 | **0.1011** | 0.1019 | 0.1021 | +0.0008 [0.0003, 0.0013] | +0.0010 [0.0005, 0.0015] | −0.0002 [−0.0004, 0.0001] |
+| KXMLBRBI | 7,399 | **0.1503** | 0.1511 | 0.1511 | +0.0007 [0.0001, 0.0014] | +0.0008 [0.0001, 0.0015] | −0.0001 [−0.0004, 0.0002] |
+| KXMLBHRR | 17,906 | **0.1833** | 0.1843 | 0.1846 | +0.0010 [0.0001, 0.0020] | +0.0014 [0.0004, 0.0024] | −0.0003 [−0.0007, 0.0001] |
+| KXMLBSB | 1,832 | **0.0944** | 0.0961 | 0.0962 | +0.0016 [0.0005, 0.0028] | +0.0018 [0.0006, 0.0030] | −0.0001 [−0.0003, 0.0000] |
+
+**No series clears (A).** The exchange price is the better forecast in every
+one, and the interval excludes zero in five of six — hits is the only series
+where the difference could be zero, at +0.0004 [−0.0002, 0.0010]. Pooled, the
+price wins by +0.0008 [0.0002, 0.0014].
+
+T−30, where every lineup is posted, says the same thing: pooled +0.0009
+[0.0004, 0.0015].
+
+**The rebuild did transfer.** The rebuilt model beats the shipped one on the
+holdout in every series, pooled by −0.0003 [−0.0006, −0.0000] and on hits by
+−0.0006 [−0.0010, −0.0002]. It closed about a quarter of the gap to the price.
+The Brier-optimal weight on (model − market) rises to 0.15 pooled and 0.30 on
+hits, against 0.10 and 0.10 measured in the previous study.
+
+### (B) Money — **FAIL on the interval**
+
+T−120, one bet per player across all series, at the section-8 weights. n is the
+number of contracts; the interval is the same game cluster bootstrap.
+
+| set | fee | n | hit vs priced | ROI | CLV mid |
+|---|---|---|---|---|---|
+| `botOnePerPlayer` | **0.07** | 74 (50 games) | 55.4% vs 42.9% | **+24.8% [−0.1, 49.5]** | +0.19c |
+| `botOnePerPlayer` | 0.035 | 74 | 55.4% vs 42.9% | +27.0% [1.6, 52.2] | +0.19c |
+| `bot` | 0.07 | 87 | 52.9% vs 44.2% | +15.4% [−9.1, 40.2] | +0.17c |
+| `every` | 0.07 | 245 (76 games) | 38.4% vs 33.8% | +9.0% [−13.1, 33.5] | −0.20c |
+| `botOnePerPlayer` T−30 | 0.07 | 139 | 51.1% vs 41.9% | +17.5% [−1.8, 37.3] | +0.05c |
+
+The headline number is **+24.8%, with a 95% interval of [−0.1, 49.5] that does
+not exclude zero**, so (B) fails as pre-registered. At the half fee the interval
+would clear (+27.0% [1.6, 52.2]) — but 0.07 is the fee the bar names, and a
+result that depends on which fee you charge is not an edge.
+
+Per series at fee 0.07, `bot`: HIT n=33 +10.8% [−18.6, 41.3]; TB n=26 +33.5%
+[−21.0, 91.8]; HR n=6 +24.5% [19.1, 28.7]; HRR n=22 +1.0% [−43.4, 47.1]; SB
+n=15 −64.4% [−100.0, −3.4]; RBI n=0. Home runs is the only cell whose interval
+excludes zero and it has **six trades**, all of which won.
+
+### The pre-registered test
+
+| series | (A) Brier beats price | (B) ROI positive, CI excludes 0, fee 0.07 | passes |
+|---|---|---|---|
+| KXMLBHIT | no (+0.0004 [−0.0002, 0.0010]) | no (+10.8% [−18.6, 41.3], n=33) | **no** |
+| KXMLBTB | no (+0.0007 [0.0001, 0.0014]) | no (+33.5% [−21.0, 91.8], n=26) | **no** |
+| KXMLBHR | no (+0.0008 [0.0003, 0.0013]) | yes (+24.5% [19.1, 28.7], n=6) | **no** |
+| KXMLBRBI | no (+0.0007 [0.0001, 0.0014]) | no (n=0) | **no** |
+| KXMLBHRR | no (+0.0010 [0.0001, 0.0020]) | no (+1.0% [−43.4, 47.1], n=22) | **no** |
+| KXMLBSB | no (+0.0016 [0.0005, 0.0028]) | no (−64.4% [−100.0, −3.4], n=15) | **no** |
+| pooled | no (+0.0008 [0.0002, 0.0014]) | no (+24.8% [−0.1, 49.5], n=74) | **no** |
+
+---
+
+# Part 4 — Verdict
+
+**The improved batter model does not beat the exchange price. Nothing passes.**
+
+- On the holdout, over 56,105 priced contracts and 273 games, Kalshi's own
+  decision-mid price forecast the outcome better than the rebuilt model in
+  **every one of the six series**, with the 95% interval excluding zero in five
+  of them. Pooled, the price wins by 0.0008 of Brier [0.0002, 0.0014].
+- The money looks good and does not survive its own interval: 74 trades
+  returned **+24.8%, 95% CI [−0.1, 49.5]** after the 0.07 fee. The point
+  estimate is the best batter number this repo has produced, and the interval
+  contains zero, contains −0.1%, and contains +49.5%. Seventy-four trades over
+  three weeks cannot resolve an edge of any plausible size.
+- The rebuild was not wasted. The rebuilt model is a better forecaster than the
+  shipped one out of sample in every series, on the holdout, pooled by 0.0003
+  of Brier [0.0006, 0.0000]. It closed about a quarter of the distance to the
+  price and no more.
+
+## What this adds to `docs/AUDIT.md`
+
+The batter row of that table should now read: the model has been rebuilt from a
+sample thirteen times larger than the last refit (42,444 batter-games against
+3,618), with one structural change and one outright bug removed, and it is
+still the worse forecaster than the price in every series with the interval
+excluding zero. The pooled prop line moves from "1,232 trades, −3.7%" to
+"−3.7% before the rebuild, +24.8% on 74 trades after it, interval [−0.1, 49.5]"
+— which is not a change of conclusion, it is the same conclusion with a wider
+interval on a shorter window.
+
+## Why it fails, as far as the data will say
+
+The gap that remains is 0.0008 of Brier on a 0.158 base — half a percent.
+Everything measured here says it is not the model's baseball that is wrong:
+
+- The projections are calibrated and their regression slopes are now 1.
+- The plate-appearance distribution was shown, with an in-sample oracle, not to
+  matter at all.
+- Team plate appearances are 96% unpredictable from as-of data.
+- Recent form carries no signal.
+- Per-hitter platoon splits carry no signal once usage is accounted for.
+- The bullpen, the batting order as a talent signal and prior-season
+  quality-of-contact are each worth between nothing and 0.0001 of Brier.
+
+What is left is the information the price has and the replay does not: today's
+weather, the hitter's health, whether he is playing through something, whether
+he is being rested in the sixth inning of a decided game, and the flow of money
+from people who know those things. The replay has no weather at all, and the
+market's edge over the model is about the size you would expect from that list.
+
+There is one number pointing the other way, and it is small: closing-line value
+turned positive (+0.19c on the traded side, against −0.14c for the shipped
+model on VALIDATE), and the Brier-optimal weight on (model − market) rose from
+0.10 to 0.15, and to 0.30 on hits. That is the model's disagreements carrying
+slightly more information than they used to. It is not an edge; it is the
+direction an edge would come from.
+
+## What was changed in the code, and what was not
+
+**Changed** (`src/model/batter.js`, all off or identity by default, so the
+shipped projection is unchanged until someone turns them on):
+
+- every prior strength and the 0.6 weight on 2025 are tunable knobs;
+- `platoonStrength`, `platoonHrAmp`, `parkStrength`, `pitcherInfluence`,
+  `slotPower`, `slotContact`, `bullpenShare`;
+- `input.paDist` and `input.platoonOverride` overrides;
+- `jointScoring`: section 11b, runs / RBI / H+R+RBI from one plate-appearance
+  outcome distribution.
+
+**Not changed:** `BATTER_TUNING`'s defaults, `MARKET_WEIGHT`, the hurdle, the
+bounds, `PLAY_RULES`. The rebuilt configuration is a better forecaster and it
+still loses to the price, so switching the board over to it buys nothing a
+trader can use, and `src/lib/constants.js` already says to raise `MARKET_WEIGHT`
+only on closing-line value from graded results, not on a backtest optimum.
+Turning the rebuild on is a one-line change (`--tuning tools/batter-rebuilt.json`
+shows exactly which settings), and the case for it is forecast quality, not
+edge. That is a decision for whoever owns the board, not for this study.
+
+## Caveats
+
+- **Seventy-four trades.** The ROI criterion had almost no power on a
+  three-week holdout. The forecast criterion, on 56,105 contracts, had plenty,
+  and it is the one that answered.
+- **The holdout is a high-scoring September.** Brier levels are higher there
+  (0.1587 pooled against 0.1477 on VALIDATE) for both the model and the price.
+- **No weather.** The replay omits it entirely, which costs the model something
+  on home runs and runs that the price does not pay.
+- **Fills are idealised**, one contract at the quoted top of book, exactly as
+  in `docs/KALSHI-BATTER-BACKTEST.md`.
+- **The holdout ran with two RBI share vectors that summed to 0.996 instead of
+  1** (fixed in a later commit). That put a floor of at most 0.0002 under every
+  RBI and H+R+RBI tail. Re-measured on FIT and VALIDATE, the fix leaves Brier
+  unchanged to five decimals on RBI, H+R+RBI and runs, so it cannot move any
+  number in this report.
+- **Two independent searches, one hand-built and one a 19-knob coordinate
+  descent, converged to the same configuration** (FIT traded log loss 6.12001
+  against 6.11934, a difference of 0.01%), and to VALIDATE Brier equal to four
+  decimals. The result does not hang on which one was carried forward.
+- **Runs and singles have no Kalshi series**, so they are reported against
+  outcomes only. Against outcomes the rebuilt model improves both (VALIDATE
+  Brier 0.15137 → 0.15112 for runs, 0.16919 → 0.16885 for singles).
+- **`KXMLBSB` is not mapped in `src/lib/kalshi.js`**, so `planOrders` cannot
+  see it and the bot could not have traded it. It is priced here by the same
+  rules in the tool; that is a finding, not a workaround.
