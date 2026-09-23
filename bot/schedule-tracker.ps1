@@ -33,7 +33,7 @@ New-Item -ItemType Directory -Force (Join-Path $repo 'bot\state\track') | Out-Nu
 
 $log = Join-Path $repo 'bot\state\tracker.log'
 $command = "`"$NodePath`" tools\track.mjs daily >> `"$log`" 2>&1"
-$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c $command" -WorkingDirectory $repo
+$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/s /c `"$command`"" -WorkingDirectory $repo
 $triggers = $Times | ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ }
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew
 

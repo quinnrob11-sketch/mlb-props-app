@@ -24,7 +24,7 @@ New-Item -ItemType Directory -Force (Join-Path $repo 'bot\state') | Out-Null
 $liveArg = if ($Live) { ' --live' } else { '' }
 $log = Join-Path $repo 'bot\state\scheduler.log'
 $command = "`"$NodePath`" bot\run.mjs$liveArg >> `"$log`" 2>&1"
-$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c $command" -WorkingDirectory $repo
+$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/s /c `"$command`"" -WorkingDirectory $repo
 $triggers = $Times | ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ }
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 20) -MultipleInstances IgnoreNew
 
