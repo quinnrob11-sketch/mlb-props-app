@@ -214,16 +214,24 @@ test('depthK off restores the v36 three-point batters-faced mixture exactly', ()
 
 // ── the calibration, and the level factors it supersedes ────────────────────
 
-test('PITCHER_FIT.cal supersedes kLevel, and the v36 constants are the fallback', () => {
+test('PITCHER_FIT.cal carries depth alone, and supersedes outsLevel where it does', () => {
   const input = base({ date: '2026-07-01' });
   const shipped = projectPitcher(input);
-  // kLevel is inert while cal.k is present: changing it must do nothing.
-  const trimmed = projectPitcher({ ...input, tuning: { kLevel: 0.5 } });
-  assert.equal(shipped.projK, trimmed.projK);
+
+  // outsLevel is inert while cal.outs is present: changing it must do nothing.
+  assert.equal(projectPitcher({ ...input, tuning: { outsLevel: 0.5 } }).projOuts, shipped.projOuts);
   // With cal switched off it bites again, which is the fallback path.
-  const noCal = projectPitcher({ ...input, fit: { ...PITCHER_FIT, cal: null, progress: null } });
-  const noCalTrimmed = projectPitcher({ ...input, fit: { ...PITCHER_FIT, cal: null, progress: null }, tuning: { kLevel: 0.5 } });
-  assert.ok(noCalTrimmed.projK < noCal.projK);
+  const noCal = { ...PITCHER_FIT, cal: null, progress: null };
+  assert.ok(
+    projectPitcher({ ...input, fit: noCal, tuning: { outsLevel: 0.5 } }).projOuts <
+      projectPitcher({ ...input, fit: noCal }).projOuts,
+  );
+
+  // The other four markets have no entry, so their v36 constants are live and
+  // v37's levels reach them. `kLevel` at 1.0 is v37's, not this branch's.
+  assert.equal(PITCHER_FIT.cal.k, undefined);
+  assert.equal(PITCHER_TUNING.kLevel, 1);
+  assert.ok(projectPitcher({ ...input, tuning: { kLevel: 0.5 } }).projK < shipped.projK);
 });
 
 test('hLevel is retired at 1.0 — the trim docs/ACCURACY.md measured as wrong', () => {

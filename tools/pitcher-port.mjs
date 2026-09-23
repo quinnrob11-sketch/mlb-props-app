@@ -33,6 +33,7 @@ import { priceRows, quoteRows, SPLIT, SERIES, splitOf } from './pitcher-edge.mjs
 import { brierDiff } from './kalshi-common.mjs';
 import { projectPitcher, PITCHER_FIT as FIT_CONST } from '../src/model/pitcher.js';
 import { projectPitcherV1 } from './pitcher-model-v1.mjs';
+import { projectPitcherV37 } from './pitcher-model-v37.mjs';
 
 const CACHE = argOf('cache', path.resolve('.work/cache'));
 const DECISION_MIN = Number(argOf('decision-min', 120));
@@ -65,6 +66,12 @@ console.log(`opponent source — tonight's card usable for ${usedLineup(boardIn)
 
 const MODELS = {
   ported: (i) => projectPitcher(boardIn.get(i)),
+  // THE control: master at v37, frozen. Fed exactly what the board feeds.
+  v37: (i) => projectPitcherV37(boardIn.get(i)),
+  'v37, previous card': (i) => projectPitcherV37(priorIn.get(i)),
+  'v37 team opp': (i) => projectPitcherV37(teamIn.get(i)),
+  // v36.1, the model before v37 removed the two market-fitted trims. Here only
+  // to show how much of this port's ground v37 already took.
   'v36 board': (i) => projectPitcherV1(boardIn.get(i)),
   'v36 team opp': (i) => projectPitcherV1(teamIn.get(i)),
   'ported, previous card': (i) => projectPitcher(priorIn.get(i)),
@@ -125,19 +132,21 @@ function table(title, a, b) {
 }
 
 // Leg 1: does the port beat the model it replaces, on identical contracts?
-table('PORTED vs the frozen v36, both fed the board\'s own inputs', 'ported', 'v36 board');
+table('PORTED vs the frozen v37 (current master), both fed the board inputs', 'ported', 'v37');
+table('what v37 already took: frozen v37 vs frozen v36.1', 'v37', 'v36 board');
+table('ported vs the frozen v36.1, for continuity with the study', 'ported', 'v36 board');
 // The study's own comparison, reproduced: its candidate was measured against a
 // baseline fed team rates, which is not what the board has had since v33.
 table('the study\'s baseline: frozen v36 on TEAM opponent rates', 'v36 board', 'v36 team opp');
 // Leg 2: what the board actually gets, with only a previously-posted card.
-table('DECISION-TIME: ported on the previous card vs frozen v36 on the same', 'ported, previous card', 'v36 board, previous card');
+table('DECISION-TIME: ported on the previous card vs frozen v37 on the same', 'ported, previous card', 'v37, previous card');
 table('decision-time cost: previous card vs tonight\'s, ported', 'ported, previous card', 'ported');
 // And the verdict that does not move.
 for (const v of ['no depthK', 'no workDecay', 'v36 budgetSpread', 'v36 calibration', 'v36 opponent']) {
   table(`attribution: ported vs ported with "${v}"`, 'ported', v);
 }
 table('ported vs the exchange decision mid', 'ported', 'market');
-table('frozen v36 vs the exchange decision mid', 'v36 board', 'market');
+table('frozen v37 vs the exchange decision mid', 'v37', 'market');
 
 if (JSON_OUT) {
   fs.mkdirSync(path.dirname(JSON_OUT), { recursive: true });

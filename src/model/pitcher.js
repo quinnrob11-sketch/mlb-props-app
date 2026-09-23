@@ -370,60 +370,44 @@ export const PITCHER_FIT = {
    * against what happened.
    */
   cal: {
-    k: [4.7132, 0.9469, 1.0115],
+    // OUTS ONLY, and the other four are deliberately absent.
+    //
+    // Once v37 set `kLevel` and `hLevel` to 1.0, v36's own anchors and slopes
+    // were already close to right everywhere except depth. Refitting them
+    // freely makes them worse, because the regression slope that minimises
+    // squared error is not the slope that calibrates a ladder: fitted freely,
+    // hits came back at 0.752 against v36's 0.89, which flattens the
+    // projection and leaves every rung reading low. v36's own comment says its
+    // 0.89 was chosen deliberately less aggressive than either season's fit,
+    // and it was right.
+    //
+    // Measured on the fit window, calibration error per market:
+    //
+    //                     v37    with this market refitted
+    //     strikeouts     0.90         0.90
+    //     outs           1.97         0.78
+    //     hits allowed   0.38         0.93
+    //     walks          0.94         1.29
+    //     earned runs    1.13         1.17
+    //
+    // Only depth wants a new curve, and it wants one badly — which is what the
+    // workload change below did to it. Refitting strikeouts on top of v37's
+    // level actually costs calibration (0.50 -> 0.90); the honest reading is
+    // that v37's two-constant change already collected what was there, and
+    // that the port's strikeout contribution is in the RANKING (correlation
+    // 0.442 -> 0.447), not in the level.
     outs: [15.5074, 0.8756, 0.9952],
-    // hits, walks and earned runs are DELIBERATELY absent, and each fell out
-    // the same way when measured on the fit window by its own calibration
-    // error. The regression slope that minimises squared error is not the
-    // slope that calibrates a ladder: fitted freely, hits came back at 0.752
-    // against v36's 0.89, which flattens the projection and leaves every rung
-    // reading low. v36's own comment says its 0.89 was chosen deliberately
-    // LESS aggressive than either season's fit, and it was right.
-    //
-    //     fit window, calibration error      v36    refitted   v36 + level 1.0
-    //     hits allowed                      2.02      0.93          0.38
-    //     walks                             0.94      1.29          0.94
-    //     earned runs                       1.13      1.17          1.13
-    //
-    // So those three keep v36's anchor and slope. What they do NOT keep is
-    // `hLevel` 0.97, which is the part `docs/ACCURACY.md` measured as wrong and
-    // which is now 1.0 (see PITCHER_TUNING). Strikeouts and outs are the two
-    // the refit wins, and it wins them by a distance: 2.84 -> 0.90 and
-    // 1.97 -> 0.78.
   },
-  /**
-   * Season drift, per market, as a log-rate per 100 days of season, plus the
-   * day the calibration above is centred on.
-   *
-   * Starters get shorter as the season goes on and the ball stops carrying:
-   * over the study's fit window the average start runs 15.43 outs and allows
-   * 4.84 hits, and over the six weeks after it, 15.16 and 4.74. That is not
-   * noise, it is September, and it is the same in 2025. A calibration fitted on
-   * a whole season and applied to a September slate is high by about that much
-   * in exactly the two markets, which is how v36's `outsLevel` 0.98 and
-   * `hLevel` 0.97 came to exist — each was fitted on a September window and is
-   * carrying this drift as a constant.
-   *
-   * Fitted, it is a slope rather than a constant, so it is right in April too.
-   * Needs `input.date`; without one every market's factor is 1 and the
-   * calibration is the flat one above.
-   *
-   * Measured per start over both seasons, April to September: outs 15.66 ->
-   * 15.09 and 15.34 -> 14.64, hits 4.95 -> 4.62 and 4.75 -> 4.66, walks 1.87
-   * -> 1.60 and 1.93 -> 1.70. Three markets, two seasons, same direction every
-   * time. Earned runs and strikeouts have no trend and their fitted
-   * coefficients say so.
-   */
   progress: {
     ref: 0.8862,
-    k: 0.0034,
     outs: -0.0257,
-    // The hits and walks drifts are real and fitted (-0.0282 and -0.0545 per
-    // 100 days, replicated in both seasons), and they are not shipped for the
-    // same reason their calibrations are not: those two markets keep v36's
-    // curve, and half a correction is worse than none. Walks in particular got
-    // worse with it — calibration error 0.94 -> 1.29 on the fit window —
-    // because 2026's walk rate jumped in August against the trend.
+    // Strikeouts, hits, walks and earned runs have no drift shipped. The hits
+    // and walks ones are real and fitted (-0.0282 and -0.0545 per 100 days,
+    // replicated in both seasons), but those markets keep v36's curve and half
+    // a correction is worse than none — walks got measurably worse with it,
+    // 0.94 -> 1.29, because 2026's walk rate jumped in August against the
+    // trend. Strikeouts have no season trend at all: 2025 ran 4.81 in April
+    // and 4.88 in September, 2026 ran 4.69 and 4.60.
   },
 };
 
