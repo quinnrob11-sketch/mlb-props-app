@@ -12,3 +12,6 @@ bot/STOP
 *.pem
 *.key
 .backtest-cache
+
+# agent/edge-pitch research scratch (caches, fitted params, run outputs)
+.work/
