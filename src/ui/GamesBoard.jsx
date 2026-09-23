@@ -92,10 +92,21 @@ function GameCard({ game, rowsByKey, slip, toggleSlip }) {
     return { market, row: rowsByKey.get(key) || null };
   });
 
+  // A wind with a DIRECTION is shown at any speed, because from v37 it is in
+  // the number: out of the park adds runs, in from it takes them away. A wind
+  // with only a speed is still shown at 12 mph and up, and is still worth
+  // nothing to the model, because an unsigned speed cannot say which way.
+  const wind = game.wx?.windMph == null
+    ? ''
+    : game.wx.windDir
+      ? `, wind ${game.wx.windMph} mph ${game.wx.windDir}`
+      : game.wx.windMph >= 12
+        ? `, wind ${game.wx.windMph} mph`
+        : '';
   const weather = game.wx?.indoor
     ? 'roof'
     : game.wx?.tempF != null
-      ? `${game.wx.tempF}°F${game.wx.windMph >= 12 ? `, wind ${game.wx.windMph} mph` : ''}`
+      ? `${game.wx.tempF}°F${wind}`
       : null;
 
   const lineupNote =

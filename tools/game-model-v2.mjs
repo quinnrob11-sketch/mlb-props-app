@@ -30,8 +30,13 @@ import {
   AWAY_HALF_MEANS, HOME_HALF_MEANS, EXTRA_INNING_PMF, CALIBRATION_RPG,
   HOME_ADJUST, WALKOFF_EXACT, SIGMA_TEAM_TOTAL, SIGMA_SHARED,
   uncertainScoreGrid, summarizeGrid, totalProbs, spreadProbs, firstInningScoreless,
-  tiltPmf, FIRST_INNING_AWAY_PMF, FIRST_INNING_HOME_PMF, projectGame,
+  tiltPmf, FIRST_INNING_AWAY_PMF, FIRST_INNING_HOME_PMF,
 } from '../src/model/game.js';
+// The v1 control is the FROZEN v36 model, not src/model/game.js's current
+// `projectGame`. Since v37 ported this study's inputs into that file, calling
+// it here would have measured the new model against itself and reported a
+// paired difference of zero. See tools/game-model-v1.mjs.
+import { projectGameV1 as projectGame } from './game-model-v1.mjs';
 import { parkFactor } from '../src/lib/parks.js';
 import { probToAmerican } from '../src/lib/odds.js';
 import { clamp } from '../src/lib/probability.js';

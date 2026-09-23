@@ -5,9 +5,10 @@
 // *consumed*, which is load-bearing; the order requests are *issued* is not,
 // and several of them are now fired earlier than the step that reads them:
 //
-//   1. schedule (+probablePitcher, lineups, team)   — MLB      ─┐ one wave
-//   2. team hitting environment for SEASON          — MLB       │ (independent)
-//   6. odds events list                             — Odds API ─┘
+//   1. schedule (+probablePitcher, lineups, team, weather)  — MLB  ─┐ one wave
+//   2. team hitting environment for SEASON and for       — MLB      │ (indep-
+//      PRIOR_SEASON, + team pitching splits                         │  endent)
+//   6. odds events list                             — Odds API     ─┘
 //   3. projected lineups for teams with no card     — MLB, cached per team
 //   4/5. pitcher + batter stats, 2026 and 2025      — MLB, one wave of four
 //   7. per-event event-odds                         — Odds API, all in parallel
@@ -31,6 +32,17 @@
 // when it came off the active roster by playing time. Anything other than
 // 'confirmed' also carries the `PROJ LINEUP` flag, and the slate-level
 // `lineupCounts` lets the UI say honestly how much of the board is a guess.
+//
+// v37 — the game model's ported inputs (docs/GAME-PORT.md) need three things
+// this file did not supply: last season's team offence line, the posted card's
+// TOP FOUR as well as its nine, and the wind's DIRECTION rather than only its
+// speed. All three ride on requests that were already being made — the prior
+// season on one extra `teams/stats` call in the wave that is already there,
+// the top four out of the cards already in hand, the direction out of a
+// `weather` hydrate on the schedule — and every one of them is optional at
+// the model's end. What happens when each is missing is written out at
+// `projectGame` in model/game.js; the short version is that the term goes to
+// exactly what v36 did, never to a guess.
 
 import { SEASON, PRIOR_SEASON, mlbFetch, oddsFetch } from '../lib/api.js';
 import {
@@ -303,12 +315,26 @@ export async function loadSlate({
   // cost is that a load which dies on the schedule has now already issued the
   // other two requests.
   status('Fetching schedule + probable pitchers…');
+  // `weather` rides along on the schedule hydrate — no extra request. MLB only
+  // fills it in once a game is close (it is empty while the game is still
+  // coded 'S'), but when it is there it is the one source that carries wind
+  // DIRECTION: "14 mph, In From LF". Open-Meteo gives a forecast hours ahead
+  // and no direction at all; the two are merged at step 8.
   const schedulePromise = mlbFetch(
-    `/api/v1/schedule?sportId=1&date=${date}&hydrate=probablePitcher,lineups,team`,
+    `/api/v1/schedule?sportId=1&date=${date}&hydrate=probablePitcher,lineups,team,weather`,
   );
   const teamHittingPromise = mlbFetch(
     `/api/v1/teams/stats?sportId=1&season=${SEASON}&group=hitting&stats=season`,
   );
+  // LAST season's team hitting, for the game model's prior-season offence
+  // term. In April last year is nearly all that is known about a team and this
+  // year's line is noise; in September it is a footnote, and the 30-game
+  // weight in `GAME_INPUTS` does that on its own. Optional: a failure leaves
+  // every team's prior at league average, which is the shrink the term would
+  // have applied to an unknown team anyway.
+  const teamHittingPriorPromise = mlbFetch(
+    `/api/v1/teams/stats?sportId=1&season=${PRIOR_SEASON}&group=hitting&stats=season`,
+  ).catch(() => null);
   // A promise nobody has awaited *yet* still counts as unhandled the moment it
   // rejects, so a schedule failure would surface this one as an uncaught
   // rejection in the console before its own `await` below ever ran. Attaching
@@ -477,11 +503,53 @@ export async function loadSlate({
     } else if (code === 'sp') spSplits.push(split.stat);
   }
   const prevention = leagueRunPrevention(spSplits, rpSplits);
+
+  // League STARTER rates per batter faced, for the component-by-component
+  // starter regression (see GAME_INPUTS in model/game.js). Taken from the same
+  // `sp` split payload, so they cost nothing extra and follow the run
+  // environment instead of being frozen. Left undefined when the payload is
+  // unusable, which is the signal for the model to fall back to the older
+  // whole-line ERA/FIP regression rather than to a made-up rate.
+  const spTotals = { bf: 0, k: 0, bb: 0, hr: 0, ip: 0 };
+  for (const stat of spSplits) {
+    spTotals.bf += stat.battersFaced || 0;
+    spTotals.k += stat.strikeOuts || 0;
+    spTotals.bb += (stat.baseOnBalls || 0) + (stat.hitByPitch || 0);
+    spTotals.hr += stat.homeRuns || 0;
+    spTotals.ip += parseInningsPitched(stat.inningsPitched) || 0;
+  }
+  const spRates = spTotals.bf > 5000 && spTotals.ip > 0
+    ? {
+        spKRate: spTotals.k / spTotals.bf,
+        spBbRate: spTotals.bb / spTotals.bf,
+        spHrRate: spTotals.hr / spTotals.bf,
+        spBfPerIp: spTotals.bf / spTotals.ip,
+      }
+    : {};
+
+  // Last season's team offence, and last season's LEAGUE runs per team-game.
+  // A team's last-year rate has to be expressed against last year's league,
+  // not this one, or the prior imports last year's run environment along with
+  // the team's share of it.
+  const teamHittingPrior = await teamHittingPriorPromise;
+  const teamEnvPrior = new Map();
+  let priorRuns = 0;
+  let priorGames = 0;
+  for (const split of teamHittingPrior?.stats?.[0]?.splits || []) {
+    const stat = split.stat;
+    if (!stat?.gamesPlayed) continue;
+    teamEnvPrior.set(split.team.id, { runs: stat.runs ?? null, gamesPlayed: stat.gamesPlayed });
+    priorRuns += stat.runs || 0;
+    priorGames += stat.gamesPlayed;
+  }
+
   const gameLeague = {
     rpg: lgGames && lgRuns ? lgRuns / lgGames : 4.49,
     ...(prevention?.spRa9 && prevention?.rpRa9
       ? prevention
       : { spRa9: 4.1, rpRa9: 3.9, allRa9: 4.0, fipConstant: 3.1 }),
+    ...spRates,
+    priorSeasonRpg: priorGames > 1000 ? priorRuns / priorGames : null,
   };
 
   // ── 3. lineups ─────────────────────────────────────────────────────────────
@@ -698,6 +766,34 @@ export async function loadSlate({
   // always already resolved, so the await is usually free. See `fetchWeather`.
   status('Fetching weather…');
   const weatherByGame = await weatherPromise;
+  // MLB's own reading, when it has one, carries what Open-Meteo does not: the
+  // wind DIRECTION relative to the field ("14 mph, In From LF"). It appears
+  // only as a game gets close — a slate loaded in the morning has none of it —
+  // so it is merged ON TOP of the forecast rather than replacing it: the
+  // forecast keeps supplying temperature and speed for every game the reading
+  // has not reached yet, and a game that HAS a reading takes all three numbers
+  // from it — they are one observation and mixing a forecast temperature with
+  // an observed direction would be neither.
+  //
+  // Without a direction the wind term in `weatherFactor` is exactly the 1 it
+  // was before v37: an unsigned speed is not weak information, it is none.
+  // Expect most of a slate to be in that state, because MLB fills `weather` in
+  // about an hour out and a board is usually loaded long before that.
+  for (const game of games) {
+    const mlbWx = game.weather;
+    if (!mlbWx?.wind) continue;
+    const existing = weatherByGame.get(game.gamePk);
+    if (existing?.indoor) continue;
+    const speed = /(\d+)\s*mph/i.exec(mlbWx.wind);
+    const dir = /mph,\s*(.+)$/i.exec(mlbWx.wind);
+    const temp = Number(mlbWx.temp);
+    weatherByGame.set(game.gamePk, {
+      indoor: false,
+      tempF: Number.isFinite(temp) ? temp : (existing?.tempF ?? null),
+      windMph: speed ? Number(speed[1]) : (existing?.windMph ?? null),
+      windDir: dir ? dir[1].trim() : null,
+    });
+  }
 
   status('Fetching game lines…');
   const teamMarkets = await teamMarketsPromise;
@@ -707,31 +803,52 @@ export async function loadSlate({
   // regulars out-hit a season line that includes the bench and call-ups, so the
   // raw ratio runs high for every team; dividing by the slate average leaves
   // only tonight's DIFFERENCES (a rested star, a platoon-heavy card).
+  //
+  // The same ratio is computed twice: over the nine, which drives the whole
+  // game, and over the TOP FOUR alone, who are the cards that actually bat in
+  // the first inning. Each is centred against its own slate average, because
+  // the top four out-hit the nine by more than the nine out-hit the bench and
+  // the two levels are not the same number.
+  //
+  // The fitted exponent on the top four is ZERO (`GAME_INPUTS.top4Exp`): the
+  // first inning was fitted on first-inning runs alone and the top of the
+  // order turned out not to drive it — the starter does. The ratio is computed
+  // and passed anyway, at no extra request, so the term is visible and
+  // measurable rather than quietly absent.
   const lineupOpsRatio = new Map();
+  const lineupTop4OpsRatio = new Map();
+  const cardRatio = (lineup, team, slots) => {
+    let weighted = 0;
+    let weights = 0;
+    lineup.slice(0, slots).forEach((player, index) => {
+      const s = pickSplit(batters26.get(player.id), 'hitting', SEASON);
+      const ops = parseFloat(s?.ops);
+      const pa = s?.plateAppearances || 0;
+      const weight = PA_BY_LINEUP_SLOT[index] ?? PA_BY_LINEUP_SLOT[8];
+      weighted += weight * (pa >= 50 && Number.isFinite(ops) ? ops : team.ops);
+      weights += weight;
+    });
+    return weights ? weighted / weights / team.ops : null;
+  };
   for (const game of games) {
     for (const side of ['away', 'home']) {
       const lineup = lineupBySide.get(sideKey(game.gamePk, side)) || [];
       const team = teamEnv.get(game.teams[side].team.id);
       if (lineup.length < 9 || !team?.ops) continue;
-      let weighted = 0;
-      let weights = 0;
-      lineup.slice(0, 9).forEach((player, index) => {
-        const s = pickSplit(batters26.get(player.id), 'hitting', SEASON);
-        const ops = parseFloat(s?.ops);
-        const pa = s?.plateAppearances || 0;
-        const weight = PA_BY_LINEUP_SLOT[index] ?? PA_BY_LINEUP_SLOT[8];
-        weighted += weight * (pa >= 50 && Number.isFinite(ops) ? ops : team.ops);
-        weights += weight;
-      });
-      if (weights) lineupOpsRatio.set(sideKey(game.gamePk, side), weighted / weights / team.ops);
+      const nine = cardRatio(lineup, team, 9);
+      const top4 = cardRatio(lineup, team, 4);
+      if (nine != null) lineupOpsRatio.set(sideKey(game.gamePk, side), nine);
+      if (top4 != null) lineupTop4OpsRatio.set(sideKey(game.gamePk, side), top4);
     }
   }
-  if (lineupOpsRatio.size >= 6) {
-    const centre = [...lineupOpsRatio.values()].reduce((a, b) => a + b, 0) / lineupOpsRatio.size;
-    for (const [k, v] of lineupOpsRatio) lineupOpsRatio.set(k, v / centre);
-  } else {
-    // Too few cards to know what "normal" looks like; use season lines only.
-    lineupOpsRatio.clear();
+  // Too few cards to know what "normal" looks like: use season lines only.
+  for (const map of [lineupOpsRatio, lineupTop4OpsRatio]) {
+    if (map.size >= 6) {
+      const centre = [...map.values()].reduce((a, b) => a + b, 0) / map.size;
+      for (const [k, v] of map) map.set(k, v / centre);
+    } else {
+      map.clear();
+    }
   }
 
   // ── 9. projections ─────────────────────────────────────────────────────────
@@ -870,10 +987,22 @@ export async function loadSlate({
         isHome: side === 'home',
       });
 
+      // Days of rest, from his own appearances — relief outings included, so a
+      // starter used out of the pen between starts is not counted as rested.
+      const lastOuting = pickGameLog(person, 'pitching')
+        .map((split) => split.date)
+        .filter((d) => d && d < date)
+        .sort()
+        .pop();
+      const restDays = lastOuting
+        ? Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${lastOuting}T00:00:00Z`)) / 86400e3)
+        : null;
+
       sp[side] = {
         proj,
         s26,
         s25,
+        restDays,
         name: probable.fullName,
         // NB: default 'R' here, but '?' on the emitted row below
         hand: person?.pitchHand?.code || 'R',
@@ -932,9 +1061,23 @@ export async function loadSlate({
     // ── game lines: moneyline, run line, total ──────────────────────────────────
     const gameSide = (side, team) => ({
       offense: teamEnv.get(team.id) || null,
+      offensePrior: teamEnvPrior.get(team.id) || null,
       homePark: team.venue?.name || '',
       lineupOpsRatio: lineupOpsRatio.get(sideKey(game.gamePk, side)) || null,
-      starter: sp[side] ? { s26: sp[side].s26, s25: sp[side].s25, projIP: sp[side].proj.projIP } : null,
+      lineupTop4OpsRatio: lineupTop4OpsRatio.get(sideKey(game.gamePk, side)) || null,
+      starter: sp[side]
+        ? {
+            s26: sp[side].s26,
+            s25: sp[side].s25,
+            projIP: sp[side].proj.projIP,
+            // Days since his last appearance. The fitted coefficient is +2% of
+            // runs allowed per day of rest ABOVE five, clamped to 3..9 — extra
+            // rest measured as slightly worse, not better, which is what a man
+            // on nine days usually is. Null when he has not pitched this
+            // season, and null is read as the neutral five.
+            restDays: sp[side].restDays,
+          }
+        : null,
       bullpen: bullpenByTeam.get(team.id) || null,
     });
     row.game = projectGame({

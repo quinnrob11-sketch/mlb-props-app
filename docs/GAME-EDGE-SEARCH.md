@@ -359,11 +359,21 @@ achievable edge is `0.1 * 0.08 - 0.005 = 0.003` against a minimum hurdle of
   both still correct, and both are still doing work.
 - **It does license believing the number more.** As a displayed forecast the
   new inputs are significantly better than the shipped ones, and level with the
-  exchange. Shipping them is not in this task's scope — the terms need
+  exchange. Shipping them was not in this task's scope — the terms need
   `src/data/loadSlate.js` to fetch the posted top four, the wind direction and
-  the prior-season team line, and that file is outside what this branch may
-  touch — so `src/model/game.js` is **deliberately unchanged**. The recipe is
+  the prior-season team line, and that file was outside what this branch could
+  touch — so `src/model/game.js` was left unchanged here. The recipe is
   `tools/game-model-v2.mjs` plus `.backtest-cache/params-core.json`.
+
+  **SUPERSEDED (v37).** They have since been ported, and the port was measured
+  on this same holdout against a frozen copy of the v36 model: pooled
+  **−0.0026 [−0.0047, −0.0005]**, which reproduces the −0.0025 below to the
+  fourth decimal, and **−0.0021 [−0.0041, −0.0003]** when the replay is
+  restricted to what was knowable at the decision time (a projected card and a
+  weather forecast instead of the card that took the field and the conditions
+  recorded at first pitch). About a fifth of the gain in the table below is
+  hindsight; the first-inning gain contains none of it. `MARKET_WEIGHT` and
+  `PLAY_RULES` were not touched. See **docs/GAME-PORT.md**.
 - **It closes four specific questions.** Bullpen availability, rest and travel,
   the home-plate umpire, and a team defence term were each built, fitted on two
   seasons and measured. None of them earned its place. They are listed in the

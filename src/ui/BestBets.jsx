@@ -143,8 +143,17 @@ export default function BestBets({
                       {' · '}
                       {row.game.wx.tempF}
                       °F
-                      {/* Only surface wind once it is strong enough to matter. */}
-                      {row.game.wx.windMph >= 12 ? ` · ${row.game.wx.windMph}mph wind` : ''}
+                      {/* A signed wind is in the game model from v37, so it is
+                          surfaced at any speed; an unsigned one is worth
+                          nothing to the number and is only worth mentioning
+                          once it is strong. */}
+                      {row.game.wx.windMph == null
+                        ? ''
+                        : row.game.wx.windDir
+                          ? ` · ${row.game.wx.windMph}mph ${row.game.wx.windDir}`
+                          : row.game.wx.windMph >= 12
+                            ? ` · ${row.game.wx.windMph}mph wind`
+                            : ''}
                     </span>
                   )}
                   {/* Platoon flags are implicit in the projection, so they are
