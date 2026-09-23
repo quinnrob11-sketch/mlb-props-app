@@ -141,6 +141,46 @@ export default function MethodologyView() {
         hit them. Per-hitter splits regressed to the mean were worse still.
       </p>
 
+      <h3>How accurate is each number? (measured against outcomes)</h3>
+      <p>
+        Every other section on this page compares the model with a <i>market</i>. This one
+        does not: it compares it with <b>what happened</b>, over 9,404 starts, 86,220
+        batter-games and 4,486 games across two seasons, lookahead-free, with the last three
+        weeks held out. It is the section to read if you are using these numbers on your own
+        judgement rather than betting them into a price.
+      </p>
+      <p>
+        <b>Most of the model is well calibrated.</b> When it says 60%, it happens about 60% of
+        the time. Every batter market lands within <code>0.3–0.8</code> points of observed
+        frequency — total bases best at 0.4, batter strikeouts at 0.3 — and the holdout agrees
+        with no sign flips. Game totals and run lines are sound.
+      </p>
+      <p>
+        <b>Three things not to rely on.</b> A starter projected under 4.5 innings — an opener
+        or a short leash — reads <code>6.8</code> points low on outs overs across 1,159 such
+        starts. A hitter with under 50 plate appearances this season reads about{' '}
+        <code>2</code> points <i>high</i> on hits, total bases and singles. And an unconfirmed
+        lineup is riskier than it looks, though not for the reason you would guess: a moved
+        batting slot costs 0.17 points, while only <b>75.9%</b> of last night's nine start
+        again tonight at all.
+      </p>
+      <p>
+        <b>Pitcher overs used to read about 2 points low. They no longer do.</b> Two constants
+        trimmed the strikeout and hits-allowed rates to sit closer to the market, and against
+        outcomes they cost real accuracy: over the 2026 season, 29,155 probability-outcome
+        pairs, strikeout calibration error was <code>2.23</code> points and hits-allowed{' '}
+        <code>2.19</code>, both reading low with 8 of 10 calibration bins outside their
+        intervals. Removing them takes those to <code>1.00</code> and <code>0.59</code>. The
+        trade made sense while the goal was tracking a price; it makes none now.
+      </p>
+      <p>
+        <b>Do not use the batter point projections to rank players.</b> The probabilities are
+        excellent and the ordering is nearly worthless: every batter market's projected total
+        sits within 0–4% of simply giving each player the slate average, and projected hits
+        ties that baseline to three decimal places. Only strikeouts and stolen bases carry real
+        ranking power. If you are picking a DFS slate, use the probabilities, not the totals.
+      </p>
+
       <h3>Probabilities, not gut feel</h3>
       <p>
         Each prop is priced with a real distribution: strikeouts are a binomial{" "}
