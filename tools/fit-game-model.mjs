@@ -18,7 +18,7 @@ import {
   AWAY_HALF_MEANS, HOME_HALF_MEANS, EXTRA_INNING_PMF,
 } from '../src/model/game.js';
 
-function measure(file) {
+export function measure(file) {
   const s = JSON.parse(fs.readFileSync(file, 'utf8'));
   const g = [];
   for (const d of s.dates) for (const x of d.games) {
@@ -28,6 +28,15 @@ function measure(file) {
     g.push({ a: ls.teams.away.runs, h: ls.teams.home.runs, inn: ls.innings?.length || 0,
       nrfi: first && first.away?.runs === 0 && first.home?.runs === 0 ? 1 : 0 });
   }
+  return targetsFrom(g);
+}
+
+/**
+ * The same league rates, measured from any list of {a, h, inn, nrfi} games.
+ * tools/fit-game-v2.mjs calls this with the FIT window only, so the four
+ * constants can be refitted without validate or holdout in them.
+ */
+export function targetsFrom(g) {
   const m = (f) => g.reduce((s, r) => s + f(r), 0) / g.length;
   const mt = m((r) => r.a + r.h);
   return {
@@ -43,7 +52,7 @@ function measure(file) {
   };
 }
 
-const TARGET = process.argv[2] ? measure(process.argv[2]) : {
+export const TARGET_2026_FULL = {
   n: 2271, nrfi: 0.4954, homeWin: 0.5288, homeBy1: 0.1686, awayBy1: 0.1088, extras: 0.0872, homeCover15: 0.3602, awayCover15: 0.3624,
   over75: 0.5711, over85: 0.4910, over95: 0.4011, over105: 0.3338,
   meanAway: 4.456, meanHome: 4.530, totalVarMean: 2.2905,
@@ -51,7 +60,7 @@ const TARGET = process.argv[2] ? measure(process.argv[2]) : {
 
 const extraBase = EXTRA_INNING_PMF.reduce((s, p, k) => s + p * k, 0);
 
-function run(he, wo, sg, st) {
+export function run(he, wo, sg, st) {
   let extras = 0;
   const scoring = {
     awayHalfMeans: AWAY_HALF_MEANS, homeHalfMeans: HOME_HALF_MEANS.map((m) => m * he),
@@ -76,7 +85,7 @@ function run(he, wo, sg, st) {
 
 // Probability targets weighted by their binomial precision; means and the
 // variance ratio scaled to comparable size.
-function loss(r) {
+export function loss(r, TARGET) {
   let l = 0;
   for (const k of ['nrfi', 'homeWin', 'homeBy1', 'awayBy1', 'extras', 'homeCover15', 'awayCover15', 'over75', 'over85', 'over95', 'over105']) {
     const p = TARGET[k];
@@ -88,26 +97,33 @@ function loss(r) {
   return l;
 }
 
-let best = null;
-const consider = (he, wo, sg, st) => {
-  const r = run(he, wo, sg, st);
-  const l = loss(r);
-  if (!best || l < best.l) best = { l, he, wo, sg, st, r };
-};
-for (const sg of [0, 0.05, 0.1, 0.15, 0.2])
-  for (const st of [0, 0.1, 0.15, 0.2, 0.25, 0.3])
-    for (const he of [0.96, 0.98, 1.0, 1.02, 1.04])
-      for (const wo of [0.3, 0.45, 0.6, 0.75, 0.9]) consider(he, wo, sg, st);
-// Refine around the coarse optimum.
-const c = { ...best };
-for (let sg = Math.max(0, c.sg - 0.04); sg <= c.sg + 0.04; sg += 0.02)
-  for (let st = Math.max(0, c.st - 0.04); st <= c.st + 0.04; st += 0.02)
-    for (let he = c.he - 0.008; he <= c.he + 0.008; he += 0.004)
-      for (let wo = Math.max(0.1, c.wo - 0.1); wo <= Math.min(1, c.wo + 0.1); wo += 0.05) consider(he, wo, sg, st);
+/** Coarse grid then a local refinement, exactly as the CLI has always done. */
+export function fitConstants(TARGET) {
+  let best = null;
+  const consider = (he, wo, sg, st) => {
+    const r = run(he, wo, sg, st);
+    const l = loss(r, TARGET);
+    if (!best || l < best.l) best = { l, he, wo, sg, st, r };
+  };
+  for (const sg of [0, 0.05, 0.1, 0.15, 0.2])
+    for (const st of [0, 0.1, 0.15, 0.2, 0.25, 0.3])
+      for (const he of [0.96, 0.98, 1.0, 1.02, 1.04])
+        for (const wo of [0.3, 0.45, 0.6, 0.75, 0.9]) consider(he, wo, sg, st);
+  const c = { ...best };
+  for (let sg = Math.max(0, c.sg - 0.04); sg <= c.sg + 0.04; sg += 0.02)
+    for (let st = Math.max(0, c.st - 0.04); st <= c.st + 0.04; st += 0.02)
+      for (let he = c.he - 0.008; he <= c.he + 0.008; he += 0.004)
+        for (let wo = Math.max(0.1, c.wo - 0.1); wo <= Math.min(1, c.wo + 0.1); wo += 0.05) consider(he, wo, sg, st);
+  return best;
+}
 
-console.log(`games ${TARGET.n}`);
-console.log(`HOME_ADJUST ${best.he.toFixed(3)}  WALKOFF_EXACT ${best.wo.toFixed(2)}  ` +
-  `SIGMA_SHARED ${best.sg.toFixed(2)}  SIGMA_TEAM ${best.st.toFixed(2)}  loss ${best.l.toFixed(1)}`);
-for (const k of Object.keys(best.r)) {
-  console.log(`  ${k.padEnd(13)} model ${best.r[k].toFixed(4)}   actual ${TARGET[k].toFixed(4)}`);
+if (process.argv[1] && process.argv[1].endsWith('fit-game-model.mjs')) {
+  const TARGET = process.argv[2] ? measure(process.argv[2]) : TARGET_2026_FULL;
+  const best = fitConstants(TARGET);
+  console.log(`games ${TARGET.n}`);
+  console.log(`HOME_ADJUST ${best.he.toFixed(3)}  WALKOFF_EXACT ${best.wo.toFixed(2)}  ` +
+    `SIGMA_SHARED ${best.sg.toFixed(2)}  SIGMA_TEAM ${best.st.toFixed(2)}  loss ${best.l.toFixed(1)}`);
+  for (const k of Object.keys(best.r)) {
+    console.log(`  ${k.padEnd(13)} model ${best.r[k].toFixed(4)}   actual ${TARGET[k].toFixed(4)}`);
+  }
 }

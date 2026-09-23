@@ -402,45 +402,10 @@ export function buildGames() {
 }
 
 // ── validation against known league rates ───────────────────────────────────
-const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
-
-export function validate(games) {
-  const withFirst = games.filter((x) => x.actual.firstInningRuns != null);
-  const nrfiGames = withFirst.filter((x) => x.bothStarters);
-  const totals = {};
-  for (const line of [6.5, 7.5, 8.5, 9.5, 10.5]) {
-    const rows = games.map((x) => ({ p: x.model.total(line).over, y: x.actual.total > line ? 1 : 0 }));
-    totals[`over ${line}`] = { pred: mean(rows.map((r) => r.p)), actual: mean(rows.map((r) => r.y)), n: rows.length };
-  }
-  const spreads = {};
-  for (const point of [-1.5, 1.5]) {
-    const rows = games.map((x) => ({ p: x.model.spread(point).home, y: x.actual.margin + point > 0 ? 1 : 0 }));
-    spreads[`home ${point}`] = { pred: mean(rows.map((r) => r.p)), actual: mean(rows.map((r) => r.y)), n: rows.length };
-  }
-  return {
-    n: games.length,
-    bothStarters: games.filter((x) => x.bothStarters).length,
-    withLineups: games.filter((x) => x.hasLineups).length,
-    homeWin: { pred: mean(games.map((x) => x.model.pHome)), actual: mean(games.map((x) => x.actual.homeWin)), n: games.length },
-    nrfi: nrfiGames.length
-      ? { pred: mean(nrfiGames.map((x) => x.model.nrfi.nrfiProb)), actual: mean(nrfiGames.map((x) => x.actual.firstInningRuns === 0 ? 1 : 0)), n: nrfiGames.length }
-      : null,
-    totals,
-    spreads,
-    runs: {
-      projAway: mean(games.map((x) => x.model.projAway)),
-      actualAway: mean(games.map((x) => x.actual.away)),
-      projHome: mean(games.map((x) => x.model.projHome)),
-      actualHome: mean(games.map((x) => x.actual.home)),
-    },
-    extras: { pred: null, actual: mean(games.map((x) => (x.actual.innings > 9 ? 1 : 0))) },
-    // Brier of the model's own moneyline and its over/under at 8.5, for scale.
-    brier: {
-      pHome: mean(games.map((x) => (x.model.pHome - x.actual.homeWin) ** 2)),
-      over85: mean(games.map((x) => (x.model.total(8.5).over - (x.actual.total > 8.5 ? 1 : 0)) ** 2)),
-    },
-  };
-}
+// Lives in tools/backtest-common.mjs, so the v2 replay scores itself with the
+// identical function.
+export { validateGames as validate } from './backtest-common.mjs';
+import { validateGames as validate } from './backtest-common.mjs';
 
 if (process.argv[1] && path.basename(process.argv[1]) === 'backtest-games.mjs') {
   const { games, skip } = buildGames();

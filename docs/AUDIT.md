@@ -24,10 +24,21 @@ several contracts on one game are not independent bets.
 | Batter RBIs | 14 | +35% | worse | no signal — n=14 |
 | Game lines (ML, run line, total) | 0 | — | 3.1–3.2 pts from market, no lean | **not playable** — zero contracts ever clear the hurdle, by arithmetic |
 | First inning (NRFI/YRFI) | 0 | — | model spans 47–52% | **not playable** — never far enough from the market to call |
+| Game lines, rebuilt model (2026-09-23) | 102 | +0.1% [−18.0, +19.2] | **level**, pooled −0.0002 [−0.0025, +0.0019] | **no edge** — a pre-registered holdout, failed on both legs. `docs/GAME-EDGE-SEARCH.md` |
 
 Pooled: **1,232 prop trades, −3.7%**. In all seven series the exchange's price
 forecast the outcome better than the model did, and the interval on that
 difference excludes zero in every one.
+
+A second entry for game lines was added on 2026-09-23. Better per-game inputs —
+starters regressed component by component, the prior season in the team line,
+the posted card, wind direction — were fitted on 2025 plus 2026 to 08-09,
+chosen on 08-10..09-01 and tested once on 09-02..09-22. They forecast
+significantly better than the shipped inputs (pooled −0.0025 [−0.0045,
+−0.0005], paired on identical markets) and that was exactly enough to pull the
+model level with the exchange and no further. Bullpen availability, rest and
+travel, the umpire and a defence term were each built and measured, and none of
+them earned a place.
 
 ## Three things that are NOT the problem
 

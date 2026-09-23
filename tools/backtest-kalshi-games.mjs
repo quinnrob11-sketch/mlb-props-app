@@ -39,7 +39,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildGames, validate, USE_LINEUPS } from './backtest-games.mjs';
+// `--v2` swaps the replay for the candidate improved model (see
+// docs/GAME-EDGE-SEARCH.md). Everything downstream — the ticker parsing, the
+// decision quote, the screen, the statistics — is identical either way, which
+// is the point: the two models are put through the same study.
+const { buildGames, validate, USE_LINEUPS } = await import(
+  process.argv.includes('--v2') ? './backtest-games-v2.mjs' : './backtest-games.mjs'
+);
 import { planOrders, modelProbability, GAME_SERIES } from '../bot/plan.mjs';
 import { normalizeMarket, normalizeOrderbook } from '../src/lib/kalshi.js';
 import { buildSignal, blendedProbability } from '../src/trade/signals.js';
@@ -124,6 +130,11 @@ async function main() {
       home: { abbr: g.homeAbbr },
       game: g.model,
       nrfi: g.bothStarters ? g.model.nrfi : null,
+      // The shipped model's own numbers for the same game, when the v2 replay
+      // supplies them (`--v2` without `--as-v1`). Used only to score v2
+      // against v1 paired on identical markets; never traded.
+      gameV1: g.modelV1 || null,
+      nrfiV1: g.modelV1 && g.bothStarters ? g.modelV1.nrfi : null,
       pitchers: [],
       batters: [],
       replay: g,
@@ -171,17 +182,25 @@ async function main() {
     const p = parseEventTicker(markets[0].event_ticker);
     const startMs = startMsOf(p);
     const slate = slates.get(p.date) || { games: [] };
+    const slateV1 = slate.games.some((g) => g.gameV1)
+      ? { games: slate.games.map((g) => ({ ...g, game: g.gameV1 || g.game, nrfi: g.nrfiV1 || g.nrfi })) }
+      : null;
     const priced = markets.map((m) => {
       const market = normalizeMarket(m);
-      if (market.series === RFI_SERIES) return { m, market, info: rfiProbability(market, slate) };
-      return { m, market, info: modelProbability(market, slate, config) };
+      const info = market.series === RFI_SERIES
+        ? rfiProbability(market, slate)
+        : modelProbability(market, slate, config);
+      const v1 = slateV1
+        ? (market.series === RFI_SERIES ? rfiProbability(market, slateV1) : modelProbability(market, slateV1, config))
+        : null;
+      return { m, market, info, v1prob: v1?.prob ?? null };
     });
     const usable = priced.filter((x) => x.info.prob != null);
     for (const x of priced) if (x.info.prob == null) bump(`model: ${x.info.reason}`);
     if (!usable.length) continue;
     const candles = await gameCandles(seg, usable.map((x) => x.m), startMs);
     if (++fetched % 25 === 0) process.stderr.write(`  candles for ${fetched} games\r`);
-    for (const { m, market, info } of usable) {
+    for (const { m, market, info, v1prob } of usable) {
       const decisionMs = startMs - DECISION_MIN * 60e3;
       const sv = Number(m.settlement_value_dollars);
       rows.push({
@@ -195,6 +214,7 @@ async function main() {
         gamePk: info.game.gamePk,
         strike: Number(m.floor_strike),
         model: info.prob,
+        modelV1: v1prob,
         dq: quoteAt(candles[m.ticker], decisionMs),
         cq: quoteAt(candles[m.ticker], startMs),
         decisionMs,
@@ -361,12 +381,17 @@ async function main() {
     .filter((r) => r.dq?.mid != null && (r.settle === 0 || r.settle === 1))
     .map((r) => ({
       series: r.series, y: r.settle, cluster: r.cluster, model: r.model, market: r.dq.mid / 100,
+      modelV1: r.modelV1,
       close: r.cq?.mid != null ? r.cq.mid / 100 : null,
       blend: blendedProbability(r.model, r.dq.mid / 100, MARKET_WEIGHT[r.marketKey] ?? 0.3),
     }));
   const skill = (list) => ({
     n: list.length,
     brierDiffModelMinusMarket: brierDiff(list, 'model', 'market'),
+    // v2 minus v1 on the identical rows: negative means the new inputs are a
+    // better forecast than the shipped ones, paired game by game.
+    brierDiffModelMinusV1: list.every((x) => x.modelV1 != null) ? brierDiff(list, 'model', 'modelV1') : null,
+    brierDiffV1MinusMarket: list.every((x) => x.modelV1 != null) ? brierDiff(list, 'modelV1', 'market') : null,
     brierDiffBlendMinusMarket: brierDiff(list, 'blend', 'market'),
     brierOptimalModelWeight: brierOptimalModelWeight(list),
     model: scoring(list, 'model'),
@@ -391,7 +416,11 @@ async function main() {
     : null;
 
   const report = {
-    window: { from: FROM, to: TO, decisionMinutesBeforeFirstPitch: DECISION_MIN, lineups: USE_LINEUPS },
+    window: {
+      from: FROM, to: TO, decisionMinutesBeforeFirstPitch: DECISION_MIN, lineups: USE_LINEUPS,
+      model: process.argv.includes('--v2') ? (process.argv.includes('--as-v1') ? 'v2-replay-priced-as-v1' : 'v2') : 'v1',
+      params: process.argv.includes('--v2') ? arg('params', null) : null,
+    },
     seriesSpanLiveTier: seriesSpan,
     replayValidation: validation,
     coverage,
@@ -513,6 +542,7 @@ function print(r) {
     const dd = (x) => `${x.point.toFixed(4)} [${x.ci95[0].toFixed(4)}, ${x.ci95[1].toFixed(4)}]`;
     console.log(`${''.padEnd(22)} in-sample Brier-optimal weight on model: ${s.brierOptimalModelWeight.w}`);
     console.log(`${''.padEnd(22)} brier diff model-market ${dd(s.brierDiffModelMinusMarket)}  blend-market ${dd(s.brierDiffBlendMinusMarket)}`);
+    if (s.brierDiffModelMinusV1) console.log(`${''.padEnd(22)} brier diff v2-v1 ${dd(s.brierDiffModelMinusV1)}  v1-market ${dd(s.brierDiffV1MinusMarket)}`);
     if (s.closeOnSameRows) console.log(`${''.padEnd(22)} with close quote n=${s.closeOnSameRows.n}: close ${g(s.closeOnSameRows.close)} | decision ${g(s.closeOnSameRows.market)} | model ${g(s.closeOnSameRows.model)}`);
     console.log(`${''.padEnd(22)} model calib: ${s.modelCalibration.join('  ')}`);
     console.log(`${''.padEnd(22)} market calib: ${s.marketCalibration.join('  ')}`);

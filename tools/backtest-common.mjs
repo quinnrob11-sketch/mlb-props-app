@@ -141,3 +141,46 @@ export function pmfOf(dist, max) {
   }
   return pmf;
 }
+
+// ── game-replay validation ──────────────────────────────────────────────────
+// Shared by tools/backtest-games.mjs and tools/backtest-games-v2.mjs so the
+// two replays are scored by one function and cannot drift apart.
+const meanOf = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
+export function validateGames(games) {
+  const withFirst = games.filter((x) => x.actual.firstInningRuns != null);
+  const nrfiGames = withFirst.filter((x) => x.bothStarters);
+  const totals = {};
+  for (const line of [6.5, 7.5, 8.5, 9.5, 10.5]) {
+    const rows = games.map((x) => ({ p: x.model.total(line).over, y: x.actual.total > line ? 1 : 0 }));
+    totals[`over ${line}`] = { pred: meanOf(rows.map((r) => r.p)), actual: meanOf(rows.map((r) => r.y)), n: rows.length };
+  }
+  const spreads = {};
+  for (const point of [-1.5, 1.5]) {
+    const rows = games.map((x) => ({ p: x.model.spread(point).home, y: x.actual.margin + point > 0 ? 1 : 0 }));
+    spreads[`home ${point}`] = { pred: meanOf(rows.map((r) => r.p)), actual: meanOf(rows.map((r) => r.y)), n: rows.length };
+  }
+  return {
+    n: games.length,
+    bothStarters: games.filter((x) => x.bothStarters).length,
+    withLineups: games.filter((x) => x.hasLineups).length,
+    homeWin: { pred: meanOf(games.map((x) => x.model.pHome)), actual: meanOf(games.map((x) => x.actual.homeWin)), n: games.length },
+    nrfi: nrfiGames.length
+      ? { pred: meanOf(nrfiGames.map((x) => x.model.nrfi.nrfiProb)), actual: meanOf(nrfiGames.map((x) => x.actual.firstInningRuns === 0 ? 1 : 0)), n: nrfiGames.length }
+      : null,
+    totals,
+    spreads,
+    runs: {
+      projAway: meanOf(games.map((x) => x.model.projAway)),
+      actualAway: meanOf(games.map((x) => x.actual.away)),
+      projHome: meanOf(games.map((x) => x.model.projHome)),
+      actualHome: meanOf(games.map((x) => x.actual.home)),
+    },
+    extras: { pred: null, actual: meanOf(games.map((x) => (x.actual.innings > 9 ? 1 : 0))) },
+    // Brier of the model's own moneyline and its over/under at 8.5, for scale.
+    brier: {
+      pHome: meanOf(games.map((x) => (x.model.pHome - x.actual.homeWin) ** 2)),
+      over85: meanOf(games.map((x) => (x.model.total(8.5).over - (x.actual.total > 8.5 ? 1 : 0)) ** 2)),
+    },
+  };
+}
