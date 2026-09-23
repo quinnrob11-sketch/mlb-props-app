@@ -101,6 +101,10 @@ export function lineupIndex(dates) {
       if (!lu.away || !lu.home) continue;
       lu.gameNumber = g.gameNumber || 1;
       lu.gameDate = g.gameDate;
+      // A postponed game is played the next day, so its feed archive - and
+      // therefore the only lineup timestamp this study can prove - lands a day
+      // after the scheduled first pitch. Kalshi cancels the props either way.
+      lu.postponed = /postponed/i.test(g.status?.detailedState || '');
       const k = `${lu.away}${lu.home}`;
       if (!m.has(k)) m.set(k, []);
       m.get(k).push(lu);
@@ -182,6 +186,7 @@ export function buildUniverse() {
       newsMs: lu.firstTimecodeMs,
       closeMs: Date.parse(m.close_time),
       cluster: `${lu.gamePk}|${id}`,
+      postponed: !!lu.postponed,
     });
   }
   return { rows: out, coverage: cov, dates };
@@ -233,6 +238,12 @@ export function run() {
   for (const [name] of ENTRIES) tests[`${name}|yes`] = { discovery: [], confirm: [] };
   for (const [name] of ENTRIES) tests[`${name}|no`] = { discovery: [], confirm: [] };
   const quoted = Object.fromEntries(ENTRIES.map(([n]) => [n, { open: 0, twoSided: 0, askOnly: 0, bidOnly: 0, none: 0, spreads: [] }]));
+  // Three POST-HOC arms, chosen after the discovery pass and labelled as such.
+  // They are not among the twelve and they do not enter the correction; they
+  // exist because the pre-registered rule's whole loss turned out to sit in a
+  // tail of quotes that were hours old.
+  const post = { S0: { discovery: [], confirm: [] }, S1: { discovery: [], confirm: [] }, S2: { discovery: [], confirm: [] } };
+  const postCount = { ok: 0, postponed: 0 };
 
   // descriptive, not scored
   const desc = {
@@ -291,6 +302,15 @@ export function run() {
       else if (q.bid != null) { cell.bidOnly++; continue; }
       else { cell.none++; continue; }
       const extra = { series: r.series, ticker: r.market.ticker, date: r.date, spread: q.ask - q.bid, result: r.market.result };
+      if (name === 'news') {
+        const ageMin = (T - q.ts * 1000) / 60000;
+        if (q.ask >= 1 && q.ask <= 99) {
+          if (!r.postponed) post.S0[w].push(trade(r.market, 'yes', q.ask, r.cluster, extra));
+          if (ageMin < 60) post.S1[w].push(trade(r.market, 'yes', q.ask, r.cluster, extra));
+          if (ageMin < 60 && q.ask - q.bid <= 2) post.S2[w].push(trade(r.market, 'yes', q.ask, r.cluster, extra));
+        }
+        postCount[r.postponed ? 'postponed' : 'ok']++;
+      }
       if (q.ask >= 1 && q.ask <= 99) tests[`${name}|yes`][w].push(trade(r.market, 'yes', q.ask, r.cluster, extra));
       const noPrice = 100 - q.bid;
       if (noPrice >= 1 && noPrice <= 99) tests[`${name}|no`][w].push(trade(r.market, 'no', noPrice, r.cluster, extra));
@@ -314,8 +334,16 @@ export function run() {
   const bh = benjaminiHochberg(ps, 0.10);
   scored.forEach((s, i) => { s.survivesBH = bh.has(i); s.survivesBonferroni = (s.discovery.p ?? 1) <= 0.05 / scored.length; });
 
+  const postHoc = [
+    ['S0', 'POST-HOC: at news, buy YES at the ask, excluding postponed games'],
+    ['S1', 'POST-HOC: at news, buy YES at the ask, quote less than 60 min old'],
+    ['S2', 'POST-HOC: at news, buy YES at the ask, quote < 60 min old and spread <= 2c'],
+  ].map(([id, label]) => ({ id, label, discovery: roiStats(post[id].discovery), confirm: roiStats(post[id].confirm), trades: post[id] }));
+
   return {
     split: SPLIT, feeRate: FEE_RATE, dates: dates.length,
+    postponedCandidates: postCount,
+    postHoc,
     coverage, resultMix,
     quoteAvailability: Object.fromEntries(ENTRIES.map(([n]) => {
       const c = quoted[n];
@@ -333,10 +361,12 @@ if (IS_MAIN && (!process.argv[2] || process.argv[2] === 'scan')) {
   const out = {
     ...res,
     tests: res.tests.map((t) => ({ id: t.id, d: fmt(t.discovery), c: SHOW_CONFIRM ? fmt(t.confirm) : 'hidden', bh: t.survivesBH, bonf: t.survivesBonferroni })),
+    postHoc: res.postHoc.map((t) => ({ id: t.id, label: t.label, d: fmt(t.discovery), c: SHOW_CONFIRM ? fmt(t.confirm) : 'hidden' })),
   };
   const f = arg('--json', null);
   if (f) {
-    fs.writeFileSync(f, JSON.stringify({ ...res, tests: res.tests.map(({ trades, ...t }) => ({ ...t, confirm: SHOW_CONFIRM ? t.confirm : 'hidden' })) }, null, 1));
+    const strip = (t) => { const { trades, ...rest } = t; return { ...rest, confirm: SHOW_CONFIRM ? t.confirm : 'hidden' }; };
+    fs.writeFileSync(f, JSON.stringify({ ...res, tests: res.tests.map(strip), postHoc: res.postHoc.map(strip) }, null, 1));
   }
   console.log(JSON.stringify(out, null, 1));
 }

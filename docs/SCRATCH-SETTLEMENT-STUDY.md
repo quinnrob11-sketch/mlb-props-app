@@ -196,3 +196,183 @@ node tools/scratch-scan.mjs  --kcache ecache --split 2026-09-01 [--confirm] --js
 ```
 
 Without `--confirm` the scanner refuses to print the holdout.
+
+---
+
+# Discovery results (run 2026-09-23, game dates through 2026-09-01)
+
+**Short answer: the settlement bias is real and the window is enormous, and it
+is still not a business. Kalshi cancels these markets three to five hours after
+the lineup that condemns them is public, and settles them about four cents above
+the mid it was quoting at the time. Two of those four cents are the half-spread
+you pay to get in and about one more is the fee. What is left is roughly one
+cent a contract, on markets that more than half the time never trade a single
+contract in their entire life.**
+
+## The twelve pre-registered tests: all negative
+
+| id | n | player-games | ROI [95%] | p | c/contract | total | BH |
+|---|---|---|---|---|---|---|---|
+| `news / yes` | 1,391 | 113 | **−1.33% [−3.98, +0.98]** | 0.305 | −0.44c | −$6.11 | — |
+| `news / no` | 1,391 | 113 | −11.12% [−12.42, −9.97] | 0.0002 | −8.44c | −$117.43 | yes |
+| `fp-60 / yes` | 1,421 | 134 | −4.84% [−7.23, −2.68] | 0.0002 | −1.73c | −$24.62 | yes |
+| `fp-60 / no` | 1,421 | 134 | −16.35% [−17.73, −14.99] | 0.0002 | −12.89c | −$183.18 | yes |
+| `fp-30 / yes` | 1,384 | 134 | −5.06% [−7.35, −2.98] | 0.0002 | −1.83c | −$25.27 | yes |
+| `fp-30 / no` | 1,384 | 134 | −16.79% [−18.19, −15.42] | 0.0002 | −13.26c | −$183.55 | yes |
+| `fp+0 / yes` | 1,243 | 134 | −10.29% [−12.94, −7.78] | 0.0002 | −4.03c | −$50.15 | yes |
+| `fp+0 / no` | 1,243 | 134 | −20.26% [−22.01, −18.58] | 0.0002 | −16.47c | −$204.67 | yes |
+| `fp+30 / yes` | 944 | 131 | −38.95% [−42.25, −35.26] | 0.0002 | −24.50c | −$231.26 | yes |
+| `fp+30 / no` | 944 | 131 | −29.07% [−30.73, −27.52] | 0.0002 | −25.24c | −$238.31 | yes |
+| `fp+60 / yes` | 916 | 127 | −38.67% [−42.11, −34.92] | 0.0002 | −24.03c | −$220.16 | yes |
+| `fp+60 / no` | 916 | 127 | −28.83% [−30.54, −27.20] | 0.0002 | −25.07c | −$229.67 | yes |
+
+Eleven of the twelve survive Benjamini–Hochberg at q = 0.10 and all eleven are
+negative. **Not one rule has a positive point estimate, so under condition 2 of
+the pass/fail test nothing is eligible to be confirmed.** The single arm whose
+interval touches zero, `news / yes`, still points down.
+
+Two things are visible in that table before any explanation.
+
+**The earlier you trade the less you lose, and the gradient is steep.** Buying
+YES costs 0.44c a contract at the news, 1.8c an hour before first pitch, 4.0c at
+first pitch and 24c half an hour into the game. That is not an edge decaying; it
+is the book emptying out.
+
+| entry | markets still open | two-sided quote | median spread | p90 spread |
+|---|---|---|---|---|
+| `news` | 4,048 | 2,967 (**73.3%**) | **2c** | 13c |
+| `fp-60` | 4,048 | 2,581 (63.8%) | 7c | 51c |
+| `fp-30` | 4,048 | 2,484 (61.4%) | 8c | 52c |
+| `fp+0` | 4,048 | 2,172 (53.7%) | 13c | 76c |
+| `fp+30` | 4,048 | 1,459 (36.0%) | 57c | 95c |
+| `fp+60` | 3,815 | 1,380 (36.2%) | 55c | 95c |
+
+The market maker does not reprice the scratch, he withdraws from it. By half an
+hour after first pitch the median spread on a doomed contract is 57 cents wide,
+and "buy at the ask" means paying whatever is left on the screen.
+
+**And both directions lose, at every clock.** `no` is worse than `yes` in all six
+pairs. That is the lesson `docs/MARKET-EDGE-SEARCH.md` paid for in Family C: the
+two sides of a quoted market do not sum to zero, they sum to minus the spread
+and minus two fees, so a large loss on one side is not evidence for the other.
+The reference arm is what lets this study say the `yes` side is the *right* side
+rather than merely the less bad one.
+
+## Where the loss actually is: 68 rained-out contracts
+
+The `news / yes` arm loses $6.11 in total. Its worst twelve trades lose $8.22
+between them, and every one of them looks like this:
+
+```
+2026-07-27 KXMLBRBI-...-CLEGARIAS13-2   bid=7  ask=95  settled=12   quote age 581 min
+2026-07-17 KXMLBHIT-...-CLEAHEDGES27-2  bid=2  ask=93  settled=16   quote age 876 min
+2026-07-21 KXMLBHIT-...-BALCTROMP38-2   bid=2  ask=93  settled=17   quote age 887 min
+```
+
+An ask of 93 against a bid of 2, on a print fourteen hours old. These are
+**postponed games**. `status.detailedState` on the games involved reads
+`Postponed`: the game was rained out and replayed the next day, so the feed
+archive — and with it the only lineup timestamp this study can prove — lands a
+day after the scheduled first pitch, long past the last quote anyone made.
+Kalshi cancels the props either way, which is why they are in the population.
+
+**68 of the 2,967 quoted rows (2.3%) are postponed games, and they are the
+entire loss.** Removing them and nothing else turns `news / yes` from −1.33%
+into **+2.65% [+1.77, +3.47]**.
+
+## Three post-hoc arms, labelled as post-hoc
+
+These were written after the discovery pass. They are **not** among the twelve,
+they do not enter the multiplicity correction, and the evidence for them is
+weaker than for a pre-registered rule by exactly that much.
+
+| id | rule | n | games | ROI [95%] | c/contract | total |
+|---|---|---|---|---|---|---|
+| `S0` | `news / yes`, excluding postponed games | 1,323 | 102 | +2.65% [+1.77, +3.47] | +0.83c | $11.01 |
+| `S1` | `news / yes`, quote less than 60 minutes old | 1,304 | 102 | +2.83% [+2.06, +3.59] | +0.89c | $11.55 |
+| `S2` | `S1` and spread ≤ 2c | 904 | 97 | +3.95% [+3.19, +4.67] | +1.14c | $10.34 |
+
+`S1` is the one worth taking seriously, because it is the least fitted of the
+three and because it is barely a filter on the data at all: it says *the quote
+has to be a live quote*. A candlestick carries the last print forward for ever,
+so a market nobody has touched since yesterday still reports an "ask". Anything
+reading the real order book gets this for free. It removes every postponed game
+as a side effect, which is why `S0` and `S1` agree to within 0.2%.
+
+That the number barely moves across every threshold is the reassuring part:
+
+| variant | n | c/contract | ROI |
+|---|---|---|---|
+| spread ≤ 1c, age < 60 min | 688 | +1.21c | +4.36% |
+| spread ≤ 2c, age < 60 min | 904 | +1.14c | +3.95% |
+| spread ≤ 5c, age < 60 min | 1,097 | +1.04c | +3.49% |
+| any spread, age < 60 min | 1,304 | +0.89c | +2.83% |
+| spread ≤ 2c, age < 5 min | 524 | +1.00c | +3.56% |
+| spread ≤ 2c, age < 120 min | 912 | +1.15c | +3.99% |
+
+Eleven variants were looked at in all. Every one lands between +0.89c and
++1.21c a contract, which is a third of a cent of spread across the whole
+sensitivity. This is not a threshold that was found; it is a constant.
+
+## Why it is there, and why it is one cent
+
+The mechanism is a single number, and it is the same one the previous study
+found from a different clock.
+
+| measured at the news, excluding postponed games | mean | median |
+|---|---|---|
+| settlement − **mid** | **+4.25c** | +3.5c |
+| settlement − **ask** | **+2.02c** | +2.0c |
+| fee on a 28c contract | −1.4c | |
+
+**Kalshi's cancellation price sits about four cents above the mid it was quoting
+when the lineup came out.** The prior study measured 5.14c above the mid at
+T−1h; measured at the moment the news breaks it is 4.25c. Same effect, and it
+is not an artifact of where trading stopped — it is there while the book is
+still two-sided and two cents wide.
+
+But two of those four cents are the half-spread you pay to cross, and the fee
+takes most of what is left. The bias is real, the direction is real — **buy, do
+not sell** — and after costs it is worth about one cent on a contract whose mean
+ask is 28c.
+
+And the market never reacts to the news at all:
+
+| paired mid change, excluding postponed games | mean | median |
+|---|---|---|
+| hour before the lineup → the lineup | −0.87c | 0.0c |
+| the lineup → an hour after | −2.09c | 0.0c |
+
+The median quoted mid does not move one cent when the player is publicly ruled
+out of the game. **Nobody is racing you.** That is the opposite of the Family B
+strikeout trade, and it is why this window is hours rather than ninety seconds:
+there is no information in the price to be first to, only a settlement
+convention to be on the right side of.
+
+## How big is it, honestly
+
+Over the 47 discovery dates `S1` fires **1,304 times — about 28 a day — for
+$11.55 at one contract, which is 25 cents a day.**
+
+To beat the $6-a-day bar it would have to fill about 24 contracts every time. It
+cannot:
+
+| depth of the markets `S1` trades (n = 1,304) | |
+|---|---|
+| never traded a single contract in their whole life | **53.6%** |
+| traded 20 or more contracts, ever | 33.9% |
+| median volume in the minute of entry | **0** |
+| median lifetime volume | **0** |
+
+More than half of these contracts have no trade history whatsoever, and the
+median one has no volume in the minute you would be lifting the offer. Candles
+show volume, not the size resting at the top of book, so this is not proof that
+the offer is one lot — but a market with no lifetime volume at all is not a
+market where two dozen contracts are waiting at the touch.
+
+There is a second problem with size, specific to this trade. Kalshi's settlement
+here is a "fair market price", and **82% of these markets trade nothing at all
+after the news**. If that price is derived from the book or from the last trade,
+a large taker order is not collecting a mispricing, it is moving the very
+quantity the payout is computed from. At one contract that is negligible. At
+twenty it is the whole thesis.
