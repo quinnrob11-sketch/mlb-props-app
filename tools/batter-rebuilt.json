@@ -1,0 +1,12 @@
+{
+ "platoonStrength": 0,
+ "platoonHrAmp": 0,
+ "jointScoring": true,
+ "scoreSpread": 0.6,
+ "hrPriorStrength": 200,
+ "priorStrength": { "hit": 200, "single": 600, "double": 400, "triple": 120, "run": 400, "rbi": 400, "k": 60, "bb": 60, "sb": 15 },
+ "powerShare": 1.06,
+ "runLevel": 0.98,
+ "rbiLevel": 1.0,
+ "parkStrength": 1.25
+}

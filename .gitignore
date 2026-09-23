@@ -13,3 +13,4 @@ bot/STOP
 *.key
 .backtest-cache
 .kalshi-cache
+scratch/
