@@ -204,3 +204,27 @@ name anything.
 `tools/backtest-kalshi-games.mjs`, `tools/outs-study.mjs`,
 `tools/maker-study.mjs`. Each writes its own doc in this directory with the
 pre-registration, the coverage, the cuts and the sensitivity checks.
+
+## How accurate are the projections themselves?
+
+A separate question from every table above, and the one that matters if you are
+reading the board rather than betting into a price. Measured against outcomes
+on 9,404 starts, 86,220 batter-games and 4,486 games across two seasons:
+**docs/ACCURACY.md**, which leads with a trust table.
+
+The short version. Every batter market is calibrated within 0.3-0.8 points of
+observed frequency, total bases best at 0.4. Game totals and run lines are
+sound. Three things are not trustworthy as shipped:
+
+- **Any pitcher over.** `kLevel` 0.95 and `hLevel` 0.97 are market-fitted trims
+  that cost outcome accuracy: strikeout overs read 2.6 points low, hits allowed
+  2.0 low, in both seasons.
+- **A starter projected under 4.5 innings.** Outs overs read 6.8 points low on
+  1,159 such starts.
+- **A hitter under 50 plate appearances**, whose hits, total bases and singles
+  read about 2 points high.
+
+And two things worth knowing before using the boards to rank anything: the
+batter POINT projections barely separate hitters — each sits within 0-4% of
+giving every player the slate average, and batter hits ties it to three
+decimals — and the posted lineup is worth nothing at all to the game lines.

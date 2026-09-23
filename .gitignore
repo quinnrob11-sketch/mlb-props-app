@@ -11,7 +11,7 @@ bot/state/
 bot/STOP
 *.pem
 *.key
-.backtest-cache
+.backtest-cache*
 .kalshi-cache
 scratch/
 # agent/edge-pitch research scratch (caches, fitted params, run outputs)
