@@ -253,6 +253,9 @@ export default function PropTable({
   // only carries the nine hitters in each card, so a player whose team has not
   // posted yet is simply absent. "Nothing matches" made that look like a broken
   // search, which is exactly how it was reported.
+  // Counted in TEAMS, because that is the unit a missing hitter belongs to —
+  // one club posts or does not. Saying "lineups" invited reading it as games.
+  const teamsPlaying = kind === "batter" ? new Set(unfilteredRows.map((r) => r.team)).size : 0;
   const projectedTeams =
     kind === "batter"
       ? new Set(
@@ -272,7 +275,7 @@ export default function PropTable({
           headline: `No ${kind === "batter" ? "batter" : "pitcher"} matches “${query}”.`,
           detail:
             kind === "batter" && projectedTeams > 0
-              ? `The board carries the nine hitters in each card, and ${projectedTeams} of today's lineups are still PROJECTED rather than posted — a hitter who did not start his team's last game will not appear until the real card drops. Only about three quarters of a posted nine start again the next day, so check back closer to first pitch.`
+              ? `The board carries the nine hitters in each posted card, and ${projectedTeams} of the ${teamsPlaying} teams playing today have not posted one yet — their lineups are PROJECTED from the last game, so a hitter who sat that day will not appear until the real card drops. Only about three quarters of a posted nine start again the next day, so check back closer to first pitch.`
               : "Check the spelling, or clear the other filters — the market chips and “Lines only” narrow this table too.",
         }
       : {
