@@ -37,7 +37,21 @@ const STATS = 'https://statsapi.mlb.com/api/v1';
 const FEE = (c) => (0.07 * c * (100 - c)) / 100;
 
 const et = (d) => d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-const log = (msg) => console.log(`${new Date().toISOString().slice(11, 19)} ${msg}`);
+// The watcher writes its own log rather than relying on a shell redirect: it
+// runs for hours under Task Scheduler, where wrapping it in cmd.exe to get
+// ">> file" turned out to be one more thing that can fail silently.
+const NEWLINE = String.fromCharCode(10);
+const LOGFILE = 'bot/state/stale-watch.log';
+const write = (line) => {
+  console.log(line);
+  try {
+    fs.mkdirSync(path.dirname(LOGFILE), { recursive: true });
+    fs.appendFileSync(LOGFILE, line + NEWLINE);
+  } catch {
+    /* logging must never take the watcher down */
+  }
+};
+const log = (msg) => write(`${new Date().toISOString().slice(11, 19)} ${msg}`);
 
 let lastCall = 0;
 async function get(url) {
