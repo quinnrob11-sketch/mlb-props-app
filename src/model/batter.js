@@ -60,7 +60,7 @@ import {
   negBinomTailOver,
 } from '../lib/probability.js';
 import { parkFactor } from '../lib/parks.js';
-import { LEAGUE_AVG, shrunkRate } from './league.js';
+import { LEAGUE_AVG } from './league.js';
 
 /**
  * Expected plate appearances by lineup slot, 1-9.
@@ -370,6 +370,62 @@ export const BATTER_TUNING = {
    * best of 60-600 on fit; holdout HR+TB log loss 2.0180 -> 2.0169.
    */
   hrPriorStrength: 300,
+  /**
+   * Weight on the PRIOR SEASON in the shrinkage blend, and the prior strength
+   * (in denominator units) of every other rate. These were fixed inside
+   * `shrunkRate` (0.6) and hard-coded at the call sites; they are knobs now so
+   * `tools/batter-research.mjs` can re-derive them. The values below reproduce
+   * the pre-2026-09-23 model exactly. `sb` is in GAMES, not PA.
+   */
+  seasonPriorWeight: 0.6,
+  /**
+   * Strength of the platoon multiplier (1 = the shipped +-5% / +2% for switch
+   * hitters) and how much more platoon-sensitive home runs are (1.8 shipped).
+   */
+  platoonStrength: 1,
+  platoonHrAmp: 1.8,
+  /**
+   * Strength of the park term and of the opposing-starter term, as multipliers
+   * on the shipped park weights (0.7 / 0.5) and on `PITCHER_INFLUENCE` (0.6).
+   * 1 reproduces the shipped model.
+   */
+  parkStrength: 1,
+  pitcherInfluence: 1,
+  /**
+   * Section 11b. `jointScoring` switches runs / RBI / H+R+RBI over to the
+   * joint plate-appearance outcome model; false keeps the shipped Poisson,
+   * negative binomial and inflated-convolution marginals. The weights below
+   * are the measured decomposition (see 11b) and are ratios only: the scales
+   * are solved per hitter so the means are unchanged.
+   */
+  jointScoring: false,
+  scoreSpread: 0,
+  /**
+   * The batting order as a TALENT signal, not just a plate-appearance one.
+   * `exp(-slotPower * (slot - 5))` multiplies the home-run rate and
+   * `exp(-slotContact * (slot - 5))` the non-HR hit rate, centred so slot 5 is
+   * unchanged. The manager knows who is swinging well today and the season
+   * line does not; measured on FIT, home runs read 1.2 points low in slots 1-4
+   * and 1.9 points high in slot 9 after every other term. 0 disables.
+   */
+  slotPower: 0,
+  slotContact: 0,
+  /**
+   * The relief pitchers behind the starter. `bullpenShare` is the fraction of
+   * a batter's plate appearances taken against the opposing bullpen rather
+   * than the starter; the starter and bullpen rates are blended at that weight
+   * before the `PITCHER_INFLUENCE` pass-through. It does nothing unless the
+   * caller supplies `spRates.pen` = {kRate, hRate, hrRate}, which
+   * `src/data/loadSlate.js` does not yet compute.
+   */
+  bullpenShare: 0,
+  runFromBbRatio: 0.2615 / 0.3164,
+  rbiWeights: { out: 0.0202, hit: 0.2674, hrExtra: 0.5868 },
+  rbiHitShares: [0.784, 0.196, 0.020],
+  hrExtraShares: [0.652, 0.288, 0.056],
+  priorStrength: {
+    hit: 60, single: 60, double: 80, triple: 120, run: 60, rbi: 60, k: 60, bb: 60, sb: 30,
+  },
   /** NB dispersion of RBI (k) and of stolen bases. */
   rbiK: 0.85,
   /**
@@ -564,8 +620,16 @@ export function projectBatter(input) {
   //    Known slot -> table lookup + home/away tweak. Unknown slot -> the
   //    player's own PA/game if he has >10 games (clamped 3.3-4.7), else 4.
   // ---------------------------------------------------------------------
+  //
+  //    `input.paDist` overrides both: an explicit [[plate appearances,
+  //    probability], ...] list from a caller that models the count itself (team
+  //    context, the chance of a 5th trip). `pa` is then its mean, so every
+  //    `proj*` below is still exactly the mean of the distribution under it.
   let pa;
-  if (slot >= 1 && slot <= 9) {
+  const paOverride = Array.isArray(input.paDist) && input.paDist.length ? input.paDist : null;
+  if (paOverride) {
+    pa = paOverride.reduce((s, [n, p]) => s + n * p, 0);
+  } else if (slot >= 1 && slot <= 9) {
     pa = PA_BY_LINEUP_SLOT[slot - 1] + (isAway ? 0.08 : -0.08);
   } else {
     const games = s26.gamesPlayed || 0;
@@ -588,16 +652,27 @@ export function projectBatter(input) {
   //    (possibly live-overridden) `lg`. Supplying a custom `lg` therefore
   //    moves only the K and BB priors. Preserved as-is (analysis #9).
   // ---------------------------------------------------------------------
+  // `shrunkRate` with the prior-season weight and the prior strengths made
+  // tunable. `seasonPriorWeight: 0.6` and the strengths below reproduce
+  // `shrunkRate(...)` exactly; both are re-fitted in docs/BATTER-EDGE-SEARCH.md.
+  const w25 = T.seasonPriorWeight;
+  const S = T.priorStrength;
+  const shrink = (x26, d26, x25, d25, prior, strength) => {
+    const num = (x26 || 0) + w25 * (x25 || 0) + strength * prior;
+    const den = (d26 || 0) + w25 * (d25 || 0) + strength;
+    return den > 0 ? num / den : prior;
+  };
+
   const rates = {
-    hit:    shrunkRate(s26.hits,        pa26, s25.hits,        pa25, 0.222, 60),
-    single: shrunkRate(singles26,       pa26, singles25,       pa25, 0.14,  60),
-    double: shrunkRate(s26.doubles,     pa26, s25.doubles,     pa25, 0.043, 80),
-    triple: shrunkRate(s26.triples,     pa26, s25.triples,     pa25, 0.004, 120),
-    hr:     shrunkRate(s26.homeRuns,    pa26, s25.homeRuns,    pa25, 0.03,  T.hrPriorStrength),
-    run:    shrunkRate(s26.runs,        pa26, s25.runs,        pa25, 0.12,  60),
-    rbi:    shrunkRate(s26.rbi,         pa26, s25.rbi,         pa25, 0.115, 60),
-    k:      shrunkRate(s26.strikeOuts,  pa26, s25.strikeOuts,  pa25, lg.kRate,  60),
-    bb:     shrunkRate(s26.baseOnBalls, pa26, s25.baseOnBalls, pa25, lg.bbRate, 60),
+    hit:    shrink(s26.hits,        pa26, s25.hits,        pa25, 0.222, S.hit),
+    single: shrink(singles26,       pa26, singles25,       pa25, 0.14,  S.single),
+    double: shrink(s26.doubles,     pa26, s25.doubles,     pa25, 0.043, S.double),
+    triple: shrink(s26.triples,     pa26, s25.triples,     pa25, 0.004, S.triple),
+    hr:     shrink(s26.homeRuns,    pa26, s25.homeRuns,    pa25, 0.03,  T.hrPriorStrength),
+    run:    shrink(s26.runs,        pa26, s25.runs,        pa25, 0.12,  S.run),
+    rbi:    shrink(s26.rbi,         pa26, s25.rbi,         pa25, 0.115, S.rbi),
+    k:      shrink(s26.strikeOuts,  pa26, s25.strikeOuts,  pa25, lg.kRate,  S.k),
+    bb:     shrink(s26.baseOnBalls, pa26, s25.baseOnBalls, pa25, lg.bbRate, S.bb),
   };
 
   // Stolen bases PER GAME (not per PA).
@@ -622,10 +697,10 @@ export function projectBatter(input) {
   // present in both backtested seasons. Applied to the shrunk rate rather than
   // to the prior, so it corrects every hitter and not only the low-sample ones.
   const sbPerGame =
-    shrunkRate(
+    shrink(
       s26.stolenBases, s26.gamesPlayed,
       s25.stolenBases, s25.gamesPlayed,
-      lg.sbPerGame ?? SB_PER_GAME_PRIOR, 30,
+      lg.sbPerGame ?? SB_PER_GAME_PRIOR, S.sb,
     ) * T.sbScale;
 
   // ---------------------------------------------------------------------
@@ -645,6 +720,14 @@ export function projectBatter(input) {
     else if (batSide !== pitcherHand) platoon = 1.05;
     else platoon = 0.95;
   }
+  // `platoonStrength` scales the whole deviation from 1 (1 = the values above,
+  // 0 = no platoon term at all). See docs/BATTER-EDGE-SEARCH.md: the season
+  // line a platooned hitter carries is already an average over the matchups his
+  // manager actually gives him, so a second multiplier double-counts.
+  platoon = 1 + (platoon - 1) * T.platoonStrength;
+  // `input.platoonOverride` replaces the table entirely, for a caller that has
+  // the hitter's own vs-LHP / vs-RHP split regressed to the mean.
+  if (Number.isFinite(input.platoonOverride)) platoon = input.platoonOverride;
 
   // ---------------------------------------------------------------------
   // 4. Opposing-starter quality — from de-duplicated talent rates, see
@@ -667,9 +750,18 @@ export function projectBatter(input) {
     // direction. Relievers strike out more and allow fewer hits, so the old
     // denominators made every starter look hit-prone and strikeout-poor.
     // See the measured split in model/league.js.
-    spK = 1 + PITCHER_INFLUENCE * (sp.k / lg.spKRate - 1);
-    spHit = 1 + PITCHER_INFLUENCE * 0.8 * (sp.h / lg.spHRate - 1);
-    spHr = 1 + PITCHER_INFLUENCE * 0.8 * (sp.hr / lg.spHrRate - 1);
+    const PI = PITCHER_INFLUENCE * T.pitcherInfluence;
+    // A batter faces the starter for his first two or three trips and the
+    // bullpen after that. With `pen` supplied, the rates he is priced against
+    // are the plate-appearance-weighted blend of the two.
+    const pen = T.bullpenShare > 0 && spRates.pen ? spRates.pen : null;
+    const mix = (a, b) => (pen && Number.isFinite(b) ? (1 - T.bullpenShare) * a + T.bullpenShare * b : a);
+    const spk = mix(sp.k, pen?.kRate);
+    const sph = mix(sp.h, pen?.hRate);
+    const sphr = mix(sp.hr, pen?.hrRate);
+    spK = 1 + PI * (spk / lg.spKRate - 1);
+    spHit = 1 + PI * 0.8 * (sph / lg.spHRate - 1);
+    spHr = 1 + PI * 0.8 * (sphr / lg.spHrRate - 1);
 
     // FIX(2a) — run environment created by the starter. The ratio is built
     // from the same two legs (hits, HR) at the model's own run values, and is
@@ -678,8 +770,8 @@ export function projectBatter(input) {
     // would make runs MORE pitcher-sensitive than the hits they are made of.
     spRunEnv =
       1 +
-      PITCHER_INFLUENCE * 0.8 *
-        (runProxy(sp.h, sp.hr) / runProxy(lg.spHRate, lg.spHrRate) - 1);
+      PI * 0.8 *
+        (runProxy(sph, sphr) / runProxy(lg.spHRate, lg.spHrRate) - 1);
   }
 
   // ---------------------------------------------------------------------
@@ -687,9 +779,10 @@ export function projectBatter(input) {
   //    Hits and HR use the standard 0.7 park weight; strikeouts use the
   //    half-weight 0.5 (same convention as projectPitcher).
   // ---------------------------------------------------------------------
-  const parkHits = parkFactor(park, 'hits', 0.7);
-  const parkHrWeather = parkFactor(park, 'hr', 0.7) * weatherHrFactor(wx);
-  const parkSo = parkFactor(park, 'so', 0.5);
+  const pk = T.parkStrength;
+  const parkHits = parkFactor(park, 'hits', 0.7 * pk);
+  const parkHrWeather = parkFactor(park, 'hr', 0.7 * pk) * weatherHrFactor(wx);
+  const parkSo = parkFactor(park, 'so', 0.5 * pk);
 
   // FIX(2b) — the run environment runs/RBI/HRR were missing entirely.
   //
@@ -707,7 +800,7 @@ export function projectBatter(input) {
   // Bounds are inherited, not clamped: parkRuns lies in [0.958, 1.084],
   // runWeather in [0.952, 1.048] and spRunEnv in [0.74, 1.33] because the
   // starter's rates are themselves clamped.
-  const parkRuns = parkFactor(park, 'runs', 0.7);
+  const parkRuns = parkFactor(park, 'runs', 0.7 * pk);
   const runWeather = 1 + RUN_CONTEXT_PASSTHROUGH * (weatherHrFactor(wx) - 1);
   const runContext = spRunEnv * parkRuns * runWeather;
 
@@ -737,9 +830,13 @@ export function projectBatter(input) {
   // preserved verbatim).
   //
   // FIX(v31) — the CONTACT/POWER SPLIT. See the constants below.
+  const slotCentre = slot >= 1 && slot <= 9 ? slot - 5 : 0;
+  const slotPowerMult = T.slotPower ? Math.exp(-T.slotPower * slotCentre) : 1;
+  const slotContactMult = T.slotContact ? Math.exp(-T.slotContact * slotCentre) : 1;
+
   const hrPARaw = clamp(
-    rates.hr * (platoon === 1 ? 1 : (platoon - 1) * 1.8 + 1) * spHr * parkHrWeather *
-      T.powerShare * T.hrLevel,
+    rates.hr * (platoon === 1 ? 1 : (platoon - 1) * T.platoonHrAmp + 1) * spHr * parkHrWeather *
+      slotPowerMult * T.powerShare * T.hrLevel,
     0.002, 0.1,
   );
 
@@ -766,7 +863,7 @@ export function projectBatter(input) {
   // measured answer is neither 0.975 nor 1.0.
   const nonHrHitPARaw = Math.max(
     0,
-    (rates.hit - rates.hr) * platoon * spHit * parkHits * T.contactShare,
+    (rates.hit - rates.hr) * platoon * spHit * parkHits * slotContactMult * T.contactShare,
   );
 
   // The [0.05, 0.42] clamp still applies to the TOTAL hit rate, as before. When
@@ -870,6 +967,7 @@ export function projectBatter(input) {
   //      per-slot empirical pmf     1.0689 (in-sample) / 1.1547   <- floor
   // ---------------------------------------------------------------------
   const paDist = (() => {
+    if (paOverride) return paOverride;
     const sd = T.teamPaSd;
     const loss = T.paLossRate;
     if (!(sd > 0)) {
@@ -1093,6 +1191,113 @@ export function projectBatter(input) {
     };
   })();
 
+
+  // ---------------------------------------------------------------------
+  // 11b. JOINT SCORING (opt-in, `jointScoring`). Runs, RBI and H+R+RBI from
+  //      ONE plate-appearance outcome distribution instead of three marginals
+  //      glued together by a variance constant.
+  //
+  //      Each plate appearance is a draw from {out, walk, non-HR hit, home
+  //      run}. Attached to that draw, resolved at the same plate appearance:
+  //      whether the batter eventually scores, and how many runs he drives in.
+  //      H+R+RBI is then the sum of n independent per-PA increments, so the
+  //      +3 a solo home run contributes to all three legs at once is
+  //      MECHANICAL rather than a correlation constant, and the three markets
+  //      come out of the same object.
+  //
+  //      The shape coefficients are measured, not chosen. Over 31,986
+  //      posted-lineup batter-games before 2026-08-10, no intercept:
+  //
+  //        R   = 0.3164*(non-HR hits) + 0.2615*(walks+HBP) + 1.0205*(HR)
+  //        RBI = 0.2674*(non-HR hits) + 1.5868*(HR) + 0.0202*(outs)
+  //
+  //      and, conditional on reaching, the counts themselves:
+  //
+  //        RBI on one non-HR hit   1: 78.4%  2: 19.6%  3: 2.0%
+  //        RBI on a home run       1: 55.2%  2: 29.2%  3: 12.9%  4: 2.5%
+  //
+  //      Only the RATIOS are carried. The two scales are solved per hitter so
+  //      that E[R] is exactly `projR` and E[RBI] is exactly `projRBI`, which
+  //      keeps every distribution's mean equal to the projection printed next
+  //      to it — the property FIX(3) was about.
+  //
+  //      `scoreSpread` is the game-level scoring latent: the same three-point,
+  //      mean-preserving mixture `rateSpread` uses, applied to the scoring
+  //      probabilities, because a batter's runs and RBI ride his team's night.
+  // ---------------------------------------------------------------------
+  const jointPmfs = (() => {
+    if (!T.jointScoring) return null;
+    const bbPA = clamp(rates.bb, 0, 0.35);
+    const W = T.rbiWeights;
+    const hitShare = T.rbiHitShares;
+    const hrShare = T.hrExtraShares;
+    const hitMeanPer = hitShare.reduce((s, w, i) => s + w * (i + 1), 0);
+    const hrMeanPer = hrShare.reduce((s, w, i) => s + w * (i + 1), 0);
+
+    // Solved once at the mixture centre (E[m] = E[G] = 1), which is exact
+    // because every term is linear in the multipliers.
+    const outPA1 = Math.max(0, 1 - nonHrHitPA - hrPA - bbPA);
+    const runDen = pa * (nonHrHitPA + T.runFromBbRatio * bbPA);
+    const rhoHit = runDen > 0 ? clamp((projR - projHR) / runDen, 0, 1) : 0;
+    const rbiDen = pa * (outPA1 * W.out + nonHrHitPA * W.hit + hrPA * W.hrExtra);
+    const rbiScale = rbiDen > 0 ? Math.max(0, (projRBI - projHR) / rbiDen) : 0;
+
+    const gMix = spreadMix(T.scoreSpread);
+    const maxHrr = 6 * paMax + 1;
+    const accR = new Array(paMax + 2).fill(0);
+    const accRbi = new Array(4 * paMax + 2).fill(0);
+    const accHrr = new Array(maxHrr + 1).fill(0);
+    const weightOf = new Map(paDist);
+
+    for (const [m, wm] of rateMix) {
+      const pHit = clamp(nonHrHitPA * m, 0, 1);
+      const pHr = clamp(hrPA * m, 0, 1);
+      const pBb = clamp(bbPA, 0, 1);
+      const pOut = Math.max(0, 1 - pHit - pHr - pBb);
+      for (const [g, wg] of gMix) {
+        const rHit = clamp(rhoHit * g, 0, 1);
+        const rBb = clamp(rhoHit * T.runFromBbRatio * g, 0, 1);
+        const qOut = clamp(rbiScale * W.out * g, 0, 1);
+        const qHit = clamp((rbiScale * W.hit * g) / hitMeanPer, 0, 1);
+        const qHr = clamp((rbiScale * W.hrExtra * g) / hrMeanPer, 0, 1);
+
+        // Per-PA increments.
+        const incR = [1 - (pHit * rHit + pBb * rBb + pHr), pHit * rHit + pBb * rBb + pHr];
+        const incRbi = new Array(5).fill(0);
+        incRbi[0] += pBb;
+        incRbi[0] += pOut * (1 - qOut); incRbi[1] += pOut * qOut;
+        incRbi[0] += pHit * (1 - qHit);
+        for (let i = 0; i < hitShare.length; i++) incRbi[i + 1] += pHit * qHit * hitShare[i];
+        incRbi[1] += pHr * (1 - qHr);
+        for (let i = 0; i < hrShare.length; i++) incRbi[Math.min(4, i + 2)] += pHr * qHr * hrShare[i];
+        const incHrr = new Array(7).fill(0);
+        incHrr[0] += pOut * (1 - qOut); incHrr[1] += pOut * qOut;
+        incHrr[0] += pBb * (1 - rBb);  incHrr[1] += pBb * rBb;
+        for (const [r, wr] of [[0, 1 - rHit], [1, rHit]]) {
+          incHrr[1 + r] += pHit * wr * (1 - qHit);
+          for (let i = 0; i < hitShare.length; i++) incHrr[1 + r + i + 1] += pHit * wr * qHit * hitShare[i];
+        }
+        incHrr[3] += pHr * (1 - qHr);
+        for (let i = 0; i < hrShare.length; i++) incHrr[Math.min(6, 3 + i + 1)] += pHr * qHr * hrShare[i];
+
+        const walk = (inc, acc) => {
+          let pmf = [1];
+          for (let n = 0; n <= paMax; n++) {
+            if (n > 0) pmf = convolvePmf(pmf, inc);
+            const wn = weightOf.get(n);
+            if (!wn) continue;
+            const w = wn * wm * wg;
+            for (let i = 0; i < pmf.length && i < acc.length; i++) acc[i] += w * pmf[i];
+          }
+        };
+        walk(incR, accR);
+        walk(incRbi, accRbi);
+        walk(incHrr, accHrr);
+      }
+    }
+    return { runs: accR, rbi: accRbi, hrr: accHrr };
+  })();
+
   // ---------------------------------------------------------------------
   // 12. Market tail distributions: each returns P(stat > line).
   //
@@ -1110,9 +1315,9 @@ export function projectBatter(input) {
     // Exact multinomial tail from the convolved PMF.
     tb: (line) => tailFromPmf(tbPmf, line),
 
-    runs: (line) => poissonTailOver(line, projR),
-    rbi:  (line) => negBinomTailOver(line, projRBI, T.rbiK),
-    hrr:  hrrTail,
+    runs: jointPmfs ? (line) => tailFromPmf(jointPmfs.runs, line) : (line) => poissonTailOver(line, projR),
+    rbi:  jointPmfs ? (line) => tailFromPmf(jointPmfs.rbi, line) : (line) => negBinomTailOver(line, projRBI, T.rbiK),
+    hrr:  jointPmfs ? (line) => tailFromPmf(jointPmfs.hrr, line) : hrrTail,
     sb:   (line) => negBinomTailOver(line, Math.max(0.01, projSB), T.sbK),
   };
 

@@ -22,6 +22,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildRows, schedule, boxes } from './backtest-batters.mjs';
+import { BATTER_MARKETS } from '../src/lib/markets.js';
+import { matchName, normalizeName } from '../src/lib/names.js';
+import { playerNameOf } from '../src/lib/kalshi.js';
 import { pool } from './backtest-common.mjs';
 import { projectBatter } from '../src/model/batter.js';
 import { planOrders, modelProbability, playerKeyOf } from '../bot/plan.mjs';
@@ -43,7 +46,39 @@ const KCACHE = arg('kcache', path.resolve('.kalshi-cache'));
 const JSON_OUT = arg('json', null);
 const BOOT = Number(arg('boot', 5000));
 const LIMIT_GAMES = Number(arg('limit-games', Infinity)); // debugging only
-const SERIES = ['KXMLBHIT', 'KXMLBTB', 'KXMLBHR', 'KXMLBRBI', 'KXMLBHRR'];
+// KXMLBSB is priced below rather than through `modelProbability`, because
+// src/lib/kalshi.js has no mapping for it (see Findings). Everything else about
+// it -- name match, P(X > N - 0.5), quote, fee, bootstrap -- is unchanged.
+const SERIES = arg('series', 'KXMLBHIT,KXMLBTB,KXMLBHR,KXMLBRBI,KXMLBHRR,KXMLBSB').split(',');
+const SB_SERIES = 'KXMLBSB';
+const BATTER_DIST = { KXMLBHIT: 'hits', KXMLBTB: 'tb', KXMLBHR: 'hr', KXMLBRBI: 'rbi', KXMLBHRR: 'hrr', KXMLBSB: 'sb' };
+/** The model variant under test. `--tuning FILE` overrides BATTER_TUNING. */
+const TUNING = arg('tuning', null) ? readJson(arg('tuning', null)) : null;
+/**
+ * Window scheme. `orig` is docs/KALSHI-BATTER-BACKTEST.md (A/B/A1/A2/OOS);
+ * `edge` is the docs/BATTER-EDGE-SEARCH.md pre-registration (FIT/VAL/HOLD).
+ */
+const SCHEME = arg('scheme', 'orig');
+/**
+ * `MARKET_WEIGHT` for the batter markets under test. `--weights` takes either a
+ * single number applied to every batter market, or a JSON file. The default
+ * keeps `src/lib/constants.js`. docs/BATTER-EDGE-SEARCH.md section 8 fixes the
+ * two values this study reports: the pre-v36.2 weights the -3.4% was measured
+ * under, and 1.0.
+ */
+const BATTER_WEIGHTS = {
+  batter_hits: 0.45, batter_total_bases: 0.45, batter_home_runs: 0.5,
+  batter_rbis: 0.35, batter_hits_runs_rbis: 0.4, batter_stolen_bases: 0.4,
+};
+const WEIGHTS = (() => {
+  const w = arg('weights', null);
+  if (!w) return MARKET_WEIGHT;
+  if (w === 'pre362') return { ...MARKET_WEIGHT, ...BATTER_WEIGHTS };
+  if (Number.isFinite(Number(w))) {
+    return { ...MARKET_WEIGHT, ...Object.fromEntries(Object.keys(BATTER_WEIGHTS).map((k) => [k, Number(w)])) };
+  }
+  return { ...MARKET_WEIGHT, ...readJson(w) };
+})();
 const DECISIONS = [120, 30];
 const FEES = [0.07, 0.035];
 const KEEP = ['ticker', 'event_ticker', 'floor_strike', 'yes_sub_title', 'title', 'open_time', 'close_time', 'created_time', 'result', 'settlement_value_dollars', 'status', 'market_type', 'strike_type', 'volume_fp', 'open_interest_fp'];
@@ -51,15 +86,20 @@ const CANDLE_DIR = path.join(KCACHE, 'candles-bat');
 fs.mkdirSync(CANDLE_DIR, { recursive: true });
 
 // Windows (see the doc): B fully out of sample; A1 = BATTER_TUNING fit; A2 = holdout.
-const windowOf = (date) => (date < '2026-08-10' ? 'B' : date < '2026-09-01' ? 'A1' : 'A2');
-const WINDOW_SETS = {
-  'A+B': () => true,
-  A: (w) => w !== 'B',
-  B: (w) => w === 'B',
-  A1: (w) => w === 'A1',
-  A2: (w) => w === 'A2',
-  OOS: (w) => w !== 'A1',
-};
+const windowOf = SCHEME === 'edge'
+  ? (date) => (date < '2026-08-10' ? 'FIT' : date < '2026-09-02' ? 'VAL' : 'HOLD')
+  : (date) => (date < '2026-08-10' ? 'B' : date < '2026-09-01' ? 'A1' : 'A2');
+const WINDOW_SETS = SCHEME === 'edge'
+  ? { all: () => true, FIT: (w) => w === 'FIT', VAL: (w) => w === 'VAL', HOLD: (w) => w === 'HOLD' }
+  : {
+    'A+B': () => true,
+    A: (w) => w !== 'B',
+    B: (w) => w === 'B',
+    A1: (w) => w === 'A1',
+    A2: (w) => w === 'A2',
+    OOS: (w) => w !== 'A1',
+  };
+const POOLED = SCHEME === 'edge' ? 'all' : 'A+B';
 const priceBucket = (c) => (c < 15 ? '01-14' : c < 25 ? '15-24' : c < 40 ? '25-39' : c < 60 ? '40-59' : c < 75 ? '60-74' : c <= 90 ? '75-90' : '91-99');
 
 /**
@@ -70,15 +110,19 @@ const priceBucket = (c) => (c < 15 ? '01-14' : c < 25 ? '15-24' : c < 40 ? '25-3
  */
 async function gameCandles(seg, markets, startMs) {
   const file = path.join(CANDLE_DIR, `${seg}.json`);
-  if (fs.existsSync(file)) return readJson(file).candles;
+  // A cache written for a narrower series list is topped up rather than
+  // discarded: only the tickers it is missing are fetched.
+  const cached = fs.existsSync(file) ? readJson(file).candles : null;
+  const want = cached ? markets.filter((m) => !(m.ticker in cached)) : markets;
+  if (cached && !want.length) return cached;
   const T = Math.floor(startMs / 1000);
   const E = Math.floor((T - 120 * 60) / 3600) * 3600;
-  const opens = markets.map((m) => Math.floor(Date.parse(m.open_time) / 1000));
-  const early = markets.filter((m, i) => opens[i] <= E).map((m) => m.ticker);
+  const opens = want.map((m) => Math.floor(Date.parse(m.open_time) / 1000));
+  const early = want.filter((m, i) => opens[i] <= E).map((m) => m.ticker);
   const h = early.length ? await fetchCandles(early, Math.min(...opens), E, 60) : {};
-  const m = await fetchCandles(markets.map((x) => x.ticker), Math.max(E - 60, Math.min(...opens)), T, 1);
-  const candles = {};
-  for (const x of markets) {
+  const m = await fetchCandles(want.map((x) => x.ticker), Math.max(E - 60, Math.min(...opens)), T, 1);
+  const candles = { ...(cached || {}) };
+  for (const x of want) {
     candles[x.ticker] = [...(h[x.ticker] || []).filter((c) => c[0] <= E), ...(m[x.ticker] || []).filter((c) => c[0] > E)];
   }
   fs.writeFileSync(file, JSON.stringify({ E, T, candles }));
@@ -97,8 +141,34 @@ async function teamAbbrs() {
   return new Map(body.teams.map((t) => [t.id, t.abbreviation]));
 }
 
+
+/**
+ * KXMLBSB is not in `KNOWN_SERIES`, so `modelProbability` refuses it. This does
+ * exactly what that function would: the same name match (including Kalshi's
+ * "(TEAM)" disambiguation), the same confirmed-lineup rule, and the same
+ * P(X > N - 0.5) off the model's own stolen-base distribution.
+ */
+function sbProbability(market, sg) {
+  if (market.threshold == null) return { prob: null, reason: 'no threshold' };
+  const rawName = String(playerNameOf(market.raw || market) || market.player || '');
+  const teamTag = /\(([A-Z]{2,3})\)/.exec(rawName)?.[1] || null;
+  const cleanName = rawName.replace(/\([A-Z]{2,3}\)/, '').replace(/:.*$/, '').trim();
+  let people = sg.batters;
+  if (teamTag) people = people.filter((p) => p.teamAbbr === teamTag);
+  const byKey = new Map(people.map((p) => [normalizeName(p.name), p]));
+  const match = matchName(normalizeName(cleanName) || market.playerKey, [...byKey.keys()]);
+  if (match.status !== 'matched') return { prob: null, reason: `player ${match.status}` };
+  const person = byKey.get(match.key);
+  if (person.lineupSource !== 'confirmed') return { prob: null, reason: 'lineup not confirmed' };
+  const dist = person.proj?.dist?.[BATTER_MARKETS.batter_stolen_bases.distKey];
+  if (typeof dist !== 'function') return { prob: null, reason: 'no distribution' };
+  const line = market.threshold - 0.5;
+  return { prob: dist(line), kind: 'prop', marketKey: 'batter_stolen_bases', game: sg, person, line };
+}
+
 async function main() {
   const config = readJson(new URL('../bot/config.example.json', import.meta.url));
+  Object.assign(MARKET_WEIGHT, WEIGHTS);
   const t0 = Date.now();
 
   // ── markets ───────────────────────────────────────────────────────────────
@@ -151,7 +221,11 @@ async function main() {
         name: side.players[`ID${r.id}`]?.person?.fullName,
         slot: r.slot,
         lineupSource: 'confirmed',
-        proj: projectBatter(r.input),
+        proj: projectBatter(TUNING ? { ...r.input, tuning: TUNING } : r.input),
+        // Reference model, scored beside the one under test so a single pass
+        // over the holdout answers both "does it beat the price" and "is it
+        // better than what shipped". Same inputs; only `tuning` differs.
+        proj2: TUNING ? projectBatter(r.input) : null,
         actual: r.actual,
       };
     });
@@ -202,7 +276,13 @@ async function main() {
       // The bot's parser rejects the G1/G2 suffix (see doc); strip it for this
       // one-game slate, where the doubleheader is already resolved.
       const raw = p.gameNumber ? { ...m, event_ticker: m.event_ticker.replace(/G[12]$/, '') } : m;
-      const info = modelProbability(normalizeMarket(raw), { games: [sg] }, config);
+      const info = m.series === SB_SERIES
+        ? sbProbability(normalizeMarket(raw), sg)
+        : modelProbability(normalizeMarket(raw), { games: [sg] }, config);
+      if (info.prob != null && info.person?.proj2) {
+        const d = info.person.proj2.dist[BATTER_DIST[m.series]];
+        if (typeof d === 'function') info.prob2 = d(info.line);
+      }
       if (info.prob == null) {
         bump(`model: ${info.reason}${info.reason.startsWith('player') ? (m.result === 'scalar' ? ' (settled scalar)' : ' (settled 0/1)') : ''}`, m.series);
         continue;
@@ -240,6 +320,7 @@ async function main() {
         personId: info.person.id,
         threshold: normalizeMarket(raw).threshold,
         model: info.prob,
+        model2: info.prob2 ?? null,
         q: Object.fromEntries(DECISIONS.map((d) => [d, quoteAt(c, pg.startMs - d * 60e3)])),
         cq: quoteAt(c, pg.startMs),
         result: m.result,
@@ -250,7 +331,7 @@ async function main() {
       });
     }
   }
-  const STAT = { KXMLBHIT: 'hits', KXMLBTB: 'tb', KXMLBHR: 'hr', KXMLBRBI: 'rbi', KXMLBHRR: 'hrr' };
+  const STAT = { KXMLBHIT: 'hits', KXMLBTB: 'tb', KXMLBHR: 'hr', KXMLBRBI: 'rbi', KXMLBHRR: 'hrr', KXMLBSB: 'sb' };
   coverage.matchedMarkets = marketRows.length;
   coverage.matchedGames = pricedGames.length;
   coverage.matchedPlayerGames = new Set(marketRows.map((r) => `${r.gamePk}:${r.personId}`)).size;
@@ -299,13 +380,13 @@ async function main() {
       const decisionMs = gameRows[0].startMs - d * 60e3;
       const signals = new Map();
       for (const r of tradable) {
-        const sig = buildSignal({ modelProb: r.model, book: normalizeOrderbook(r.ticker, book(r.q[d])), ticker: r.ticker, weight: MARKET_WEIGHT[r.marketKey] ?? 0.3, minEdge: config.minEdgeAfterFees });
+        const sig = buildSignal({ modelProb: r.model, book: normalizeOrderbook(r.ticker, book(r.q[d])), ticker: r.ticker, weight: WEIGHTS[r.marketKey] ?? 0.3, minEdge: config.minEdgeAfterFees });
         signals.set(r.ticker, sig);
         if (sig?.tradeable) T.every.push(makeTrade(r, sig, d));
       }
       const plan = planOrders({
         slate: { games: [gameRows[0].game] },
-        markets: tradable.map((r) => r.raw),
+        markets: tradable.filter((r) => r.series !== SB_SERIES).map((r) => r.raw),
         books: new Map(tradable.map((r) => [r.ticker, book(r.q[d])])),
         account, state: {}, config: botConfig, now: new Date(decisionMs),
       });
@@ -348,11 +429,11 @@ async function main() {
           const o = (out[wname] = { all: summ(W) });
           for (const [k, g] of groupBy(W, (t) => t.series)) o[`series=${k}`] = summ(g);
           // Finer slices only where they are read (0.07 and 0.035 share the trade set).
-          if (['A+B', 'A', 'B'].includes(wname)) {
+          if ([POOLED, 'A', 'B', 'VAL', 'HOLD'].includes(wname)) {
             for (const [k, g] of groupBy(W, (t) => t.side)) o[`side=${k}`] = summ(g);
             for (const [k, g] of groupBy(W, (t) => priceBucket(t.priceCents))) o[`price=${k}`] = summ(g);
             for (const [k, g] of groupBy(W, (t) => `${t.series}/${t.side}`)) o[`series×side=${k}`] = summ(g);
-            if (wname === 'A+B') {
+            if (wname === POOLED) {
               for (const [k, g] of groupBy(W, (t) => `${t.series}/${priceBucket(t.priceCents)}`)) o[`series×price=${k}`] = summ(g);
               o['excluding doubleheaders'] = summ(W.filter((t) => !t.doubleheader));
               o.scalarTrades = W.filter((t) => t.scalar).length;
@@ -369,10 +450,11 @@ async function main() {
     const scored = marketRows
       .filter((r) => r.q[d]?.mid != null && (r.settle === 0 || r.settle === 1))
       .map((r) => ({
-        series: r.series, window: r.window, y: r.settle, cluster: r.cluster, model: r.model, market: r.q[d].mid / 100,
+        series: r.series, window: r.window, y: r.settle, cluster: r.cluster, model: r.model, model2: r.model2,
+        market: r.q[d].mid / 100,
         spread: r.q[d].ask - r.q[d].bid,
         close: r.cq?.mid != null ? r.cq.mid / 100 : null,
-        blend: blendedProbability(r.model, r.q[d].mid / 100, MARKET_WEIGHT[r.marketKey] ?? 0.3),
+        blend: blendedProbability(r.model, r.q[d].mid / 100, WEIGHTS[r.marketKey] ?? 0.3),
       }));
     const skill = (list, full) => {
       if (!list.length) return { n: 0 };
@@ -383,6 +465,11 @@ async function main() {
         market: scoring(list, 'market'),
         blend: scoring(list, 'blend'),
         modelMinusMarket: brierDiff(list, 'model', 'market', { boot: BOOT }),
+        ...(list[0]?.model2 != null ? {
+          reference: scoring(list.filter((x) => x.model2 != null), 'model2'),
+          referenceMinusMarket: brierDiff(list.filter((x) => x.model2 != null), 'model2', 'market', { boot: BOOT }),
+          modelMinusReference: brierDiff(list.filter((x) => x.model2 != null), 'model', 'model2', { boot: BOOT }),
+        } : {}),
         blendMinusMarket: brierDiff(list, 'blend', 'market', { boot: BOOT }),
         bestModelWeight: brierOptimalModelWeight(list),
       };
@@ -401,7 +488,7 @@ async function main() {
     forecast[d] = {};
     for (const [label, filt] of [['all quotes', () => true], ['spread<=5c', (x) => x.spread <= 5]]) {
       const F = (forecast[d][label] = {});
-      for (const wname of ['A+B', 'A', 'B', 'A1', 'A2', 'OOS']) {
+      for (const wname of Object.keys(WINDOW_SETS)) {
         const W = scored.filter((x) => filt(x) && WINDOW_SETS[wname](x.window));
         F[wname] = { all: skill(W, label === 'all quotes' && wname === 'A+B') };
         for (const s of SERIES) F[wname][s] = skill(W.filter((x) => x.series === s), label === 'all quotes' && wname === 'A+B');
@@ -409,19 +496,42 @@ async function main() {
     }
   }
 
-  // Pre-registered edge test (doc, Method 9): bot, T-120, fee 0.035.
+  // Pre-registered edge test.
+  //   orig  docs/KALSHI-BATTER-BACKTEST.md Method 9: bot, T-120, fee 0.035.
+  //   edge  docs/BATTER-EDGE-SEARCH.md section 3, on `--bar-window`: the model
+  //         beats the decision mid on Brier AND ROI after the 0.07 fee is
+  //         positive, both with a game-cluster 95% interval excluding zero.
   const brierAll = forecast[120]['all quotes'];
   const edgeTest = {};
-  for (const [label, set, key] of [...SERIES.map((s) => [s, 'bot', `series=${s}`]), ['pooled botOnePerPlayer', 'botOnePerPlayer', 'all']]) {
-    const R = tradeReport[120][set][0.035];
-    const ab = R['A+B'][key], a = R.A[key], b = R.B[key];
-    const brier = (w) => (label.startsWith('pooled') ? brierAll[w].all : brierAll[w][label])?.modelMinusMarket?.point;
-    edgeTest[label] = {
-      a_pooledCiLowerAbove0: ab?.n ? ab.roiCI95[0] > 0 : false,
-      b_positiveInBothWindows: Boolean(a?.n && b?.n && a.roiPct > 0 && b.roiPct > 0),
-      c_modelBeatsMarketBrierBothWindows: brier('A') < 0 && brier('B') < 0,
-    };
-    edgeTest[label].qualifies = Object.values(edgeTest[label]).every(Boolean);
+  if (SCHEME === 'edge') {
+    const WIN = arg('bar-window', 'VAL');
+    const cells = [...SERIES.map((x) => [x, x === SB_SERIES ? 'every' : 'bot', `series=${x}`]),
+      ['pooled botOnePerPlayer', 'botOnePerPlayer', 'all']];
+    for (const [label, set, key] of cells) {
+      const R = tradeReport[120][set][0.07][WIN]?.[key];
+      const bd = (label.startsWith('pooled') ? brierAll[WIN]?.all : brierAll[WIN]?.[label])?.modelMinusMarket;
+      const e = {
+        n: R?.n ?? 0,
+        A_brierBeatsPrice: Boolean(bd && bd.point < 0 && bd.ci95[1] < 0),
+        brier: bd ? `${bd.point.toFixed(4)} [${bd.ci95[0].toFixed(4)}, ${bd.ci95[1].toFixed(4)}]` : null,
+        B_roiPositive: Boolean(R?.n && R.roiPct > 0 && R.roiCI95[0] > 0),
+        roi: R?.n ? `${R.roiPct.toFixed(1)}% [${R.roiCI95[0].toFixed(1)}, ${R.roiCI95[1].toFixed(1)}]` : null,
+      };
+      e.passes = e.A_brierBeatsPrice && e.B_roiPositive;
+      edgeTest[`${WIN} ${label}`] = e;
+    }
+  } else {
+    for (const [label, set, key] of [...SERIES.map((x) => [x, 'bot', `series=${x}`]), ['pooled botOnePerPlayer', 'botOnePerPlayer', 'all']]) {
+      const R = tradeReport[120][set][0.035];
+      const ab = R['A+B'][key], a = R.A[key], b = R.B[key];
+      const brier = (w) => (label.startsWith('pooled') ? brierAll[w].all : brierAll[w][label])?.modelMinusMarket?.point;
+      edgeTest[label] = {
+        a_pooledCiLowerAbove0: ab?.n ? ab.roiCI95[0] > 0 : false,
+        b_positiveInBothWindows: Boolean(a?.n && b?.n && a.roiPct > 0 && b.roiPct > 0),
+        c_modelBeatsMarketBrierBothWindows: brier('A') < 0 && brier('B') < 0,
+      };
+      edgeTest[label].qualifies = Object.values(edgeTest[label]).every(Boolean);
+    }
   }
 
   const report = { window: { from: FROM, to: TO }, coverage, trades: tradeReport, forecast, edgeTest, runtimeMin: (Date.now() - t0) / 60e3, kalshiRequests: kalshiRequestCount() };
@@ -464,6 +574,7 @@ function print(r) {
           if (!x.n) { console.log(`${w.padEnd(4)} ${s.padEnd(9)} n=0`); continue; }
           const dd = (z) => `${z.point >= 0 ? '+' : ''}${z.point.toFixed(4)} [${z.ci95[0].toFixed(4)}, ${z.ci95[1].toFixed(4)}]`;
           console.log(`${w.padEnd(4)} ${s.padEnd(9)} n=${String(x.n).padStart(6)}  ${x.model.brier.toFixed(4)} | ${x.market.brier.toFixed(4)} | ${x.blend.brier.toFixed(4)}  m-mkt ${dd(x.modelMinusMarket)}  b-mkt ${dd(x.blendMinusMarket)}  w=${x.bestModelWeight.w}`);
+          if (x.reference) console.log(`${''.padEnd(15)}reference ${x.reference.brier.toFixed(4)}  ref-mkt ${dd(x.referenceMinusMarket)}  model-ref ${dd(x.modelMinusReference)}`);
           if (x.modelCalibration) {
             console.log(`${''.padEnd(15)}model calib: ${x.modelCalibration.join('  ')}`);
             console.log(`${''.padEnd(15)}market calib: ${x.marketCalibration.join('  ')}`);
@@ -473,7 +584,7 @@ function print(r) {
       }
     }
   }
-  console.log('\n=== pre-registered edge test (bot, T-120, fee 0.035) ===');
+  console.log('\n=== pre-registered edge test (T-120) ===');
   for (const [k, v] of Object.entries(r.edgeTest)) console.log(`${k.padEnd(24)} ${JSON.stringify(v)}`);
 }
 

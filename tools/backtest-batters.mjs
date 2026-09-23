@@ -126,12 +126,57 @@ async function people(ids, group, tag) {
   return out;
 }
 const batterPeople = await people(batterIds, 'hitting', 'hitprior');
+
+/**
+ * QUALITY OF CONTACT. `--xstat25 L` pulls each hitter's PRIOR-season expected
+ * statistics (`stats=expectedStatistics`: xBA and xSLG, the public StatsAPI's
+ * Statcast-derived estimates of what his batted balls were worth) and moves the
+ * prior-season leg of the shrinkage L of the way from what he actually did
+ * toward what he was expected to do. L = 0 is off.
+ *
+ * This is lookahead-free: the number is a completed season's total, fixed
+ * before the first pitch of 2026. The CURRENT season's expected statistics are
+ * NOT usable the same way -- StatsAPI reports them only as a season-to-date
+ * total, so an as-of value would be contaminated by games after the date, and
+ * the game log carries no expected stats.
+ */
+const X25 = Number(argv('xstat25', 0)) || 0;
+const xStat25 = new Map();
+if (X25 > 0) {
+  await pool([...batterIds], 8, async (id) => {
+    try {
+      const body = await cached(`xstat25_${id}`, `${API}/people/${id}/stats?stats=expectedStatistics&group=hitting&season=${SEASON - 1}`);
+      const st = body.stats?.[0]?.splits?.[0]?.stat;
+      if (st) xStat25.set(id, st);
+    } catch { /* a hitter with no prior-season batted balls simply has none */ }
+  });
+}
+
+/** The prior-season line with hits, doubles and home runs moved toward expected. */
+function priorWithExpected(id, prior) {
+  if (!(X25 > 0) || !prior) return prior;
+  const x = xStat25.get(id);
+  const ab = Number(prior.atBats || 0);
+  if (!x || !ab) return prior;
+  const xAvg = Number(x.avg);
+  const xSlg = Number(x.slg);
+  const slg = Number(prior.totalBases || 0) / ab;
+  if (!Number.isFinite(xAvg) || !Number.isFinite(xSlg) || !(slg > 0)) return prior;
+  const power = xSlg / slg;
+  const blend = (actual, expected) => actual * (1 - X25) + expected * X25;
+  return {
+    ...prior,
+    hits: blend(Number(prior.hits || 0), xAvg * ab),
+    doubles: blend(Number(prior.doubles || 0), Number(prior.doubles || 0) * power),
+    homeRuns: blend(Number(prior.homeRuns || 0), Number(prior.homeRuns || 0) * power),
+  };
+}
 const pitcherPeople = await people(starterIds, 'pitching', 'pitchprior');
 
 const leagueBefore = makeLeagueBefore(teamLogs);
 
 // For tools that price real markets off this replay (backtest-kalshi-batters.mjs).
-export { schedule, games, boxes };
+export { schedule, games, boxes, teamLogs, hitLogs, batterPeople, pitcherPeople, leagueBefore };
 
 // ── rows ────────────────────────────────────────────────────────────────────
 function starterInput(id, date, park, oppTeamId, lg) {
@@ -192,9 +237,16 @@ export function buildRows() {
           date: g.date,
           slot,
           side,
+          teamId: team.team.id,
+          oppTeamId: opp.team.id,
+          park: g.venue,
+          // Team plate appearances in this game, both sides. The batting order
+          // turns over on the team's total, so this is what a PA model predicts.
+          teamPa: Number(team.teamStats?.batting?.plateAppearances || 0),
+          oppPa: Number(opp.teamStats?.batting?.plateAppearances || 0),
           input: {
             season26: hitterSeasonBefore(hitLogs.get(id) || [], g.date),
-            season25: who.prior || null,
+            season25: priorWithExpected(id, who.prior) || null,
             slot,
             isAway: side === 'away',
             batSide: who.batSide,
