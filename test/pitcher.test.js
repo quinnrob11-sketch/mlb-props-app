@@ -256,3 +256,144 @@ test('every ported term is off together without its inputs, and the model still 
     assert.ok(p >= 0 && p <= 1 && Number.isFinite(p), `${m}: ${p}`);
   }
 });
+
+// ── v38: the role read (docs/OPENER-FIX.md) ─────────────────────────────────
+//
+// `PITCHER_FIT.role` splits one shrink-to-mean into two, by reading the
+// pitcher's own recent appearances with the relief outings left in. It needs
+// `input.appearanceLog`, and the board loads plenty of starts without one — a
+// probable with no log, a replay that never fetched it. Every one of those has
+// to land on exactly the v37 number, which is what the first two tests pin.
+
+/** An appearance log: `n` outings of `outs` outs each, one every `every` days. */
+const appearances = (upTo, n, outs, every = 5) =>
+  Array.from({ length: n }, (_, i) => {
+    const d = new Date(Date.parse(`${upTo}T00:00:00Z`) - (n - i) * every * 864e5);
+    return { date: d.toISOString().slice(0, 10), gs: outs > 9 ? 1 : 0, outs, pitches: outs * 6 };
+  });
+
+/** Every number the board reads off a projection, for an exact-equality check. */
+const snapshot = (p) => [
+  p.projK, p.projOuts, p.projH, p.projBB, p.projER, p.projIP, p.projBF,
+  ...['k', 'outs', 'hits', 'bb', 'er'].flatMap((m) =>
+    [0.5, 2.5, 4.5, 11.5, 15.5, 18.5].map((l) => p.dist[m](l))),
+];
+
+test('without an appearance log the role term is inert, to the last bit', () => {
+  const input = base({ date: '2026-07-01' });
+  const off = { ...PITCHER_FIT, role: null };
+  assert.deepEqual(
+    snapshot(projectPitcher(input)),
+    snapshot(projectPitcher({ ...input, fit: off })),
+    'a call with no appearanceLog must be byte-identical to the model with role switched off',
+  );
+  // And so must a log the model cannot read: no dates, or no outs on any entry.
+  for (const log of [
+    [{ outs: 3 }, { outs: 3 }],
+    appearances('2026-07-01', 3, 3).map(({ outs, ...rest }) => rest),
+  ]) {
+    assert.deepEqual(
+      snapshot(projectPitcher({ ...input, appearanceLog: log })),
+      snapshot(projectPitcher({ ...input, fit: off })),
+      'an unreadable log is a missing log',
+    );
+  }
+});
+
+test('the role term never reads a date it was not given, or a game it cannot have seen', () => {
+  const relief = appearances('2026-07-01', 3, 3);
+  // No slate date: nothing to age the log against, so the term stays off.
+  assert.deepEqual(
+    snapshot(projectPitcher(base({ appearanceLog: relief }))),
+    snapshot(projectPitcher(base({ fit: { ...PITCHER_FIT, role: null } }))),
+  );
+  // Appearances ON or AFTER the slate date are invisible. A log made only of
+  // them reads as "has not pitched this season", not as tonight's evidence.
+  const future = relief.map((a) => ({ ...a, date: '2026-07-05' }));
+  const input = base({ date: '2026-07-01' });
+  assert.equal(
+    projectPitcher({ ...input, appearanceLog: future }).projOuts,
+    projectPitcher({ ...input, appearanceLog: [] }).projOuts,
+  );
+});
+
+test('a run of one-inning relief outings is read as a relief start, and shortens him', () => {
+  const input = base({ date: '2026-07-01' });
+  const asStarter = projectPitcher({ ...input, appearanceLog: appearances('2026-07-01', 6, 18) });
+  const asReliever = projectPitcher({ ...input, appearanceLog: appearances('2026-07-01', 6, 3, 2) });
+  assert.ok(
+    asReliever.projOuts < asStarter.projOuts - 1,
+    `relief pattern ${asReliever.projOuts} should be well under ${asStarter.projOuts}`,
+  );
+  // The depth change carries into the counting stats, because batters faced
+  // moved and the per-batter rates did not.
+  assert.ok(asReliever.projK < asStarter.projK);
+  assert.ok(asReliever.projH < asStarter.projH);
+  // One long outing inside the window is enough to say he is still a starter.
+  const oneLong = appearances('2026-07-01', 3, 3, 2);
+  oneLong[0].outs = 15;
+  assert.ok(projectPitcher({ ...input, appearanceLog: oneLong }).projOuts > asReliever.projOuts);
+});
+
+test('the detector reads the window it is given, and only that window', () => {
+  const input = base({ date: '2026-07-01' });
+  // Six relief outings, the most recent of which is a full start.
+  const log = appearances('2026-07-01', 6, 3, 3);
+  log[5].outs = 18;
+  const withStart = projectPitcher({ ...input, appearanceLog: log });
+  // Drop that one outing and the same log reads as relief.
+  const relief = projectPitcher({ ...input, appearanceLog: log.slice(0, 5) });
+  assert.ok(relief.projOuts < withStart.projOuts - 1);
+});
+
+test('a pitcher with no appearance at all this season gets the debut line', () => {
+  const input = base({ date: '2026-07-01' });
+  const starterLog = appearances('2026-07-01', 6, 18);
+  const debut = projectPitcher({ ...input, appearanceLog: [] });
+  const starter = projectPitcher({ ...input, appearanceLog: starterLog });
+  assert.notEqual(debut.projOuts, starter.projOuts);
+  // The debut line is nearly flat (slope 0.19): it barely moves off its anchor,
+  // so two very different workloads land close together.
+  const deep = { ...input, season26: { ...SEASON, numberOfPitches: 2300 } };
+  const shallow = { ...input, season26: { ...SEASON, numberOfPitches: 1300 } };
+  const spread = (log) => Math.abs(
+    projectPitcher({ ...deep, appearanceLog: log }).projOuts -
+      projectPitcher({ ...shallow, appearanceLog: log }).projOuts,
+  );
+  assert.ok(spread([]) < spread(starterLog), `${spread([])} should be under ${spread(starterLog)}`);
+  // `debut: null` puts him back on the starter line.
+  const noDebut = { ...PITCHER_FIT, role: { ...PITCHER_FIT.role, debut: null } };
+  assert.equal(
+    projectPitcher({ ...input, appearanceLog: [], fit: noDebut }).projOuts,
+    starter.projOuts,
+  );
+});
+
+test('`pass` is a switch: with it empty, only the outs market moves', () => {
+  const input = base({ date: '2026-07-01', appearanceLog: appearances('2026-07-01', 6, 3, 2) });
+  const v37 = projectPitcher({ ...input, fit: { ...PITCHER_FIT, role: null } });
+  const outsOnly = projectPitcher({
+    ...input,
+    fit: { ...PITCHER_FIT, role: { ...PITCHER_FIT.role, pass: {} } },
+  });
+  assert.notEqual(outsOnly.projOuts, v37.projOuts);
+  for (const m of ['projK', 'projH', 'projBB', 'projER']) {
+    assert.equal(outsOnly[m], v37[m], `${m} must not move with pass off`);
+  }
+  // With it on, each one moves by exactly the depth ratio.
+  const shipped = projectPitcher(input);
+  const ratio = shipped.projOuts / v37.projOuts;
+  for (const m of ['projK', 'projH', 'projBB', 'projER']) {
+    assert.ok(Math.abs(shipped[m] / v37[m] - ratio) < 1e-9, `${m}: ${shipped[m] / v37[m]} vs ${ratio}`);
+  }
+});
+
+test('the outs distribution still integrates to the printed projection on the role path', () => {
+  const input = base({ date: '2026-07-01', appearanceLog: appearances('2026-07-01', 6, 3, 2) });
+  const p = projectPitcher(input);
+  let mean = 0;
+  for (let k = 0; k <= 27; k++) {
+    mean += k * Math.max(0, (k === 0 ? 1 : p.dist.outs(k - 0.5)) - p.dist.outs(k + 0.5));
+  }
+  assert.ok(Math.abs(mean - p.projOuts) < 0.02, `${mean} vs ${p.projOuts}`);
+});

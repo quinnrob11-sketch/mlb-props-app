@@ -916,7 +916,8 @@ export async function loadSlate({
         'pitching',
         PRIOR_SEASON,
       );
-      const gameLog = pickGameLog(person, 'pitching')
+      const pitchingLog = pickGameLog(person, 'pitching');
+      const gameLog = pitchingLog
         .filter((split) => (split.stat?.gamesStarted || 0) > 0)
         .map((split) => ({
           ip: parseInningsPitched(split.stat.inningsPitched),
@@ -925,6 +926,19 @@ export async function loadSlate({
           k: split.stat.strikeOuts || 0,
           date: split.date,
         }));
+      // The same log with the RELIEF outings left in. `gameLog` above drops
+      // them, and dropping them is why the model could not tell a bullpen game
+      // from a rookie on a short leash: a pitcher whose last three appearances
+      // were all one-inning relief outings has an empty or stale START log and
+      // looks, to the workload term, like a starter with no recent form. See
+      // `PITCHER_FIT.role`. No new request — this is the response `gameLog` is
+      // already built from.
+      const appearanceLog = pitchingLog.map((split) => ({
+        date: split.date,
+        gs: split.stat?.gamesStarted || 0,
+        outs: split.stat?.outs || 0,
+        pitches: split.stat?.numberOfPitches || 0,
+      }));
 
       const oppTeam = side === 'away' ? homeTeam : awayTeam;
       // The nine hitters he actually faces, weighted by expected trips, rather
@@ -985,6 +999,7 @@ export async function loadSlate({
         season26: s26,
         season25: s25,
         gameLog,
+        appearanceLog,
         opp: oppEnv,
         park,
         lg,

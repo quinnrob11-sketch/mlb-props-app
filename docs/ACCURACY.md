@@ -72,6 +72,13 @@ holdout intervals are wide (273 games) and mean little on their own.
    model expects to go 5.5 innings or more. The model knows he is short and
    still does not shorten him enough.
 
+   **FIXED — see `docs/OPENER-FIX.md`.** And the explanation above is wrong:
+   the model shortens genuine relief starts about right (a gap of −0.7 points
+   on 292 of them). Two thirds of this slice is real starters being wrongly
+   shortened, because one `cal.outs` shrink was fitted through two populations.
+   Split per population, the slice's outs gap goes **−6.6 → −3.4** and the
+   strikeout gap **−2.5 → −1.6**, with the pooled numbers improving too.
+
 3. **A hitter with fewer than 50 plate appearances this season, and any player
    on an unconfirmed lineup.** With a thin book the hits, total-bases and
    singles probabilities read **about 2 points HIGH** (the shrink toward league

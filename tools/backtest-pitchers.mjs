@@ -188,6 +188,18 @@ export function buildStarts() {
           k: Number(x.stat.strikeOuts || 0),
           date: x.date,
         }));
+      // Every appearance before tonight, RELIEF INCLUDED. `gameLog` above is
+      // the same log with the relief rows filtered out, which is exactly what
+      // `loadSlate` does; v38's role read needs the rows it throws away, and
+      // costs no extra request in either place.
+      const appearanceLog = logs
+        .filter((x) => x.date < g.date)
+        .map((x) => ({
+          date: x.date,
+          gs: Number(x.stat.gamesStarted || 0),
+          outs: Number(x.stat.outs || 0),
+          pitches: Number(x.stat.numberOfPitches || 0),
+        }));
       const t = teamRatesBefore(teamLogs.get(g.opponent.id) || [], g.date);
       starts.push({
         id,
@@ -210,6 +222,7 @@ export function buildStarts() {
           season26: s26,
           season25: prior.get(id) || null,
           gameLog,
+          appearanceLog,
           opp: t.pa ? { kRate: t.k / t.pa, bbRate: t.bb / t.pa, avg: t.h / t.ab } : null,
           park: venueByGame.get(g.game.gamePk) || '',
           lg: leagueBefore(g.date),
