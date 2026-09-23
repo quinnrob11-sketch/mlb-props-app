@@ -38,7 +38,34 @@ too small to build on.
 | Game model | Brier beats the price AND positive ROI, intervals excluding zero | **FAIL** — pooled −0.0002 [−0.0025, +0.0019], ROI +0.1% [−18.0, +19.2] on 102 contracts | A model that is **level** with the price rather than 0.0023 behind it: paired vs shipped, −0.0025 [−0.0045, −0.0005] |
 | Batter model | same | **FAIL** — price wins all six series, pooled +0.0008 [0.0002, 0.0014]; ROI +24.8% [−0.1, 49.5] on 74 trades | Platoon term measured as noise; runs/RBI/H+R+RBI rebuilt from one plate-appearance distribution. Paired vs shipped, 0.0003 [0.0000, 0.0006] |
 | Market microstructure | a rule that clears fees, BH-corrected over 26 tests | **FAIL** for 25 of 26 | One real rule: the price lags the box score. See below |
-| Pitcher model | same as game | *running at the time of writing* | |
+| Pitcher model | same as game | **FAIL** — pooled Brier −0.0023 [−0.0055, +0.0009], ROI −8.4% [−17.2, +0.6] on 543 trades | Strikeouts moved from 0.0075 behind the price to **level**; and the explanation below |
+
+### Why every one of these lands just short
+
+The pitcher search measured the thing that explains the whole programme. Median
+quoted spread at the decision, by market:
+
+| market | median spread | who wins the forecast |
+|---|---|---|
+| strikeouts | **1c** | the price |
+| outs recorded | **1c** | the price |
+| hits allowed | 9c | the model, narrowly |
+| walks | 13c | the model, narrowly |
+| earned runs | **38c** | the model, by a mile |
+
+Where the book is a cent wide, the price beats the model. Where the model beats
+the mid, **the mid is the midpoint of an empty quote** — and at T−30, once the
+thin books fill in, the hits-allowed and walks advantages reverse sign outright.
+
+Earned runs is the only market that clears the forecast bar, at −0.0206
+[−0.0294, −0.0116], and it loses 21.5% of money staked. The shipped model
+scores identically there, so it is not the new modelling that produces it. A
+38c spread does. Raising a market weight on that basis would be the exact
+mistake this programme exists to catch.
+
+That is the honest shape of the whole thing: **the model can reach parity with
+a tight price, and parity does not pay a 1c spread plus a 1.7c fee.** Every
+apparent edge in this repo has lived in a market too wide to trade.
 
 ### The one rule that works, and why it is not a plan
 
@@ -62,6 +89,15 @@ without placing anything, to establish whether it still exists at all.
 - **Top-of-order for the first inning**: exponent fitted to zero. The first inning is more about the arm, not more about the bats.
 - **Umpires, team defence, rest and travel, recent form, lineup slot as a talent signal**: each gained on the fit window and lost on validation.
 - **Predicting the closing price instead of the game**: a six-hour round trip with no view costs 3.66c, so it raises the bar rather than lowering it.
+
+Pitcher props were re-tested from scratch in September with a model built
+properly — two seasons, recency weighting, partial pooling, the posted lineup,
+catcher, umpire, park and weather, and a joint depth-first distribution. It is a
+better forecaster than the shipped one in all five pitcher markets, and it still
+does not beat the price: pooled Brier difference −0.0023 [−0.0055, +0.0009] and
+ROI −8.4% [−17.2, +0.6] on a clean 21-day holdout. Three further Kalshi series
+(hits allowed, earned runs, walks) were priced for the first time and lost 14%,
+22% and 29%. `docs/PITCHER-EDGE-SEARCH.md`.
 
 Pooled: **1,232 prop trades, −3.7%**. In all seven series the exchange's price
 forecast the outcome better than the model did, and the interval on that

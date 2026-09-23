@@ -14,3 +14,5 @@ bot/STOP
 .backtest-cache
 .kalshi-cache
 scratch/
+# agent/edge-pitch research scratch (caches, fitted params, run outputs)
+.work/

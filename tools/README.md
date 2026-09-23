@@ -34,6 +34,22 @@ They need Playwright, which is deliberately NOT a dependency (it would add
 - `backtest-kalshi-games.mjs` — that replay traded against settled KXMLBGAME /
   KXMLBSPREAD / KXMLBTOTAL / KXMLBRFI prices, same rules. Method and results:
   `docs/KALSHI-GAME-BACKTEST.md`.
+- `pitcher-data.mjs` / `pitcher-model2.mjs` / `pitcher-fit.mjs` /
+  `pitcher-edge.mjs` — the pitcher edge search: a two-season (9,574 start)
+  lookahead-free dataset with posted lineups, home-plate umpire, catcher, park
+  and weather; a candidate pitcher model fitted on it; and that model priced
+  against settled KXMLBKS / KXMLBOUTS / KXMLBHA / KXMLBERA / KXMLBWA contracts.
+  Pre-registration, method and verdict: `docs/PITCHER-EDGE-SEARCH.md`. Three
+  stages, in order:
+
+      node tools/pitcher-edge.mjs --stage fit      --cache DIR --out model.json
+      node tools/pitcher-edge.mjs --stage ablate   --cache DIR --model model.json
+      node tools/pitcher-edge.mjs --stage validate --cache DIR --kcache DIR --model model.json
+      node tools/pitcher-edge.mjs --stage holdout  --cache DIR --kcache DIR --model model.json --weight W
+
+  `fit` and `ablate` never touch a price. `holdout` requires the weight already
+  chosen on `validate`, and is meant to be run once.
+
 - `venue-gap.mjs` — sportsbook consensus vs Kalshi cost (fee included) for the
   same contract, right now. Measures whether the two venues disagree enough to
   trade without needing the model to be right. First run (2026-09-17, 235
