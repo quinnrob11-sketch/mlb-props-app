@@ -80,3 +80,83 @@ test('the refit widened hits: less mass on 1+ hits, more on 3+, same mean', () =
   assert.ok(wide.dist.hits(2.5) > narrow.dist.hits(2.5));
   assert.ok(BATTER_TUNING.teamPaSd > 0 && BATTER_TUNING.rateSpread > 0);
 });
+
+// 2026-09-23 thin-hitter correction (BATTER_TUNING.thin / thinPaCap).
+//
+// docs/ACCURACY.md measured a hitter under 50 plate appearances this season
+// reading about two points high on hits, total bases and singles. These pin
+// the three properties that make the correction safe: it is exactly inert
+// above the cap, exactly inert when the caller supplies no season line at all,
+// and each shade moves its own markets in the measured direction.
+
+const thinSeason = {
+  plateAppearances: 18, gamesPlayed: 7, hits: 4, doubles: 1, triples: 0, homeRuns: 0,
+  runs: 2, rbi: 2, strikeOuts: 6, baseOnBalls: 1, stolenBases: 0,
+};
+const OFF = { thinPaCap: 0, thin: {} };   // the pre-2026-09-23 model
+
+test('the thin correction is exactly inert for a hitter at or above the cap', () => {
+  for (const pa of [BATTER_TUNING.thinPaCap, BATTER_TUNING.thinPaCap + 1, 480]) {
+    const input = { ...base, slot: 4, season26: { ...season26, plateAppearances: pa } };
+    const on = projectBatter(input);
+    const off = projectBatter({ ...input, tuning: OFF });
+    for (const k of ['pa', 'projH', 'projTB', 'projHR', 'projR', 'projRBI', 'projHRR', 'projK', 'proj1B']) {
+      assert.equal(on[k], off[k], `${k} moved at ${pa} PA`);
+    }
+  }
+});
+
+test('the thin correction is exactly inert when NEITHER season line is supplied', () => {
+  // Missing input, not a short book: the model cannot tell a debutant from a
+  // caller that fetched nothing, so it does what it did before.
+  const input = { ...base, slot: 4, season26: null, season25: null };
+  const on = projectBatter(input);
+  const off = projectBatter({ ...input, tuning: OFF });
+  for (const k of ['pa', 'projH', 'projTB', 'projHR', 'projR', 'projRBI', 'projHRR', 'projK', 'proj1B']) {
+    assert.equal(on[k], off[k], `${k} moved with no season line at all`);
+  }
+  // A prior season on its own IS a book of zero plate appearances this season,
+  // and is discounted.
+  const priorOnly = projectBatter({ ...base, slot: 4, season26: null });
+  assert.ok(priorOnly.projH < projectBatter({ ...base, slot: 4, season26: null, tuning: OFF }).projH);
+});
+
+test('each thin shade moves its own markets, in the direction it was measured', () => {
+  const input = { ...base, slot: 4, season26: thinSeason };
+  const off = projectBatter({ ...input, tuning: OFF });
+  const only = (thin) => projectBatter({ ...input, tuning: { thin } });
+
+  // Plate appearances: a short-book hitter is lifted more often.
+  assert.ok(only({ pa: 0.03 }).pa < off.pa);
+  assert.equal(only({ offence: 0.085 }).pa, off.pa);
+
+  // Offence: hits, total bases, home runs and singles down; strikeouts not.
+  const o = only({ offence: 0.085 });
+  assert.ok(o.projH < off.projH && o.projTB < off.projTB && o.projHR < off.projHR && o.proj1B < off.proj1B);
+  assert.equal(o.projK, off.projK);
+
+  // Scoring: runs and RBI down, hits untouched.
+  const s = only({ scoring: 0.11 });
+  assert.ok(s.projR < off.projR && s.projRBI < off.projRBI);
+  assert.equal(s.projH, off.projH);
+
+  // Strikeouts go the OTHER way: the same hitter strikes out more.
+  const k = only({ k: 0.04 });
+  assert.ok(k.projK > off.projK);
+  assert.equal(k.projH, off.projH);
+
+  // The shipped settings: every one of them is on, and the ramp is strictly
+  // between 0 and 1 for this hitter.
+  const shipped = projectBatter(input);
+  assert.ok(shipped.projH < off.projH && shipped.pa < off.pa);
+  assert.ok(BATTER_TUNING.thinPaCap > thinSeason.plateAppearances);
+});
+
+test('the thin correction still leaves every distribution mean equal to its projection', () => {
+  const p = projectBatter({ ...base, slot: 6, season26: thinSeason });
+  assert.ok(Math.abs(meanOf(p.dist.hits) - p.projH) < 1e-6, 'hits');
+  assert.ok(Math.abs(meanOf(p.dist.tb) - p.projTB) < 1e-6, 'tb');
+  assert.ok(Math.abs(meanOf(p.dist.k) - p.projK) < 1e-6, 'k');
+  assert.ok(Math.abs(meanOf(p.dist.hrr, 60) - p.projHRR) < 1e-4, 'hrr');
+  assert.ok(Math.abs(p.paDist.reduce((a, [n, w]) => a + n * w, 0) - p.pa) < 1e-6, 'pa');
+});
