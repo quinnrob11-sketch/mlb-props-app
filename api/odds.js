@@ -71,8 +71,17 @@ const EVENT_ODDS_EXTRAS = {
 
 // Game lines for the whole slate in ONE call. Fixed, not caller-controlled:
 // there is exactly one canonical request, so it cannot fragment the cache.
-// Billed at markets x region-equivalents = 3 credits per call.
-const GAME_MARKETS = "h2h,spreads,totals";
+//
+// Billed at markets x region-equivalents. The pinned book set is 10 keys = 1
+// region-equivalent, so this is one credit per market: it was 3, and the three
+// first-five-innings keys make it 6 PER REFRESH. That is the whole cost of the
+// F5 board — the props feed is untouched.
+//
+// If the key's plan does not serve the 1st-5-innings markets, The Odds API
+// drops them from the response rather than erroring, the parser finds no such
+// market, and the F5 rows simply do not appear. The call still costs 6.
+const GAME_MARKETS =
+  "h2h,spreads,totals,h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings";
 
 // Every market the app is allowed to ask for. Anything else is rejected before
 // it reaches the upstream, which is what bounds the cache-key space.
@@ -90,6 +99,7 @@ const MARKETS = new Set([
   "batter_rbis_alternate", "batter_total_bases_alternate",
   // team
   "totals_1st_1_innings",
+  "h2h_1st_5_innings", "spreads_1st_5_innings", "totals_1st_5_innings",
 ]);
 
 const EVENT_ID = /^[a-f0-9]{32}$/;

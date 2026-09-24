@@ -365,9 +365,10 @@ test('confirmed-lineup filter: pitchers exempt, unknown source passes', () => {
 // ── group 4: slate & market ────────────────────────────────────────────────
 
 test('market multi-select uses the market keys behind PITCHER/BATTER_MARKETS', () => {
-  // 5 pitcher + 9 batter + 3 game lines + NRFI.
-  assert.equal(MARKET_CHOICES.length, 18);
+  // 5 pitcher + 9 batter + 6 game lines (three full game, three F5) + NRFI.
+  assert.equal(MARKET_CHOICES.length, 21);
   assert.equal(marketLabel('game_spread'), 'Run Line');
+  assert.equal(marketLabel('f5_total'), 'F5 Total');
   assert.equal(marketLabel('batter_total_bases'), 'Total Bases');
   assert.equal(marketLabel('unknown_market'), 'unknown_market');
 

@@ -384,6 +384,11 @@ term moved the total's correlation from 0.177 to 0.194 and its Brier skill from
 7.7% to 8.0%, exactly as `docs/PARK-FIX.md` said, and moved no posted line by
 more than a tenth of a point.
 
+The same three markets over the **first five innings** are scored by the same
+extractor and report (`--f5`); see `docs/FIRST-FIVE.md`. Short version: better
+calibrated than the full game on the total and the run line, and — paired at
+each market's coin-flip line on the same games — no better at forecasting.
+
 **The posted lineup is still worth nothing to the game lines.** Re-run with the
 lineup term switched off entirely (`--lineup none`), the three game markets
 score 1.8% / 7.9% / 9.5% of Brier skill against 1.8% / 8.0% / 9.5% with both

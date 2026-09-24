@@ -34,7 +34,22 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
     const home = ls?.teams?.home?.runs ?? game.teams?.home?.score;
     if (away == null || home == null) continue;
     const first = ls?.innings?.[0];
+    // First five innings, straight off the linescore. A book grades F5 once
+    // five innings are complete, so a game that did not get there voids them
+    // — `f5` stays null and the rows settle VOID, the same way a shortened
+    // game voids the full-game total and run line. Taken as the first five
+    // ENTRIES rather than `num <= 5`: the linescore is ordered, and a payload
+    // without `num` must not silently yield no innings at all.
+    const five = (ls?.innings || []).slice(0, 5);
+    const f5 =
+      five.length === 5 && five.every((i) => i.away?.runs != null && i.home?.runs != null)
+        ? {
+            margin: five.reduce((s, i) => s + i.home.runs - i.away.runs, 0),
+            total: five.reduce((s, i) => s + i.home.runs + i.away.runs, 0),
+          }
+        : null;
     gameResults.set(game.gamePk, {
+      f5,
       // Sportsbooks void run lines and totals on a game called before nine
       // innings (8.5 with the home side ahead, which still shows 9 innings in
       // the linescore). The moneyline stands once the game is official.
@@ -119,6 +134,13 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
       const result = gameResults.get(row.gamePk ?? row.playerId);
       if (!result) return undefined;
       if (row.kind === 'nrfi') return result.firstInning ?? undefined;
+      // First five innings settle on the first five innings, and need five of
+      // them — not nine. Checked before the full-length rule below, which is
+      // about the ninth inning and says nothing about these.
+      if (row.market?.startsWith('f5_')) {
+        if (!result.f5) return 'VOID';
+        return row.market === 'f5_total' ? result.f5.total : result.f5.margin;
+      }
       if (row.market !== 'game_ml' && !result.fullLength) return 'VOID';
       if (row.market === 'game_total') return result.total;
       // Moneyline and run line settle on the home margin. "over" is the home
@@ -140,7 +162,7 @@ export async function gradeSlate({ date, snapshot, onStatus }) {
 
   /** The number `actual` is compared against for "over". */
   const settleLine = (row) =>
-    row.kind === 'game' && row.market !== 'game_total' ? -(row.line ?? 0) : row.line;
+    row.kind === 'game' && !row.market?.endsWith('_total') ? -(row.line ?? 0) : row.line;
 
   const graded = [];
   for (const row of snapshot?.rows || []) {

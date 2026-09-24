@@ -223,6 +223,29 @@ async function extractBatters() {
 // ── games ───────────────────────────────────────────────────────────────────
 export const TOTAL_LINES = [6.5, 7.5, 8.5, 9.5, 10.5];
 export const SPREAD_POINTS = [-1.5, 1.5];
+/**
+ * The first-five-innings ladders. Books hang F5 totals at 4.5 to 5.5 almost
+ * always (the league F5 total is 5.01), and the F5 run line at the half run,
+ * because the margin after five is small; 6.5 and -1.5 are carried so the tail
+ * is scored too.
+ */
+export const F5_TOTAL_LINES = [3.5, 4.5, 5.5, 6.5];
+export const F5_SPREAD_POINTS = [-0.5, 0.5, -1.5, 1.5];
+
+/** The F5 fields of a games record, or nothing when the model or game has none. */
+function f5Record(x) {
+  const f5 = x.model.f5;
+  const act = x.actual.f5;
+  if (!f5 || !act) return {};
+  const r5 = (p) => Math.round(1e5 * p) / 1e5;
+  const noTie = 1 - f5.pTie;
+  return {
+    f5ml: act.margin === 0 ? null : [noTie > 0 ? r5(f5.pHome / noTie) : null, act.margin > 0 ? 1 : 0],
+    f5tie: [r5(f5.pTie), act.margin === 0 ? 1 : 0],
+    f5tot: [r3(f5.projTotal), act.total, ladder((l) => f5.total(l).over, F5_TOTAL_LINES)],
+    f5mar: [r3(f5.projHome - f5.projAway), act.margin, ladder((p) => f5.spread(p).home, F5_SPREAD_POINTS)],
+  };
+}
 
 async function extractGames() {
   if (GAME_INPUTS_OVERRIDE) {
@@ -250,6 +273,13 @@ async function extractGames() {
       nrfi: x.bothStarters && x.actual.firstInningRuns != null
         ? [Math.round(1e5 * x.model.nrfi.nrfiProb) / 1e5, x.actual.firstInningRuns === 0 ? 1 : 0]
         : null,
+      // First five innings. `f5ml` is P(home leads after five | not level)
+      // against whether the home side led, so it is recorded only for games
+      // that were NOT level after five — which is how the board's number is
+      // defined and how a push-settled ticket is graded. The tie itself is
+      // scored separately as `f5tie`, because a three-way book prices it as
+      // its own outcome. See `firstFiveMarkets` in src/model/game.js.
+      ...f5Record(x),
       // The per-game run-environment terms the model built the total out of,
       // so a calibration gap can be traced to the part that caused it rather
       // than only observed. `sp`/`bp` are the run-PREVENTION indices (below 1

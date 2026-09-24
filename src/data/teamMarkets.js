@@ -6,8 +6,8 @@
  * prices both:
  *
  *   Sportsbooks  The Odds API `/odds` endpoint, one request for the whole slate
- *                (h2h + spreads + totals = 3 credits, against roughly 20 per
- *                game for the prop feed).
+ *                (h2h + spreads + totals + the three first-five-innings keys =
+ *                6 credits, against roughly 20 per game for the prop feed).
  *   Kalshi       Public exchange markets — KXMLBGAME, KXMLBSPREAD, KXMLBTOTAL.
  *                Free, keyless, and liquid on game lines. The board still
  *                prices team markets when the Odds API key is missing or dead.
@@ -16,6 +16,12 @@
  *   moneyline  point 0, over = home price, under = away price
  *   run line   point = HOME handicap (-1.5 means home must win by 2+)
  *   total      point = total, over/under as named
+ *
+ * The three `f5_*` markets are the same three read over the FIRST FIVE INNINGS
+ * only, with one difference that matters: a level game after five is a real
+ * outcome, not impossible as it is after nine. `src/model/game.js`'s
+ * `firstFiveMarkets` says exactly how the tie is handled and which book
+ * convention that assumes.
  */
 
 import { oddsFetch } from '../lib/api.js';
@@ -32,7 +38,28 @@ export const TEAM_MARKETS = {
   game_ml: { label: 'Moneyline', short: 'ML' },
   game_spread: { label: 'Run Line', short: 'RL' },
   game_total: { label: 'Total', short: 'TOT' },
+  f5_ml: { label: 'F5 Moneyline', short: 'F5 ML' },
+  f5_spread: { label: 'F5 Run Line', short: 'F5 RL' },
+  f5_total: { label: 'F5 Total', short: 'F5 TOT' },
 };
+
+/**
+ * The Odds API market key -> our market key. The first-five-innings keys are
+ * only served once `api/odds.js` asks for them; a plan or a book that does not
+ * carry them simply returns no such market, the bucket stays empty and
+ * `priceTeamMarkets` skips the row. Nothing here throws on a missing key.
+ */
+const ODDS_MARKET = {
+  h2h: 'game_ml',
+  spreads: 'game_spread',
+  totals: 'game_total',
+  h2h_1st_5_innings: 'f5_ml',
+  spreads_1st_5_innings: 'f5_spread',
+  totals_1st_5_innings: 'f5_total',
+};
+
+/** Every market key, with an empty quote list each. */
+const emptyBuckets = () => Object.fromEntries(Object.keys(TEAM_MARKETS).map((k) => [k, []]));
 
 /** Books whose game-line prices form the consensus. DFS apps carry none. */
 const CONSENSUS_BOOKS = new Set(['draftkings', 'fanduel', 'betmgm', 'caesars', 'pinnacle', 'novig']);
@@ -74,10 +101,11 @@ export function matchOddsEvent(events, game) {
 /**
  * Sportsbook quotes for one event.
  *
- * @returns {{game_ml: Quote[], game_spread: Quote[], game_total: Quote[]}}
+ * @returns {Record<keyof TEAM_MARKETS, Quote[]>} one bucket per market key,
+ *   empty where this event carries no such market.
  */
 export function parseGameOdds(event) {
-  const out = { game_ml: [], game_spread: [], game_total: [] };
+  const out = emptyBuckets();
   if (!event) return out;
   const { home_team: home, away_team: away } = event;
   for (const bookmaker of event.bookmakers || []) {
@@ -85,23 +113,30 @@ export function parseGameOdds(event) {
     const book = BOOK_LABEL[bookmaker.key] || bookmaker.key.toUpperCase();
     const w = BOOK_WEIGHT[book] || 1;
     for (const market of bookmaker.markets || []) {
+      const key = ODDS_MARKET[market.key];
+      if (!key) continue;
       const find = (pred) => (market.outcomes || []).find(pred);
-      if (market.key === 'h2h') {
+      if (key.endsWith('_ml')) {
         const h = find((o) => o.name === home);
         const a = find((o) => o.name === away);
-        if (h && a) out.game_ml.push({ book, point: 0, over: h.price, under: a.price, w });
-      } else if (market.key === 'spreads') {
+        // A three-way F5 moneyline also carries a "Draw" outcome. It is
+        // deliberately ignored: de-vigging the two TEAM prices against each
+        // other gives p_home / (p_home + p_away), the draw dropping out of the
+        // ratio, which is the same conditional-on-no-tie number the model
+        // supplies through `noPush`. See `firstFiveMarkets`.
+        if (h && a) out[key].push({ book, point: 0, over: h.price, under: a.price, w });
+      } else if (key.endsWith('_spread')) {
         const h = find((o) => o.name === home);
         const a = find((o) => o.name === away);
         // Both sides must be the same handicap mirrored, or it is not one market.
         if (h && a && h.point != null && h.point === -a.point) {
-          out.game_spread.push({ book, point: h.point, over: h.price, under: a.price, w });
+          out[key].push({ book, point: h.point, over: h.price, under: a.price, w });
         }
-      } else if (market.key === 'totals') {
+      } else {
         const o = find((x) => x.name === 'Over');
         const u = find((x) => x.name === 'Under');
         if (o && u && o.point != null && o.point === u.point) {
-          out.game_total.push({ book, point: o.point, over: o.price, under: u.price, w });
+          out[key].push({ book, point: o.point, over: o.price, under: u.price, w });
         }
       }
     }
@@ -170,7 +205,9 @@ export function kalshiQuote(market, point) {
  */
 export function kalshiGameQuotes(markets, games, date) {
   const byGame = new Map();
-  for (const game of games) byGame.set(game.gamePk, { game_ml: [], game_spread: [], game_total: [] });
+  // Kalshi lists no first-five-innings series, so those buckets stay empty and
+  // the F5 rows are priced off sportsbooks alone (or not at all).
+  for (const game of games) byGame.set(game.gamePk, emptyBuckets());
 
   for (const market of markets || []) {
     const series = market.series || String(market.ticker).split('-')[0];
@@ -248,17 +285,16 @@ export function priceTeamMarkets(model, books, kalshi) {
     const best = bestQuote(atPoint);
     if (!best) continue;
 
-    const probs =
-      key === 'game_ml'
-        ? { home: model.pHome, away: model.pAway }
-        : key === 'game_spread'
-          ? model.spread(point)
-          : model.total(point);
+    const probs = marketProbs(model, key, point);
+    if (!probs) continue;
     const modelOver = noPush(probs);
 
     const edge = evaluateEdge(modelOver, point, best.over, best.under, {
       quotes: best.quotes,
-      weight: MARKET_WEIGHT[key],
+      // F5 has no entry of its own in MARKET_WEIGHT and does not get one: it
+      // is the same game priced over five innings, so it borrows the game
+      // lines' confidence rather than inventing a second number.
+      weight: MARKET_WEIGHT[key] ?? MARKET_WEIGHT.game_total,
       implausibleEdge: IMPLAUSIBLE_TEAM_EDGE,
       informationOnly: PLAY_RULES.gameLinesInformationOnly ? GAME_LINES_INFO_ONLY : undefined,
     });
@@ -279,6 +315,24 @@ export function priceTeamMarkets(model, books, kalshi) {
     });
   }
   return rows;
+}
+
+/**
+ * The model's `{over/home, under/away, push}` for one market at one line, or
+ * null when the model does not carry it (an older cached projection has no
+ * `f5`, and a missing block must show nothing rather than throw).
+ */
+function marketProbs(model, key, point) {
+  switch (key) {
+    case 'game_ml': return { home: model.pHome, away: model.pAway };
+    case 'game_spread': return model.spread(point);
+    case 'game_total': return model.total(point);
+    // `moneyline` already carries the tie as `push` — see `firstFiveMarkets`.
+    case 'f5_ml': return model.f5?.moneyline ?? null;
+    case 'f5_spread': return model.f5 ? model.f5.spread(point) : null;
+    case 'f5_total': return model.f5 ? model.f5.total(point) : null;
+    default: return null;
+  }
 }
 
 const impliedOver = (q) => {

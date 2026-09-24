@@ -1,8 +1,9 @@
 // GAMES board (v35) — the landing view. One card per game:
 //
 //   who is pitching, what the model projects, and — for the moneyline, run line,
-//   total and first inning — the side the model leans to, its probability next
-//   to the market's, the best price available and the engine's call.
+//   total, the same three over the first five innings, and the first inning —
+//   the side the model leans to, its probability next to the market's, the best
+//   price available and the engine's call.
 //
 // The card is built to be read in a few seconds. Every number that needs a
 // sentence of explanation gets it once, in the legend, not on every card.
@@ -12,13 +13,24 @@ import { fmt } from '../lib/format.js';
 import { pickText, teamNickname as nickname } from './rows.js';
 import VerdictChip from './VerdictChip.jsx';
 
-const MARKET_ORDER = ['game_ml', 'game_spread', 'game_total', 'nrfi'];
+const MARKET_ORDER = [
+  'game_ml', 'game_spread', 'game_total',
+  'f5_ml', 'f5_spread', 'f5_total',
+  'nrfi',
+];
 const MARKET_NAME = {
   game_ml: 'Moneyline',
   game_spread: 'Run line',
   game_total: 'Total',
+  f5_ml: 'F5 moneyline',
+  f5_spread: 'F5 run line',
+  f5_total: 'F5 total',
   nrfi: '1st inning',
 };
+
+/** The projected total shown beside a total row, full game or first five. */
+const projTotalFor = (model, market) =>
+  market === 'game_total' ? model?.projTotal : market === 'f5_total' ? model?.f5?.projTotal : null;
 
 /**
  * The side of a market row to show, and the numbers for that side.
@@ -195,8 +207,8 @@ function GameCard({ game, rowsByKey, slip, toggleSlip }) {
               <tr key={market} className={callable ? 'callable' : ''}>
                 <td className="gmarket">
                   {MARKET_NAME[market]}
-                  {market === 'game_total' && m ? (
-                    <span className="dim"> · proj {fmt.n1(m.projTotal)}</span>
+                  {projTotalFor(m, market) != null ? (
+                    <span className="dim"> · proj {fmt.n1(projTotalFor(m, market))}</span>
                   ) : null}
                 </td>
                 <td className="gpick">{v?.words}</td>

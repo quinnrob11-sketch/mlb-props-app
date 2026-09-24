@@ -100,6 +100,16 @@ export function buildGames() {
         homeWin: r.actual.home > r.actual.away ? 1 : 0,
         firstInningRuns: r.actual.firstRuns,
         innings: r.actual.innings,
+        // First five innings; null when the game did not get through five,
+        // which is exactly when a book voids the F5 markets.
+        f5: r.actual.f5Away != null && r.actual.f5Home != null
+          ? {
+              away: r.actual.f5Away,
+              home: r.actual.f5Home,
+              total: r.actual.f5Away + r.actual.f5Home,
+              margin: r.actual.f5Home - r.actual.f5Away,
+            }
+          : null,
       },
     });
   }

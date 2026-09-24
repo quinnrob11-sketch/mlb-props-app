@@ -178,14 +178,14 @@ export default function BestBets({
               {row.proj != null && (
                 <div className="stat">
                   <span className="v">
-                    {row.kind === 'game' && row.market !== 'game_total' && row.proj > 0 ? '+' : ''}
+                    {row.kind === 'game' && !row.market?.endsWith('_total') && row.proj > 0 ? '+' : ''}
                     {fmt.n1(row.proj)}
                   </span>
                   <span className="l">
                     {row.kind === 'game'
-                      ? row.market === 'game_total'
-                        ? 'Proj total'
-                        : `Proj ${row.game?.home?.abbr || 'home'} margin`
+                      ? row.market?.endsWith('_total')
+                        ? `Proj total${row.market.startsWith('f5_') ? ' (F5)' : ''}`
+                        : `Proj ${row.game?.home?.abbr || 'home'} margin${row.market?.startsWith('f5_') ? ' (F5)' : ''}`
                       : 'Model proj'}
                   </span>
                 </div>

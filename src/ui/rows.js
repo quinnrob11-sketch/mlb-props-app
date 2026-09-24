@@ -11,6 +11,18 @@ export function propKey(kind, playerId, market) {
 }
 
 /**
+ * The point projection a game-line row shows: the projected total for a
+ * total, the projected home margin for a moneyline or run line — read off the
+ * five-inning block for an `f5_*` market and the full game for the rest.
+ * Null when the model, or its F5 block, is not there.
+ */
+export function gameProj(model, market) {
+  const m = market?.startsWith('f5_') ? model?.f5 : model;
+  if (!m) return null;
+  return market.endsWith('_total') ? m.projTotal : m.projHome - m.projAway;
+}
+
+/**
  * Flatten a slate into the row list every board renders from.
  *
  * One row per (player, prop) pair — pitchers first, then batters, in slate
@@ -25,8 +37,9 @@ export function flattenRows(slate) {
   for (const game of slate.games || []) {
     const matchup = `${game.away?.abbr || '?'} @ ${game.home?.abbr || '?'}`;
 
-    // Game lines (v35): moneyline, run line, total — one row each, same shape
-    // as a prop row so Best Bets, the slip, snapshots, grading and the profit
+    // Game lines (v35): moneyline, run line, total — and, from the F5 work, the
+    // same three over the first five innings. One row each, same shape as a
+    // prop row so Best Bets, the slip, snapshots, grading and the profit
     // breakdown all handle them without special cases. "over" is always the
     // HOME side (moneyline, run line) or the over (total).
     for (const line of game.teamLines || [])
@@ -55,12 +68,7 @@ export function flattenRows(slate) {
         nBooksTwoSided: line.nBooksTwoSided ?? null,
         over: line.over,
         under: line.under,
-        proj:
-          line.market === 'game_total'
-            ? game.game?.projTotal
-            : game.game
-              ? game.game.projHome - game.game.projAway
-              : null,
+        proj: gameProj(game.game, line.market),
         edge: line.edge,
         venue: null,
         venues: [],
@@ -251,6 +259,9 @@ export function teamNickname(team) {
  *   moneyline          "Guardians win"          (team name, not "over 0")
  *   run line           "Guardians -1.5"
  *   total              "Over 7.5 runs"
+ *   F5 moneyline       "Guardians lead after 5"  (a tie is neither side)
+ *   F5 run line        "Guardians -0.5 (F5)"
+ *   F5 total           "Over 4.5 runs in 5"
  *   first inning       "NRFI — no run in the 1st"
  *
  * @param {object} row
@@ -271,6 +282,14 @@ export function pickText(row, side = row?.edge?.side) {
       return over ? `${home} ${signed(row.line)}` : `${away} ${signed(-row.line)}`;
     case 'game_total':
       return `${over ? 'Over' : 'Under'} ${row.line} runs`;
+    // First five innings. "F5" is on every side so the row can never be
+    // mistaken for the full-game one sitting two lines above it.
+    case 'f5_ml':
+      return `${over ? home : away} lead after 5`;
+    case 'f5_spread':
+      return over ? `${home} ${signed(row.line)} (F5)` : `${away} ${signed(-row.line)} (F5)`;
+    case 'f5_total':
+      return `${over ? 'Over' : 'Under'} ${row.line} runs in 5`;
     case 'nrfi':
       return over ? 'YRFI — a run in the 1st' : 'NRFI — no run in the 1st';
     default:

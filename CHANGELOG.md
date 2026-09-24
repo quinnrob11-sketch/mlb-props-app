@@ -1,3 +1,41 @@
+# First five innings — the starter's half of the game, measured
+
+The board now prices the three F5 markets — total, moneyline and run line —
+beside the full-game lines. `docs/FIRST-FIVE.md` has the whole measurement.
+
+**It is a derivation, not a new model.** `firstFiveGrid` is the existing
+inning-by-inning convolution stopped after five, through the same
+`uncertainScoreGrid` uncertainty. Nothing was fitted. Two league-average teams
+give 4.982 runs in five against 5.007 measured on 4,761 games, home leading
+44.98% against 45.33%, level 15.30% against 15.52%.
+
+**A tie after five is a real outcome (15.5% of games), not a push.**
+`firstFiveMarkets` returns `pHome`, `pAway` and `pTie` explicitly. The board
+compares P(home leads | not level) against the two team prices de-vigged
+against each other, which is correct for a three-way book (the draw drops out
+of the ratio) and for a draw-no-bet one (the tie is a push) alike; a `Draw`
+outcome in the feed is ignored on purpose. The tie is carried on the row as
+`push`, and settlement reads the first five innings of the linescore.
+
+**The hypothesis failed.** F5 is the part the starter decides, and the starter
+is the model's strongest component, so it should have been relatively better
+there. Paired at the coin-flip line of each market on 4,213 games, F5 is worth
+**+0.15, +0.05 and −0.04 points of Brier skill** against the full game, every
+interval containing zero. What did improve is calibration: ECE 0.63 against
+0.77 on the total, 0.65 against 1.31 on the run line, and a point projection
+biased −0.009 runs against −0.053.
+
+**Costs 6 odds credits per refresh, up from 3** — the game-lines call is billed
+markets × region-equivalents and three markets became six. The prop feed is
+untouched.
+
+**Not changed:** `MARKET_WEIGHT`, `PLAY_RULES`, the hurdle. F5 rows are
+information only for the same reason the full-game lines are, and the
+measurement gives no reason to change that. `MARKET_WEIGHT` gets no F5 entry
+either — F5 borrows the game lines' weight rather than inventing a number.
+
+---
+
 # v37 — the improved game model, shipped and re-measured
 
 `docs/GAME-EDGE-SEARCH.md` rebuilt the game model's per-game inputs and found

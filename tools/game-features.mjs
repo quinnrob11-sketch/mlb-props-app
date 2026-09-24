@@ -17,7 +17,9 @@
 //     (the cards that bat in the first inning);
 //   - days of rest, whether the team changed city, and the time-zone shift;
 //   - the home-plate umpire;
-//   - the recorded first-pitch weather, including WIND DIRECTION.
+//   - the recorded first-pitch weather, including WIND DIRECTION;
+//   - the runs each side scored in the FIRST FIVE INNINGS, which is the
+//     outcome the F5 markets settle on (docs/FIRST-FIVE.md).
 //
 // Every aggregation is strictly from games dated BEFORE the game in question.
 // The two exceptions are marked in the output and discussed in the doc: the
@@ -338,6 +340,16 @@ for (const { date, g } of allGames) {
   if (ls.teams.away?.runs == null || ls.teams.home?.runs == null) { bump('no score'); continue; }
   const pit = pitchingBefore(date);
   const first = (ls.innings || []).find((i) => i.num === 1);
+  // First five innings, for the F5 markets. Null unless all five were played
+  // with both halves scored, which is exactly when a book grades them.
+  const fiveInnings = (ls.innings || []).slice(0, 5);
+  const five =
+    fiveInnings.length === 5 && fiveInnings.every((i) => i.away?.runs != null && i.home?.runs != null)
+      ? {
+          away: fiveInnings.reduce((s, i) => s + n(i.away.runs), 0),
+          home: fiveInnings.reduce((s, i) => s + n(i.home.runs), 0),
+        }
+      : null;
   const venue = g.venue?.name || '';
 
   const side = (which) => {
@@ -447,6 +459,8 @@ for (const { date, g } of allGames) {
       home: ls.teams.home.runs,
       firstAway: first ? n(first.away?.runs) : null,
       firstRuns: first ? n(first.away?.runs) + n(first.home?.runs) : null,
+      f5Away: five ? five.away : null,
+      f5Home: five ? five.home : null,
       innings: (ls.innings || []).length,
       scheduledInnings: g.scheduledInnings ?? 9,
     },
