@@ -16,7 +16,7 @@ import {
   noPush,
   projectGame,
 } from '../src/model/game.js';
-import { parseGameOdds, priceTeamMarkets, TEAM_MARKETS } from '../src/data/teamMarkets.js';
+import { parseGameOdds, priceTeamMarkets, TEAM_MARKETS, mergeF5 } from '../src/data/teamMarkets.js';
 import { pickText } from '../src/ui/rows.js';
 import { gradeSlate } from '../src/data/gradeSlate.js';
 import { MARKET_WEIGHT } from '../src/model/edges.js';
@@ -318,4 +318,36 @@ test('level after five is a PUSH on the F5 moneyline, and a game stopped short v
   } finally {
     restore();
   }
+});
+
+// ── merging the per-event F5 payload ───────────────────────────────────────
+//
+// F5 comes from a different request than the whole-game markets, because the
+// bulk endpoint refuses period markets and fails the entire call when asked.
+// These pin that the two payloads combine without either being able to damage
+// the other.
+
+test('F5 bookmakers merge into the matched event without mutating either side', () => {
+  const event = { id: 'e1', bookmakers: [{ key: 'fanduel', markets: [{ key: 'totals' }] }] };
+  const f5 = { bookmakers: [{ key: 'fanduel', markets: [{ key: 'totals_1st_5_innings' }] }] };
+  const frozen = JSON.stringify([event, f5]);
+  const merged = mergeF5(event, f5);
+  assert.equal(merged.bookmakers.length, 1, 'one book, not two');
+  assert.deepEqual(
+    merged.bookmakers[0].markets.map((m) => m.key),
+    ['totals', 'totals_1st_5_innings'],
+  );
+  assert.equal(JSON.stringify([event, f5]), frozen, 'neither input is mutated');
+});
+
+test('a book that quotes only F5 still arrives, and a missing payload changes nothing', () => {
+  const event = { id: 'e1', bookmakers: [{ key: 'draftkings', markets: [{ key: 'h2h' }] }] };
+  const merged = mergeF5(event, { bookmakers: [{ key: 'betmgm', markets: [{ key: 'h2h_1st_5_innings' }] }] });
+  assert.deepEqual(merged.bookmakers.map((b) => b.key), ['draftkings', 'betmgm']);
+  // The whole point: an F5 failure must leave the whole-game markets exactly
+  // as they were, because that is the regression this design exists to avoid.
+  assert.equal(mergeF5(event, null), event);
+  assert.equal(mergeF5(event, {}), event);
+  assert.equal(mergeF5(event, { bookmakers: 'nonsense' }), event);
+  assert.equal(mergeF5(null, { bookmakers: [] }), null);
 });

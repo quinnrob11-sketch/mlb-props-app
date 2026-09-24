@@ -356,6 +356,28 @@ export const GAME_LINES_INFO_ONLY = 'game lines are information only — model i
  * Fetch both price sources for a slate. Never rejects: each source reports its
  * own error and the other still prices the board.
  */
+/** The three period markets, in the order the proxy's allowlist names them. */
+const F5_MARKETS = 'h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings';
+
+/**
+ * Fold an event's F5 bookmakers into its whole-game ones.
+ *
+ * Neither side is mutated, a missing F5 payload returns the event unchanged,
+ * and a book appearing in both keeps one entry with its markets concatenated —
+ * the two calls never return the same market key, so nothing can collide.
+ */
+export function mergeF5(event, f5) {
+  if (!event || !f5 || !Array.isArray(f5.bookmakers)) return event || null;
+  const byKey = new Map();
+  for (const b of event.bookmakers || []) byKey.set(b.key, { ...b, markets: [...(b.markets || [])] });
+  for (const b of f5.bookmakers) {
+    const existing = byKey.get(b.key);
+    if (existing) existing.markets.push(...(b.markets || []));
+    else byKey.set(b.key, { ...b, markets: [...(b.markets || [])] });
+  }
+  return { ...event, bookmakers: [...byKey.values()] };
+}
+
 export async function fetchTeamMarketQuotes({ games, date, oddsKey, books: withBooks = true }) {
   const [books, kalshi] = await Promise.all([
     (withBooks
@@ -378,6 +400,38 @@ export async function fetchTeamMarketQuotes({ games, date, oddsKey, books: withB
     ),
   ]);
 
+  // First five innings come from the PER-EVENT endpoint, not the bulk one.
+  // The bulk /odds endpoint answers a period market with INVALID_MARKET and
+  // fails the WHOLE call, which on 2026-09-24 took the moneyline, run line and
+  // total down with it for ten minutes. So this is deliberately a SEPARATE
+  // request per event: if it fails, in part or in full, the three whole-game
+  // markets above are untouched because they were never in the same call.
+  //
+  // Cost is 3 markets per event — about 36 credits on a twelve-game slate,
+  // against 3 for the bulk call. Only two of the five core books quote F5
+  // (FanDuel and BetMGM, measured 2026-09-24), so these rows are thin by
+  // nature and will rarely clear the three-book floor the shop rule uses.
+  const f5ByEvent = new Map();
+  if (withBooks && books.events.length) {
+    const wanted = games
+      .map((game) => matchOddsEvent(books.events, game)?.id)
+      .filter((id) => typeof id === 'string' && id);
+    await Promise.all(
+      [...new Set(wanted)].map((eventId) =>
+        oddsFetch(
+          { endpoint: 'event-odds', eventId, markets: F5_MARKETS, books: 'core' },
+          oddsKey,
+        ).then(
+          (res) => {
+            if (res?.body && Array.isArray(res.body.bookmakers)) f5ByEvent.set(eventId, res.body);
+          },
+          // One event failing must cost that event's F5 rows and nothing else.
+          () => {},
+        ),
+      ),
+    );
+  }
+
   let kalshiByGame = new Map();
   try {
     kalshiByGame = kalshiGameQuotes(kalshi.markets, games, date);
@@ -386,8 +440,11 @@ export async function fetchTeamMarketQuotes({ games, date, oddsKey, books: withB
   }
   const quotesByGame = new Map();
   for (const game of games) {
+    const event = matchOddsEvent(books.events, game);
     quotesByGame.set(game.gamePk, {
-      books: parseGameOdds(matchOddsEvent(books.events, game)),
+      // The F5 bookmakers are folded into the matched event so parseGameOdds
+      // reads one object and already knows the three f5 market keys.
+      books: parseGameOdds(mergeF5(event, f5ByEvent.get(event?.id))),
       kalshi: kalshiByGame.get(game.gamePk),
     });
   }
