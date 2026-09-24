@@ -229,9 +229,75 @@ export const PITCHER_TUNING = {
    *
    * The budget term is small; it is kept because it moves the right way in all
    * three samples, not because it is large.
+   *
+   * REFITTED(2026-09-23): `homeBudget` 1 -> 2. The original fit called 1 and 2
+   * a tie and took the smaller; with `homeH` and `homeBB` below now taking
+   * their own share of the length difference, outs log loss over 9,397 starts
+   * still prefers the larger, 0.47538 against 0.47539, and 2 is where the outs
+   * point bias comes out level between the two sides (+0.034 home / +0.010
+   * away, against +0.115 / -0.067 at 1). `homeK` was re-swept on the same
+   * 9,397 starts and 0.03 is still its minimum, so it is untouched.
    */
   homeK: 0.03,
-  homeBudget: 1,
+  homeBudget: 2,
+  /**
+   * The REST of the home-field advantage. ADDED(2026-09-23, docs/HOMEFIELD.md).
+   *
+   * `homeK` and `homeBudget` were the only two sides of the ballpark this model
+   * knew about. The box score says there are five. Over 9,388 starts across
+   * 2025 and 2026, with no model involved anywhere (`tools/homefield-probe.mjs`):
+   *
+   *                       2025 home/away ratio   2026
+   *       K per BF              1.067            1.069   <- `homeK` has this
+   *       BB per BF             0.963            0.956
+   *       hits per BF           0.970            0.974
+   *       HR per BF             0.973            0.972
+   *       earned runs per 9     0.906            0.928
+   *       outs per start        1.025            1.037   <- `homeBudget`, partly
+   *
+   * The mirror is on the hitting side: a team batting at home strikes out 4.6%
+   * / 5.1% less, walks 5.9% / 4.9% more and hits .2485 against .2422 (2025),
+   * .2475 against .2407 (2026). That is one fact seen twice, and the model was
+   * pricing one seventh of it.
+   *
+   * WHY IT WAS MISSED. `opp` is the opposing team's season hitting aggregate,
+   * pooled over both sides of ITS ballpark. A home starter faces a team that,
+   * on the road, strikes out more and hits for a lower average than that
+   * pooled number says — and he is handed the pooled number. Splitting the
+   * aggregate by venue would price the same effect through the opponent term;
+   * these coefficients price it directly, which needs no extra request and
+   * works for a team with 20 road games on its card.
+   *
+   * SIGN CONVENTION, one for all five: `1 + side * coefficient`, side +1 at
+   * home and -1 away. So `homeK` is positive (more strikeouts at home) and the
+   * ones below are negative (fewer walks, hits and earned runs at home). Every
+   * one is exactly neutral when `input.isHome` is not supplied, and 0 restores
+   * the pre-2026-09-23 model bit for bit.
+   *
+   * `homeER` is applied to `projER` after the three-way blend rather than to a
+   * rate, because only the 40% events leg of that blend passes through `adjH`,
+   * `adjBB` and `adjHR`; the FIP and ERA legs are the pitcher's own season
+   * line and know nothing about tonight's ballpark. Outs carry no coefficient
+   * of their own: `adjH` and `adjBB` feed `outRatePerBF`, so `homeH` and
+   * `homeBB` lengthen a home start by construction, on top of `homeBudget`.
+   *
+   * Fitted market by market on 2025 entire + 2026 through 2026-08-09 by log
+   * loss over the standard ladder; validated on 2026-08-10..09-01. The
+   * measurements are in docs/HOMEFIELD.md.
+   */
+  homeBB: -0.025,
+  homeH: -0.02,
+  /**
+   * MEASURED BUT NOT FITTED, AND THEREFORE ZERO. There is no pitcher home-run
+   * market (`PITCHER_MARKETS` has strikeouts, outs, hits, earned runs and
+   * walks), so nothing on the board can select this coefficient. Its only
+   * path to a priced number is the 40% events leg of `projER`, and `homeER`
+   * below prices that directly and was fitted with this at 0. The box score
+   * says the honest value is about -0.014; it is left switched off rather
+   * than set from a number no market can check.
+   */
+  homeHR: 0,
+  homeER: -0.05,
   /**
    * The three ported terms of v36.2, each switchable. Setting any of them to
    * false restores the v36 behaviour of that term exactly, which is what
@@ -955,9 +1021,13 @@ export function projectPitcher(input) {
   // regression to the mean) each moved it and none removed it.
   const K_CONTACT_SPLIT = 0.98;
 
-  // Home/away (see `homeK` in PITCHER_TUNING): starters strike out more at
-  // home. Neutral when the caller does not say which side he is on.
-  const homeKFactor = input.isHome == null ? 1 : input.isHome ? 1 + T.homeK : 1 - T.homeK;
+  // Home/away (see `homeK` and the block below it in PITCHER_TUNING).
+  // `side` is +1 at home, -1 on the road and 0 when the caller does not say —
+  // which makes every one of the five coefficients exactly neutral without
+  // `input.isHome`, the same way `homeK` alone was before 2026-09-23.
+  const side = input.isHome == null ? 0 : input.isHome ? 1 : -1;
+  const sideFactor = (coef) => 1 + side * (coef || 0);
+  const homeKFactor = sideFactor(T.homeK);
 
   // PORTED(v36.2) — the opponent factor, fitted.
   //
@@ -987,16 +1057,16 @@ export function projectPitcher(input) {
     0.05, 0.45,
   );
   const adjBB = clamp(
-    bbRate * oppFactor(1 + 0.3 * (oppBB / lg.bbRate - 1), F.opp?.bb) * plBB,
+    bbRate * oppFactor(1 + 0.3 * (oppBB / lg.bbRate - 1), F.opp?.bb) * plBB * sideFactor(T.homeBB),
     0.02, 0.18,
   );
   const adjH = clamp(
     hRate * oppFactor(1 + 0.35 * (oppAvg / lg.avg - 1), F.opp?.h) *
-      parkFactor(park, 'hits', 0.7) * (2 - K_CONTACT_SPLIT) * plH,
+      parkFactor(park, 'hits', 0.7) * (2 - K_CONTACT_SPLIT) * plH * sideFactor(T.homeH),
     0.12, 0.34,
   );
   const adjHR = clamp(
-    hrRate * oppFactor(1, F.opp?.hr) * parkFactor(park, 'hr', 0.7) * plHR,
+    hrRate * oppFactor(1, F.opp?.hr) * parkFactor(park, 'hr', 0.7) * plHR * sideFactor(T.homeHR),
     0.005, 0.07,
   );
 
@@ -1242,9 +1312,14 @@ export function projectPitcher(input) {
 
   // Final ER = 40% bottom-up events, 30% FIP-scaled, 30% ERA-scaled, minus a
   // flat 0.25 (shading DOWN — unearned-run / sequencing haircut). Floored 0.2.
+  // `homeER` (see PITCHER_TUNING) sits outside the blend because two of its
+  // three legs are the pitcher's own season line and carry no ballpark of
+  // their own; the events leg already has `homeH`/`homeBB`/`homeHR` in it, and
+  // the coefficient was fitted with those in place.
   const projER = Math.max(
     0.2,
-    0.4 * runsFromEvents + 0.3 * ((fip * projIP) / 9) + 0.3 * ((eraBlend * projIP) / 9) - 0.25,
+    (0.4 * runsFromEvents + 0.3 * ((fip * projIP) / 9) + 0.3 * ((eraBlend * projIP) / 9) - 0.25) *
+      sideFactor(T.homeER),
   );
 
   // ---------------------------------------------------------------------

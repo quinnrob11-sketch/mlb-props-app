@@ -204,6 +204,15 @@ rest term reads, so it is a description rather than an independent check.
 
 ### 5. The worst remaining cell, named honestly.
 
+> **SUPERSEDED, same day, by `docs/HOMEFIELD.md`.** The asymmetry this section
+> and the one headed "The largest remaining error" describe was verified as
+> real — not a harness artefact — and fitted: `PITCHER_TUNING` gained `homeH`,
+> `homeBB` and `homeER` and `BATTER_TUNING` gained `homeHit`, `homeK` and
+> `homeRun`. Away starters' earned runs now reads **1.21 with a −0.4 gap**
+> against home's 1.21 / −0.3, and the worst cell on any 2,000+ slice is now
+> **outs for a starter with three or fewer prior starts, 1.96 on 2,392**. Every
+> number below this line describes the model at `8d01b22`, before that change.
+
 **Away starters' earned runs: calibration error 2.32 points, gap −2.0, on 4,699
 starts.** On any slice with more than two thousand events in it, nothing else in
 the model is close — the next four are pitcher cells at 1.92, 1.82, 1.70 and
@@ -303,7 +312,9 @@ pitching line, **0.03 of an H+R+RBI** between the two sides of a hitter. As
 probabilities, up to **3.4 points of swing on an earned-run line** and about
 **1.3 points on a batter's run line**.
 
-**This is reported, not fixed.** Nothing under `src/` was touched by this
+**This was reported, not fixed, by the branch that wrote this document — and it
+is fixed now: see `docs/HOMEFIELD.md`, which did both checks below before
+writing a term.** Nothing under `src/` was touched by this
 branch. Two cautions for whoever picks it up. The effect is measured against the
 boxscore starter rather than the listed probable. And the pitcher replay uses
 the opposing team's aggregate rather than a posted card, built the same way for
