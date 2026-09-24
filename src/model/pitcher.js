@@ -667,6 +667,76 @@ export const PITCHER_FIT = {
     // 0.94 -> 1.29, because 2026's walk rate jumped in August against the
     // trend. Strikeouts have no season trend at all: 2025 ran 4.81 in April
     // and 4.88 in September, 2026 ran 4.69 and 4.60.
+    //
+    // v38.3 explains why the walks drift failed and `early` below replaces it.
+    // The walk rate's season shape is not a trend. It is a plateau for the
+    // first month and then flat: an exponential in days fitted through it has
+    // to trim September to pay for April, and September does not want trimming.
+  },
+  /**
+   * EARLY (v38.3) — the league's own walk curve, which the model does not have.
+   *
+   * `docs/WALKS-FIX.md` carries the whole argument. In one line: every rate in
+   * this model is an average over a window — the pitcher's prior season, whole,
+   * and his current season to date — and the league's walk rate is not flat
+   * within a season, so an average over a window is not tonight's environment.
+   *
+   * The curve is measured on every plate appearance in the majors in 2024,
+   * 2025 and 2026, each season's daily BB/PA expressed against that season's
+   * own BB/PA so a between-season difference in the level cannot enter, and
+   * then rebased to the level it settles at from day 75 on. It is a plateau and
+   * a ramp, and it repeats in all three seasons:
+   *
+   *     days from Mar 20   4-7   8-11  12-15  16-21  22-28  29-35  36-45  46-55  56-70  71-90
+   *     index              1.166 1.106 1.097  1.143  1.098  1.061  1.025  1.037  0.973  0.995
+   *
+   * 2024 is in that fit and is out of sample twice over: no 2024 game is an
+   * outcome this model is ever scored against, and no coefficient anywhere in
+   * this file has seen one. Fitted per season at the shipped geometry the
+   * amplitude is 0.1102 (2024), 0.1035 (2025) and 0.1256 (2026) — three
+   * independent samples inside 2.2 points of each other, t = 9.0 pooled.
+   *
+   * What it is NOT, each measured in docs/WALKS-FIX.md:
+   *
+   *   - **Not the pitcher being short of a full season's work.** Cut by his own
+   *     Nth start of the year instead of by the calendar, the lift is on the
+   *     calendar: a man making his first start of the season in June comes in
+   *     at 0.91 of his projection, not 1.16.
+   *   - **Not a stale prior-season blend.** A rebase of the prior season onto
+   *     tonight's as-of league rate — the obvious fix, and the one the brief
+   *     proposed — fits at an exponent of 0.26 in 2025 against 0.47 in 2026,
+   *     because the year-over-year drift it keys on differs between the two
+   *     seasons while the April miss does not. The calendar lift is 1.080 and
+   *     1.097 in the same two seasons. The environment story explains the
+   *     smaller, between-season half and gets the within-season half wrong.
+   *   - **Not temperature.** The raw gradient is strong (1.22 under 45F against
+   *     0.97 over 82F) and almost all of it is the calendar: controlling for
+   *     the day of the season the cold cells read 1.168 / 1.139 / 0.880 / — and
+   *     controlling for temperature the early rows stay at 1.07-1.17 in every
+   *     temperature band. `projectPitcher` has no weather input and does not
+   *     gain one here.
+   *   - **Not hit batsmen, and not the mirror of strikeouts.** HBP per PA is
+   *     -7.3% in April 2025 and +1.0% in April 2026; league strikeouts are
+   *     -0.5% and -1.6%. Walks alone carry a seasonal shape.
+   *
+   * `amp` is keyed by market and a market that is missing carries nothing, so
+   * every projection except walks is byte-identical. `hold` and `cap` are the
+   * plateau and the ramp in days from March 20; the term is exactly 1 at `cap`
+   * and beyond, so 78% of the board does not move at all. Inert without
+   * `input.date`, which is the same gate `progress` uses.
+   */
+  early: {
+    /** Days from March 20 over which the lift is at full strength. */
+    hold: 25,
+    /** And by which it has ramped back to nothing. */
+    cap: 45,
+    /**
+     * Peak multiplier minus one, per market. Fitted by weighted least squares
+     * of the league's daily rebased walk index on this shape, weights = plate
+     * appearances, over three seasons — NOT on any residual of this model. The
+     * model residual agrees: fitted the other way it comes back at 0.115.
+     */
+    amp: { bb: 0.1134 },
   },
 };
 
@@ -1262,22 +1332,48 @@ export function projectPitcher(input) {
     const c = F.cal?.[market];
     return c ? [c[0], c[1], c.length > 2 ? c[2] : 1] : [anchor, slope, level];
   };
-  // Days into the season, in hundreds — the same clock the study's `progress`
-  // term uses. Null whenever the caller did not say what day it is, which
-  // switches the drift term off rather than guessing a date.
-  const progress = (() => {
-    if (!F.progress || !date) return null;
+  // Days into the season — the clock both the study's `progress` term and
+  // v38.3's `early` term run on. Null whenever the caller did not say what day
+  // it is, which switches BOTH off rather than guessing a date.
+  const seasonDays = (() => {
+    if (!date) return null;
     const yr = season ?? Number(String(date).slice(0, 4));
     const days = (Date.parse(`${date}T00:00:00Z`) - Date.parse(`${yr}-03-20T00:00:00Z`)) / 864e5;
-    return Number.isFinite(days) ? days / 100 : null;
+    return Number.isFinite(days) ? days : null;
   })();
+  // In hundreds, which is the unit `PITCHER_FIT.progress` is fitted in.
+  const progress = F.progress && seasonDays != null ? seasonDays / 100 : null;
   const driftFor = (market) =>
     progress != null && F.progress?.[market] != null
       ? Math.exp(F.progress[market] * (progress - (F.progress.ref ?? 0)))
       : 1;
+  /**
+   * EARLY (v38.3) — the league walks more in the first month, and no average
+   * over a window knows that. A plateau of `1 + amp` through `hold` days,
+   * straight down to exactly 1 at `cap`, and exactly 1 from there on.
+   *
+   * Every guard returns exactly 1, which is the whole of the fallback: no
+   * date, no `F.early`, no amplitude for this market, a geometry that is not a
+   * ramp, or a start past `cap` — any of them and the market is untouched.
+   * See `PITCHER_FIT.early` and docs/WALKS-FIX.md.
+   */
+  const earlyFor = (market) => {
+    const E = F.early;
+    if (!E || seasonDays == null) return 1;
+    const amp = E.amp?.[market];
+    if (!Number.isFinite(amp) || amp <= 0) return 1;
+    const hold = Number.isFinite(E.hold) ? E.hold : 0;
+    const cap = Number.isFinite(E.cap) ? E.cap : 0;
+    if (!(cap > hold) || !(cap > 0)) return 1;
+    // A game before March 20 — a Tokyo or Seoul opener — is day zero, not a
+    // negative day, so the ramp can never run the other way.
+    const d = Math.max(0, seasonDays);
+    if (d >= cap) return 1;
+    return 1 + amp * (d <= hold ? 1 : (cap - d) / (cap - hold));
+  };
   const calibrated = (value, floor, market, anchor, slope, level) => {
     const [a, s, l] = calOf(market, anchor, slope, level);
-    return Math.max(floor, shrinkToMean(value, a, s) * l * driftFor(market));
+    return Math.max(floor, shrinkToMean(value, a, s) * l * driftFor(market) * earlyFor(market));
   };
 
   const projOutsCal = calibrated(projOuts, 3, 'outs', 15.5, 0.89, T.outsLevel);

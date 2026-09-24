@@ -660,3 +660,113 @@ test('`rest.pass` is a switch: strikeouts and hits carry the layoff, walks and e
     assert.ok(Math.abs(all[m] / off[m] - ratio) < 1e-9, `${m} carries it when switched on`);
   }
 });
+
+// ── v38.3: the early-season walk curve (docs/WALKS-FIX.md) ──────────────────
+//
+// `PITCHER_FIT.early` is the league's own walk rate by day of season, which
+// every average-over-a-window rate in this model is blind to. It is one
+// multiplier on one market, gated on `input.date`, and exactly 1 at `cap` and
+// beyond — so 78% of a season's board must be byte-identical to the model
+// without it, and every other market must be byte-identical always.
+
+const noEarly = { ...PITCHER_FIT, early: null };
+/** Opening week: inside the plateau. */
+const april = base({ date: '2026-03-28', appearanceLog: appearances('2026-03-28', 3, 15) });
+/** Deep summer: past `cap`, so the term cannot reach it. */
+const july = base({ date: '2026-07-01', appearanceLog: appearances('2026-07-01', 3, 15) });
+
+test('the early-season walk term moves walks, on the day it is meant to, and nothing else', () => {
+  const on = projectPitcher(april);
+  const off = projectPitcher({ ...april, fit: noEarly });
+  // It fires, or the rest of this test proves nothing.
+  const lift = on.projBB / off.projBB;
+  assert.ok(Math.abs(lift - (1 + PITCHER_FIT.early.amp.bb)) < 1e-9, `the plateau is the whole amplitude: ${lift}`);
+  // And it is the ONLY thing that moves: no other market is in `amp`.
+  for (const m of ['projK', 'projOuts', 'projH', 'projER', 'projIP', 'projBF', 'projHR']) {
+    assert.equal(on[m], off[m], `${m} must not move`);
+  }
+  for (const m of ['k', 'outs', 'hits', 'er']) {
+    for (const l of [0.5, 2.5, 4.5, 11.5, 15.5, 18.5]) {
+      assert.equal(on.dist[m](l), off.dist[m](l), `dist.${m}(${l}) must not move`);
+    }
+  }
+  // The walks distribution moves with the projection it is priced from.
+  assert.ok(on.dist.bb(1.5) > off.dist.bb(1.5), 'the walks ladder must lift with the mean');
+});
+
+test('every way the early-season term can be missing lands on exactly the model without it', () => {
+  for (const [what, input] of [
+    ['a start past `cap`', july],
+    [`a start exactly at \`cap\` (day ${PITCHER_FIT.early.cap})`,
+      base({ date: '2026-05-04', appearanceLog: appearances('2026-05-04', 3, 15) })],
+    ['no date at all', base({ appearanceLog: appearances('2026-03-28', 3, 15) })],
+  ]) {
+    assert.deepEqual(
+      snapshot(projectPitcher(input)),
+      snapshot(projectPitcher({ ...input, fit: noEarly })),
+      `${what} must be byte-identical to the model with early switched off`,
+    );
+  }
+  // And every way of switching the term off, on a start that would have moved.
+  for (const off of [
+    null,
+    {},
+    { ...PITCHER_FIT.early, amp: {} },
+    { ...PITCHER_FIT.early, amp: { bb: 0 } },
+    { ...PITCHER_FIT.early, amp: { bb: null } },
+    { ...PITCHER_FIT.early, hold: 45, cap: 25 },
+    { ...PITCHER_FIT.early, cap: 0 },
+  ]) {
+    assert.deepEqual(
+      snapshot(projectPitcher({ ...april, fit: { ...PITCHER_FIT, early: off } })),
+      snapshot(projectPitcher({ ...april, fit: noEarly })),
+      `early ${JSON.stringify(off)} must be inert`,
+    );
+  }
+});
+
+test('the early-season curve is a plateau and a ramp, and never runs the other way', () => {
+  const { hold, cap, amp } = PITCHER_FIT.early;
+  const day = (n) => new Date(Date.parse('2026-03-20T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+  const bbOn = (n) => projectPitcher({ ...april, date: day(n) }).projBB;
+  const bbOff = (n) => projectPitcher({ ...april, date: day(n), fit: noEarly }).projBB;
+  const mul = (n) => bbOn(n) / bbOff(n);
+  // Flat at the full amplitude across the whole plateau, including a game
+  // played BEFORE March 20 — a Tokyo opener is day zero, not a negative day.
+  for (const n of [-4, 0, 5, hold]) {
+    assert.ok(Math.abs(mul(n) - (1 + amp.bb)) < 1e-9, `day ${n} must sit on the plateau: ${mul(n)}`);
+  }
+  // Strictly falling across the ramp, and exactly 1 from `cap` on.
+  for (let n = hold; n < cap; n++) {
+    assert.ok(mul(n) > mul(n + 1) - 1e-12, `day ${n} must not be below day ${n + 1}`);
+  }
+  assert.ok(Math.abs(mul(cap) - 1) < 1e-12, `day ${cap} must be exactly 1: ${mul(cap)}`);
+  assert.ok(Math.abs(mul(cap + 60) - 1) < 1e-12, 'and every day after it');
+  // Halfway down the ramp is half the lift, which is what "linear" means.
+  const half = (hold + cap) / 2;
+  assert.ok(Math.abs(mul(half) - (1 + amp.bb / 2)) < 1e-9, `day ${half}: ${mul(half)}`);
+});
+
+test('the early-season term is per market, and adding one is one object away', () => {
+  const off = projectPitcher({ ...april, fit: noEarly });
+  const both = projectPitcher({
+    ...april,
+    fit: { ...PITCHER_FIT, early: { ...PITCHER_FIT.early, amp: { bb: 0.1, k: 0.05 } } },
+  });
+  assert.ok(Math.abs(both.projBB / off.projBB - 1.1) < 1e-9, 'walks take their own amplitude');
+  assert.ok(Math.abs(both.projK / off.projK - 1.05) < 1e-9, 'strikeouts take theirs');
+  assert.equal(both.projH, off.projH, 'and a market with no amplitude does not move');
+});
+
+test('`progress` and `early` read the same clock without reading each other', () => {
+  // Switching the drift term off must not switch the early-season term off:
+  // they share `input.date` and nothing else.
+  const noProgress = { ...PITCHER_FIT, progress: null };
+  const on = projectPitcher({ ...april, fit: noProgress });
+  const off = projectPitcher({ ...april, fit: { ...noProgress, early: null } });
+  assert.ok(on.projBB > off.projBB, 'early must still fire with progress switched off');
+  // And the reverse: the outs drift must still fire with `early` switched off.
+  const outsWithDrift = projectPitcher({ ...july, fit: noEarly }).projOuts;
+  const outsNoDrift = projectPitcher({ ...july, fit: { ...noEarly, progress: null } }).projOuts;
+  assert.notEqual(outsWithDrift, outsNoDrift, 'progress must still fire with early switched off');
+});
