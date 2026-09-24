@@ -16,6 +16,7 @@ import {
   decayedRateTotals,
   PITCHER_FIT,
   PITCHER_TUNING,
+  restDaysFrom,
 } from '../src/model/pitcher.js';
 
 const SEASON = {
@@ -529,4 +530,133 @@ test('hits no longer inherit the starter line, and still inherit an opener one',
   const v38Hits = { ...PITCHER_FIT, role: { ...PITCHER_FIT.role, pass: { ...PITCHER_FIT.role.pass, hits: 1 } } };
   const back = projectPitcher({ ...starter, fit: v38Hits });
   assert.ok(Math.abs(back.projH / v37(starter).projH - back.projOuts / v37(starter).projOuts) < 1e-9);
+});
+
+// ── v38.2: the layoff (docs/REST-FIX.md) ────────────────────────────────────
+//
+// `PITCHER_FIT.rest` reads the gap to his last START off the same appearance
+// log the role term uses, and pulls a start after a long layoff toward a short
+// assignment. It is gated three ways — on the starter class, on there being a
+// previous start at all, and on the gap clearing `knee` — and every one of
+// those has to land on exactly the model without it.
+
+/** Three starts, the last of them `days` days before tonight. */
+const afterLayoff = (days) =>
+  appearances(new Date(Date.parse('2026-07-01T00:00:00Z') - (days - 5) * 864e5).toISOString().slice(0, 10), 3, 15);
+
+const noRest = { ...PITCHER_FIT, rest: null };
+/** A normal-rotation starter, five days since his last one. */
+const onTime = base({ date: '2026-07-01', appearanceLog: afterLayoff(5) });
+/** The same man back from a fortnight off. */
+const layoff = base({ date: '2026-07-01', appearanceLog: afterLayoff(20) });
+
+test('restDaysFrom reads the last START, and nothing it cannot read', () => {
+  const log = [
+    { date: '2026-06-01', gs: 1, outs: 15 },
+    { date: '2026-06-20', gs: 0, outs: 3 },   // relief does not reset the clock
+    { date: '2026-07-05', gs: 1, outs: 15 },  // the future does not count
+  ];
+  assert.equal(restDaysFrom(log, '2026-07-01'), 30);
+  assert.equal(restDaysFrom([log[1]], '2026-07-01'), null, 'relief only: no previous start');
+  assert.equal(restDaysFrom([], '2026-07-01'), null, 'empty log');
+  assert.equal(restDaysFrom(null, '2026-07-01'), null, 'no log');
+  assert.equal(restDaysFrom(log, null), null, 'no date');
+  assert.equal(restDaysFrom([{ gs: 1, outs: 15 }], '2026-07-01'), null, 'undated entries');
+});
+
+test('every way the layoff term can be missing lands on exactly the model without it', () => {
+  // It does fire somewhere, or the rest of this test proves nothing.
+  assert.notEqual(projectPitcher(layoff).projOuts, projectPitcher({ ...layoff, fit: noRest }).projOuts);
+  // A gap at or below the knee, a log with no previous start, and no log at all.
+  for (const [what, input] of [
+    ['normal rest', onTime],
+    [`${PITCHER_FIT.rest.knee} days, at the knee`, base({ date: '2026-07-01', appearanceLog: afterLayoff(PITCHER_FIT.rest.knee) })],
+    ['a season debut', base({ date: '2026-07-01', appearanceLog: [] })],
+    ['relief appearances only', base({ date: '2026-07-01', appearanceLog: appearances('2026-07-01', 6, 3, 2) })],
+    ['no appearance log', base({ date: '2026-07-01' })],
+    ['no date', base({ appearanceLog: afterLayoff(20) })],
+  ]) {
+    assert.deepEqual(
+      snapshot(projectPitcher(input)),
+      snapshot(projectPitcher({ ...input, fit: noRest })),
+      `${what} must be byte-identical to the model with rest switched off`,
+    );
+  }
+  // And every way of switching the term off, on a start that would have moved.
+  for (const off of [
+    null,
+    { ...PITCHER_FIT.rest, perDay: 0 },
+    { ...PITCHER_FIT.rest, perDay: null },
+    { ...PITCHER_FIT.rest, anchor: null },
+    { ...PITCHER_FIT.rest, knee: 16, cap: 9 },
+  ]) {
+    assert.deepEqual(
+      snapshot(projectPitcher({ ...layoff, fit: { ...PITCHER_FIT, rest: off } })),
+      snapshot(projectPitcher({ ...layoff, fit: noRest })),
+      `rest ${JSON.stringify(off)} must be inert`,
+    );
+  }
+});
+
+test('the layoff is a shorter assignment: it shortens, it levels off, and it never lifts', () => {
+  const outsAfter = (days) => projectPitcher({ ...onTime, appearanceLog: afterLayoff(days) }).projOuts;
+  const flat = outsAfter(5);
+  assert.ok(outsAfter(20) < flat, 'a fortnight off must shorten the start');
+  // Monotone in the gap, and flat from `cap` up.
+  let prev = Infinity;
+  for (let d = 5; d <= 40; d++) {
+    const v = outsAfter(d);
+    assert.ok(v <= prev + 1e-9, `projOuts rose at ${d} days: ${v} > ${prev}`);
+    prev = v;
+  }
+  assert.ok(Math.abs(outsAfter(PITCHER_FIT.rest.cap) - outsAfter(40)) < 1e-9, 'the ramp is flat from `cap`');
+  assert.ok(outsAfter(PITCHER_FIT.rest.cap) < outsAfter(PITCHER_FIT.rest.cap - 1), 'and rising up to it');
+  // One-sided: a start already projected at or below the anchor is left alone.
+  const shallow = base({
+    date: '2026-07-01',
+    appearanceLog: afterLayoff(30),
+    gameLog: Array.from({ length: 5 }, (_, i) => {
+      const d = new Date(Date.parse('2026-07-01T00:00:00Z') - (5 - i) * 5 * 864e5);
+      return { date: d.toISOString().slice(0, 10), ip: 1.2, pitches: 30, bf: 8, k: 2 };
+    }),
+  });
+  const bare = projectPitcher({ ...shallow, fit: noRest });
+  assert.ok(bare.projOuts <= PITCHER_FIT.rest.anchor, `this start must sit under the anchor: ${bare.projOuts}`);
+  assert.deepEqual(snapshot(projectPitcher(shallow)), snapshot(bare), 'never lifted toward the anchor');
+});
+
+test('the layoff keeps the depth map monotone, so two starts cannot swap order', () => {
+  let prev = -Infinity;
+  for (let pitches = 30; pitches <= 120; pitches += 1) {
+    const p = projectPitcher({
+      ...layoff,
+      gameLog: Array.from({ length: 5 }, (_, i) => {
+        const d = new Date(Date.parse('2026-07-01T00:00:00Z') - (5 - i) * 5 * 864e5);
+        return { date: d.toISOString().slice(0, 10), ip: pitches / 18, pitches, bf: Math.round(pitches / 4), k: 5 };
+      }),
+    });
+    assert.ok(p.projOuts >= prev - 1e-9, `projOuts fell at ${pitches} pitches: ${p.projOuts} < ${prev}`);
+    prev = p.projOuts;
+  }
+});
+
+test('`rest.pass` is a switch: strikeouts and hits carry the layoff, walks and earned runs do not', () => {
+  const off = projectPitcher({ ...layoff, fit: noRest });
+  const on = projectPitcher(layoff);
+  const ratio = on.projOuts / off.projOuts;
+  assert.ok(ratio < 1, `${ratio}`);
+  for (const m of ['projK', 'projH']) {
+    assert.ok(Math.abs(on[m] / off[m] - ratio) < 1e-9, `${m} must carry the whole of it: ${on[m] / off[m]} vs ${ratio}`);
+  }
+  for (const m of ['projBB', 'projER']) {
+    assert.equal(on[m], off[m], `${m} must not move`);
+  }
+  // And the alternative is one object away, which is how it was measured.
+  const all = projectPitcher({
+    ...layoff,
+    fit: { ...PITCHER_FIT, rest: { ...PITCHER_FIT.rest, pass: { k: 1, hits: 1, bb: 1, er: 1 } } },
+  });
+  for (const m of ['projBB', 'projER']) {
+    assert.ok(Math.abs(all[m] / off[m] - ratio) < 1e-9, `${m} carries it when switched on`);
+  }
 });
