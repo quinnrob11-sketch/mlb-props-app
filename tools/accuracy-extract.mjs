@@ -78,7 +78,38 @@ const PITCHER_PROJ = { k: 'projK', outs: 'projOuts', hits: 'projH', bb: 'projBB'
 
 async function extractPitchers() {
   const { buildStarts } = await import('./backtest-pitchers.mjs');
-  const { PITCHER_FIT } = await import('../src/model/pitcher.js');
+  const { PITCHER_FIT, restDaysFrom } = await import('../src/model/pitcher.js');
+  /**
+   * The ROLE the shipped model put this start in — `opener`, `debut` or
+   * `starter` (see `PITCHER_FIT.role` and docs/OPENER-FIX.md). `projectPitcher`
+   * does not return it, so it is read here exactly the way the model reads it:
+   * the longest outing, relief included, among the last `role.window`
+   * appearances strictly before tonight. An empty log is a debut; an
+   * unreadable one is null, which is the case where every role-gated term is
+   * inert. This is a SLICE KEY only — nothing here feeds a projection.
+   */
+  const roleOf = (log, date) => {
+    const R = PITCHER_FIT.role;
+    if (!R || !Array.isArray(log) || !date) return null;
+    const before = [];
+    let dated = 0;
+    for (const a of log) {
+      if (!a || !a.date) continue;
+      dated++;
+      if (a.date < date) before.push(a);
+    }
+    if (log.length && !dated) return null;
+    if (!before.length) return R.debut ? 'debut' : 'starter';
+    before.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    const lookback = Math.max(1, Math.round(R.window ?? 3));
+    let longest = -1;
+    for (const a of before.slice(-lookback)) {
+      const outs = Number(a.outs);
+      if (Number.isFinite(outs) && outs > longest) longest = outs;
+    }
+    if (longest < 0) return null;
+    return longest <= (R.openerOuts ?? 6) ? 'opener' : 'starter';
+  };
   const projectPitcher = V1
     ? (await import('./pitcher-model-v1.mjs')).projectPitcherV1
     : (await import('../src/model/pitcher.js')).projectPitcher;
@@ -110,6 +141,11 @@ async function extractPitchers() {
       ns: log.length,                                  // starts already on his card
       bf: Number(s.input.season26?.battersFaced || 0), // season-to-date batters faced
       rest,
+      // The role the model priced him as, and the layoff the rest term reads
+      // (`restDaysFrom` counts to his last START; `rest` above counts to his
+      // last logged game). Both are slice keys, never inputs.
+      role: roleOf(s.input.appearanceLog, s.date),
+      rd: restDaysFrom(s.input.appearanceLog, s.date),
       ip: r3(proj.projIP),
       m,
     });
