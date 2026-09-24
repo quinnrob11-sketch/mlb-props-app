@@ -80,8 +80,12 @@ const EVENT_ODDS_EXTRAS = {
 // If the key's plan does not serve the 1st-5-innings markets, The Odds API
 // drops them from the response rather than erroring, the parser finds no such
 // market, and the F5 rows simply do not appear. The call still costs 6.
-const GAME_MARKETS =
-  "h2h,spreads,totals,h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings";
+// The bulk /odds endpoint serves ONLY the three whole-game markets. Asking it
+// for a period market fails the WHOLE call with INVALID_MARKET — "Markets not
+// supported by this endpoint" — which takes the moneyline, run line and total
+// down with it rather than just omitting the extras. Learned by deploying it.
+// Period markets live on the per-event endpoint, like the player props.
+const GAME_MARKETS = "h2h,spreads,totals";
 
 // Every market the app is allowed to ask for. Anything else is rejected before
 // it reaches the upstream, which is what bounds the cache-key space.
