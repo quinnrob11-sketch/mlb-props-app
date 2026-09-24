@@ -125,6 +125,95 @@ function calibrate(pairs, width = 0.1, minN = 60) {
   return { n: N, table, ece, worst, sdP, range, gap: mp - mean(pairs.map((q) => q.y)) };
 }
 
+/**
+ * RANKING POWER, with the ceiling.
+ *
+ * `--rank`. The MAE column beside these tables is NOT a ranking metric and
+ * must not be read as one. Mean absolute error on a count whose mass sits on
+ * zero and one is not minimised at the conditional mean, so a projection can
+ * beat the honest one by being wrong in a fixed direction:
+ * `docs/BATTER-CALIBRATION-FIX.md` measured total bases projected 20% LOW
+ * beating the shipped projection by 5% of MAE and the slate average by 7%.
+ * `--scale` below reproduces that table. A metric that pays for a lean cannot
+ * say whether a projection ranks.
+ *
+ * What does say it: the correlation between a player's mean projection and his
+ * mean realised production, across players — and, beside it, the highest
+ * correlation ANY projection could score against that same target.
+ *
+ * The target is measured on finitely many games, so it carries sampling noise.
+ * For entity j with n_j games, the within-entity outcome variance (Bessel
+ * corrected) divided by n_j is the noise in his own mean. Subtract the average
+ * of that from the observed variance of the means and what is left is the
+ * variance of true ability:
+ *
+ *     vTrue   = var(ma) - mean(v_j / n_j)
+ *     ceiling = sqrt(vTrue / var(ma))
+ *
+ * A share at or above 1.00 does not mean the model beat the truth; it means
+ * the ceiling is an estimate and this one is slightly conservative. The
+ * ceiling is also generous in the other direction: it is the ceiling against a
+ * NOISY target, not against ability itself.
+ *
+ * The estimator is `rankStudy()` from `tools/batter-thin-fit.mjs`, lifted here
+ * unchanged so pitchers and hitters are scored by the same function.
+ */
+function rankStudy(items, keyOf, minG) {
+  const byKey = new Map();
+  for (const it of items) {
+    if (!Number.isFinite(it.proj) || !Number.isFinite(it.act)) continue;
+    const k = keyOf(it);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(it);
+  }
+  const groups = [...byKey.values()].filter((g) => g.length >= minG);
+  if (groups.length < 8) return null;
+  const mp = [], ma = [], noise = [];
+  for (const g of groups) {
+    const n = g.length;
+    const p = mean(g.map((x) => x.proj));
+    const a = mean(g.map((x) => x.act));
+    const v = (mean(g.map((x) => (x.act - a) ** 2)) * n) / (n - 1);
+    mp.push(p);
+    ma.push(a);
+    noise.push(v / n);
+  }
+  const stat = (idx) => {
+    const P = idx.map((i) => mp[i]);
+    const A = idx.map((i) => ma[i]);
+    const N = idx.map((i) => noise[i]);
+    const bp = mean(P), ba = mean(A);
+    const vP = mean(P.map((x) => (x - bp) ** 2));
+    const vA = mean(A.map((x) => (x - ba) ** 2));
+    const cov = mean(P.map((x, i) => (x - bp) * (A[i] - ba)));
+    const corr = vP && vA ? cov / Math.sqrt(vP * vA) : NaN;
+    const vTrue = Math.max(1e-12, vA - mean(N));
+    const ceiling = vA ? Math.sqrt(vTrue / vA) : NaN;
+    return { corr, ceiling, share: corr / ceiling, slope: vP ? cov / vP : NaN, sdModel: Math.sqrt(vP), sdTrue: Math.sqrt(vTrue) };
+  };
+  const all = Array.from({ length: groups.length }, (_, i) => i);
+  const base = stat(all);
+  // Bootstrap over ENTITIES: one pitcher's starts are not independent draws.
+  const cs = [], ss = [];
+  for (let b = 0; b < 600; b++) {
+    const idx = all.map(() => (Math.random() * all.length) | 0);
+    const s = stat(idx);
+    if (Number.isFinite(s.corr)) cs.push(s.corr);
+    if (Number.isFinite(s.share)) ss.push(s.share);
+  }
+  cs.sort((a, b) => a - b);
+  ss.sort((a, b) => a - b);
+  const q = (xs) => (xs.length ? [xs[Math.floor(0.025 * xs.length)], xs[Math.floor(0.975 * xs.length)]] : [NaN, NaN]);
+  return { ...base, entities: groups.length, games: groups.reduce((a, g) => a + g.length, 0), corrCi: q(cs), shareCi: q(ss) };
+}
+
+/**
+ * `--scale`. The demonstration that MAE against the slate average is not a
+ * ranking metric: multiply every projection by a constant and score it. If a
+ * constant other than 1.0 wins, the metric is paying for a lean.
+ */
+const SCALES = [0.8, 0.9, 1.0, 1.05, 1.1, 1.2];
+
 /** Point-projection error. `naive` is the MAE of always saying the mean. */
 function pointError(items) {
   const p = items.map((x) => x.proj);
@@ -200,12 +289,14 @@ function collect(recs) {
     if (!out.has(m)) out.set(m, { pairs: [], points: [], lines: new Map(), missing: 0, n: 0 });
     return out.get(m);
   };
-  const add = (m, lines, entry, g, names = null) => {
+  // `who` is the entity a point projection belongs to — a pitcher-season or a
+  // hitter-season — which `--rank` groups by. Nothing else reads it.
+  const add = (m, lines, entry, g, names = null, who = null) => {
     const s = get(m);
     s.n++;
     const [proj, act, ps] = entry;
     if (proj == null || act == null || ps.some((p) => p == null)) { s.missing++; return; }
-    s.points.push({ proj, act, g });
+    s.points.push({ proj, act, g, who });
     lines.forEach((l, i) => {
       const q = { p: ps[i], y: act > l ? 1 : 0, g };
       s.pairs.push(q);
@@ -215,8 +306,9 @@ function collect(recs) {
     });
   };
   for (const r of recs) {
-    if (r.t === 'p') for (const [m, lines] of Object.entries(PITCHER_LINES)) add(`P ${m}`, lines, r.m[m], r.g);
-    else if (r.t === 'b') for (const [m, lines] of Object.entries(BATTER_LINES)) add(`B ${m}`, lines, r.m[m], r.g);
+    const who = r.id != null && r.d ? `${r.d.slice(0, 4)}:${r.id}` : null;
+    if (r.t === 'p') for (const [m, lines] of Object.entries(PITCHER_LINES)) add(`P ${m}`, lines, r.m[m], r.g, null, who);
+    else if (r.t === 'b') for (const [m, lines] of Object.entries(BATTER_LINES)) add(`B ${m}`, lines, r.m[m], r.g, null, who);
     else if (r.t === 'g') {
       const ml = get('G ml');
       ml.n++;
@@ -274,6 +366,17 @@ const SLICES = {
     rest: (r) => (r.rest == null ? 'unknown' : r.rest <= 4 ? 'short (<=4d)' : r.rest === 5 ? 'normal (5d)' : r.rest <= 7 ? 'long (6-7d)' : 'very long (8d+)'),
     sample: (r) => (r.ns <= 3 ? 'thin (<=3 prior starts)' : r.ns <= 10 ? 'building (4-10)' : 'established (11+)'),
     length: (r) => (r.ip == null ? 'none' : r.ip < 4.5 ? 'short outing projected (<4.5 IP)' : r.ip < 5.5 ? 'mid (4.5-5.5)' : 'full (5.5+)'),
+    /**
+     * The population the shipped model put him in (docs/OPENER-FIX.md). This
+     * is the honest cut for "are openers still unreliable?": `p.length` cuts
+     * on the model's own projected depth, which the role split CHANGED, so a
+     * before/after on `p.length` is partly a different set of starts.
+     */
+    role: (r) => (r.role == null ? 'unreadable log' : r.role),
+    /** Role crossed with projected depth: the cell the old document named. */
+    roleshort: (r) => `${r.role ?? 'unreadable'} / ${r.ip == null ? 'none' : r.ip < 4.5 ? 'short (<4.5 IP)' : 'longer (4.5+)'}`,
+    /** Layoff as the rest term itself reads it: days to his previous START. */
+    layoff: (r) => (r.rd == null ? 'unknown' : r.rd <= 5 ? 'normal (<=5d)' : r.rd <= 7 ? 'six or seven' : r.rd <= 9 ? 'eight or nine' : r.rd <= 14 ? 'ten to fourteen' : 'fifteen or more'),
     month: (r) => monthOf(r.d),
     season: (r) => r.d.slice(0, 4),
   },
@@ -647,6 +750,94 @@ if (has('totals')) {
       + `    ${(100 * pred).toFixed(1)} -> ${(100 * obs).toFixed(1)}`,
     );
   }
+}
+
+// RANKING POWER, and the metric that cannot measure it
+const ranks = {};
+if (has('rank')) {
+  console.log('\n=== RANKING POWER: correlation across players, against the ceiling ===');
+  console.log('  Read this INSTEAD of the MAE column. Across pitcher-seasons (10+ starts)');
+  console.log('  and hitter-seasons (20+ starts): the correlation between one player\'s mean');
+  console.log('  projection and his mean realised production, and the highest correlation');
+  console.log('  any projection could reach against a target measured that noisily.');
+  console.log('\n  market                    entities  games   corr [95%]           ceiling  share [95%]    slope  sd(model) sd(true)');
+  for (const [m, sm] of collect(main)) {
+    if (!sm.points.length || !sm.points[0].who) continue;
+    const r = rankStudy(sm.points, (x) => x.who, m.startsWith('P ') ? 10 : 20);
+    if (!r) continue;
+    ranks[m] = r;
+    console.log(
+      `  ${(LABEL[m] || m).padEnd(24)} ${String(r.entities).padStart(6)} ${String(r.games).padStart(7)}`
+      + `   ${r.corr.toFixed(3)} [${r.corrCi[0].toFixed(3)}, ${r.corrCi[1].toFixed(3)}]`
+      + `   ${r.ceiling.toFixed(3)}   ${r.share.toFixed(2)} [${r.shareCi[0].toFixed(2)}, ${r.shareCi[1].toFixed(2)}]`
+      + `   ${r.slope.toFixed(2)}   ${r.sdModel.toFixed(3)}    ${r.sdTrue.toFixed(3)}`,
+    );
+  }
+}
+
+if (has('scale')) {
+  console.log('\n=== WHY MAE AGAINST THE SLATE AVERAGE IS NOT A RANKING METRIC ===');
+  console.log('  Every projection multiplied by a constant, then scored on MAE. Where a');
+  console.log('  constant other than 1.00 wins, the metric is paying for a lean.');
+  console.log(`\n  market                 ${SCALES.map((x) => `x${x.toFixed(2)}`.padStart(9)).join('')}   slate avg   best`);
+  for (const [m, sm] of collect(main)) {
+    if (!sm.points.length) continue;
+    const a = sm.points.map((x) => x.act);
+    const ma = mean(a);
+    const naive = mean(a.map((x) => Math.abs(x - ma)));
+    const maes = SCALES.map((k) => mean(sm.points.map((x, i) => Math.abs(k * x.proj - a[i]))));
+    let bi = 0;
+    maes.forEach((v, i) => { if (v < maes[bi]) bi = i; });
+    console.log(
+      `  ${(LABEL[m] || m).padEnd(21)} ${maes.map((v) => v.toFixed(4).padStart(9)).join('')}`
+      + `    ${naive.toFixed(4)}   x${SCALES[bi].toFixed(2)}${SCALES[bi] === 1 ? '' : '   <- NOT 1.00'}`,
+    );
+  }
+}
+
+/**
+ * `--carry`. Not a calibration: the carry-over rate. Of the nine who started a
+ * team's last game, how many start the next one, and how many in the same
+ * slot. That is what an unconfirmed card costs, and it is a property of
+ * managers rather than of the model — which is why it is reported as a rate
+ * and never folded into a calibration figure.
+ */
+if (has('carry')) {
+  const byTeam = new Map();
+  for (const r of rows) {
+    if (r.t !== 'b' || r.tm == null) continue;
+    const k = `${r.tm}`;
+    if (!byTeam.has(k)) byTeam.set(k, new Map());
+    const games = byTeam.get(k);
+    if (!games.has(r.g)) games.set(r.g, { d: r.d, nine: new Map() });
+    games.get(r.g).nine.set(r.id, r.slot);
+  }
+  let pairs = 0;
+  let started = 0;
+  let sameSlot = 0;
+  let of = 0;
+  for (const games of byTeam.values()) {
+    const seq = [...games.values()].sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
+    for (let i = 1; i < seq.length; i++) {
+      const prev = seq[i - 1].nine;
+      const now = seq[i].nine;
+      if (prev.size < 8 || now.size < 8) continue;
+      pairs++;
+      for (const [id, slot] of prev) {
+        of++;
+        if (now.has(id)) {
+          started++;
+          if (now.get(id) === slot) sameSlot++;
+        }
+      }
+    }
+  }
+  console.log('\n=== WHAT AN UNCONFIRMED LINEUP COSTS ===');
+  console.log(
+    `  ${pairs} consecutive team-game pairs, ${of} player-slots.`
+    + `  Started again: ${((100 * started) / of).toFixed(1)}%.`
+    + `  Started again in the SAME slot: ${((100 * sameSlot) / of).toFixed(1)}%.`,
+  );
 }
 
 const slices = {};
