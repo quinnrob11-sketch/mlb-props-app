@@ -553,6 +553,110 @@ export const PITCHER_FIT = {
     amp: 0.0939,
     pass: { k: 1, hits: 1, bb: 1, er: 1 },
   },
+  /**
+   * REST (v38.2). Days since his last START. The whole argument is in
+   * docs/REST-FIX.md; in one paragraph:
+   *
+   * `docs/PITCHER-REPAIR.md` named `p.rest` "very long (8d+)" outs as the
+   * worst cell in the pitcher model, 5.30 points on 956 starts. Cut finer, the
+   * 8+ bucket is two different things stuck together. Mean actual outs against
+   * the projection, FIT split, by the DATE gap to his previous start:
+   *
+   *     gap      5      6      7    8-9  10-11  12-14  15-20    21+
+   *     n     2367   3676    741    265    192    100    103    241
+   *     bias +0.17  +0.05  -0.09  -0.10  -0.47  -0.57  -1.21  -1.21
+   *
+   * Nothing happens until ten days, and then it grows and levels off at about
+   * 1.2 outs. The 8-9 band, which is 54% July, is the ALL-STAR BREAK — a whole
+   * rotation gets nine days off and nothing is wrong with any of them — and it
+   * is unbiased. So the shape is not a smooth curve in rest; it is a floor at
+   * normal rest and a ramp that starts where a gap stops being a schedule and
+   * starts being a layoff.
+   *
+   * SHORT rest is not the mirror image, because it barely exists: 25 starts on
+   * four days or fewer in two seasons, almost all of them bullpen games the
+   * `role` line already reads. There is nothing there to fit.
+   *
+   * AND IT IS NOT A HAIRCUT, IT IS AN ASSIGNMENT. The obvious term is a flat
+   * percentage off projected depth, and it is measurably the wrong shape.
+   * Over the 10+ band, by the projection the model makes:
+   *
+   *     projected IP    4.0-4.5   4.5-5.0   5.0-5.5    5.5+
+   *     n                    50       167       202     117
+   *     outs bias         -0.41     -0.79     -1.03   -1.74
+   *
+   * The miss grows with the projection much faster than a percentage does — a
+   * 6.4% haircut is 0.9 outs at the bottom of that table and 1.1 at the top,
+   * against an observed 0.4 and 1.7. What fits is the shape the intuition
+   * predicts: the manager has planned a SHORT ASSIGNMENT, and how good the man
+   * is barely changes it. So the term is the model's own `shrinkToMean`, on
+   * the projection this time rather than on a rate: projected depth is pulled
+   * toward `anchor` by a weight that grows with the layoff. Fitted, the haircut
+   * leaves the deep end 0.81 outs long and the 4.0-4.5 band 0.67 short; the
+   * shrink leaves them -0.26 and +0.30, and takes 13% more out of the squared
+   * error on the fit split and 43% more on the validate window.
+   *
+   * It is ONE-SIDED: a start already projected at or below `anchor` is left
+   * exactly where it is, never lifted. Those starts come in 0.4 outs SHORT of
+   * their projection after a layoff, not long, so the symmetric form would
+   * push them the wrong way.
+   *
+   * `knee` / `cap` are the ramp, in days: zero at and below `knee`, one per
+   * day, flat from `cap` up. `perDay` is the fraction of the distance to the
+   * anchor closed per day of it, so the deepest pull is `perDay * (cap - knee)`
+   * — 0.66 at the shipped values, and the map never flattens.
+   *
+   * `perDay` is fitted by least squares of actual outs on the shrunk line over
+   * the `starter` class of the FIT split, the same recipe and the same split
+   * as the role lines and the bend. It is 0.0946 +- 0.0123, nearly eight
+   * standard errors from zero, and it is 0.1112 in 2025 against 0.0715 in 2026
+   * fitted independently. That is a weaker replication than the bend's and it
+   * is stated plainly in docs/REST-FIX.md: the two seasons differ by about two
+   * standard errors of their difference, so they agree on the sign and the
+   * rough size and not on the second digit. The pooled estimate ships; no
+   * shrinkage was applied, because shrinking toward zero a coefficient both
+   * seasons put six standard errors from zero would be choosing the prior over
+   * the data. The geometry was swept (knee 8-10, cap 16-20, anchor 11.5-15)
+   * and the fit is flat across the middle of it; (9, 16, 13) is where it peaks
+   * and is not at the edge of any of the three sweeps.
+   *
+   * `pass` is a switch per market, measured, not a fitted coefficient — and it
+   * is the answer to "leash or effectiveness?". It is the LEASH: over the 10+
+   * band the outing is 6.4% shorter than projected, and strikeouts (-8.1%) and
+   * hits (-6.5%) fall with it almost exactly in proportion, so both carry the
+   * whole of the depth change. Walks and earned runs do NOT: they fall only
+   * 3.2% and 3.9%, because the man who has been away a fortnight is also a
+   * little wilder per out — realised BB/out goes 0.111 at normal rest to 0.126
+   * at 15-20 days, and ER/out 0.149 to 0.194. Their own fitted amplitudes come
+   * back at 0.0062 +- 0.0057 and 0.0054 +- 0.0064, which is one standard error
+   * from zero and about one from the full pass; the effectiveness penalty and
+   * the shorter outing cancel, and the honest thing is to leave both alone.
+   * Measured both ways in docs/REST-FIX.md.
+   *
+   * Gated on the `starter` class, so like `role` and `bend` it is inert
+   * without `input.appearanceLog`. It is also inert whenever the log holds no
+   * previous start — his first outing of the season, the case the `p.rest`
+   * slice itself calls "unknown" — which is what keeps the term away from the
+   * April season-opening starts that would otherwise look like a layoff.
+   * Openers are excluded on the evidence: over 93 long-rest relief starts
+   * their own line is already right to -0.31 +- 0.29 outs.
+   */
+  rest: {
+    /** Days since his last start at or below which nothing is wrong. */
+    knee: 9,
+    /** And above which nothing more is wrong; the ramp is flat from here. */
+    cap: 16,
+    /** The short assignment a layoff pulls a start toward, in outs. */
+    anchor: 13,
+    /** Fraction of the distance to the anchor closed per day of ramp. */
+    perDay: 0.0946,
+    /**
+     * Pass-through of the depth change to the counting stats. A market missing
+     * from this object carries nothing — walks and earned runs are missing on
+     * purpose, and `{k: 1, hits: 1, bb: 1, er: 1}` measures the alternative.
+     */
+    pass: { k: 1, hits: 1 },
+  },
   progress: {
     ref: 0.8862,
     outs: -0.0257,
@@ -614,6 +718,37 @@ export function decayedRateTotals(rateLog, asOf, season, tau, offDays) {
     seen++;
   }
   return seen && totals.bf > 0 ? totals : null;
+}
+
+/**
+ * Days since his last START, read off the appearance log the model already
+ * gets. Lookahead-free by construction: nothing on or after `asOf` counts.
+ *
+ * `gs` is the games-started flag on each appearance, so a relief outing in the
+ * gap does NOT reset the clock — which is deliberate. `PITCHER_FIT.rest` and
+ * docs/REST-FIX.md measure the two separately and the START clock is the one
+ * that carries the signal.
+ *
+ * Returns null when there is no previous start to measure from (his first of
+ * the season, an unreadable log, or no log at all), which is what makes the
+ * rest term inert in exactly those cases.
+ *
+ * @param {Array}  log   `{date, gs}` per appearance; order does not matter
+ * @param {string} asOf  the start's own date
+ */
+export function restDaysFrom(log, asOf) {
+  if (!Array.isArray(log) || !log.length || !asOf) return null;
+  const now = Date.parse(`${asOf}T00:00:00Z`);
+  if (!Number.isFinite(now)) return null;
+  let last = null;
+  for (const a of log) {
+    if (!a || !a.date || !(Number(a.gs) > 0)) continue;
+    const at = Date.parse(`${a.date}T00:00:00Z`);
+    if (!Number.isFinite(at) || at >= now) continue;
+    if (last == null || at > last) last = at;
+  }
+  if (last == null) return null;
+  return Math.round((now - last) / 864e5);
 }
 
 /** Partial pooling: a weighted rate pulled toward `prior` by `strength` trials. */
@@ -1225,11 +1360,66 @@ export function projectPitcher(input) {
     ? 1 + F.bend.amp * bendWeight
     : 1;
 
+  // ---------------------------------------------------------------------
+  // 5a-iii. REST (v38.2) — how long since he last started.
+  //
+  // `PITCHER_FIT.rest` carries the argument. In one line: a gap of ten days
+  // or more to his previous start is a layoff rather than a schedule, and the
+  // model quotes those starts up to 1.2 outs too deep. `restWeight` is a ramp
+  // in days, zero at and below `knee` and flat from `cap` up, and projected
+  // depth multiplies by `1 - amp * ramp`.
+  //
+  // Gated the same three ways as the bend and for the same reasons: on the
+  // `starter` class, so it is inert without `input.appearanceLog`; on a
+  // readable previous START, so a season debut (whose gap is not a layoff) is
+  // untouched; and on `F.rest` itself, so setting it to null is exactly the
+  // model before this branch.
+  // ---------------------------------------------------------------------
+  const restDays = F.rest && role === 'starter' ? restDaysFrom(appearanceLog, date) : null;
+  /** Days of the ramp: zero at and below `knee`, one per day, flat from `cap`. */
+  const restRamp = (() => {
+    const R = F.rest;
+    if (!R || !Number.isFinite(restDays)) return 0;
+    const knee = R.knee;
+    const cap = R.cap;
+    if (!(Number.isFinite(knee) && Number.isFinite(cap) && cap > knee)) return 0;
+    if (restDays <= knee) return 0;
+    return Math.min(cap, restDays) - knee;
+  })();
+  /**
+   * How much of the distance to the anchor the layoff closes: zero off the
+   * ramp, `perDay` per day on it. Clamped to 0.9 so a mis-set `perDay` or
+   * `cap` cannot flatten the map and let two starts swap order; at the shipped
+   * values the deepest is 0.662 and the clamp never binds.
+   */
+  const restShrink = restRamp > 0 && Number.isFinite(F.rest?.perDay)
+    ? Math.min(0.9, Math.max(0, F.rest.perDay * restRamp))
+    : 0;
+
   /** The role line on its own, before the bend. */
   const projOutsRole = roleCal
     ? Math.max(3, shrinkToMean(projOuts, roleCal[0], roleCal[1]) * (roleCal[2] ?? 1) * driftFor('outs'))
     : projOutsCal;
-  const projOutsAdj = roleCal ? Math.max(3, projOutsRole * bendMul) : projOutsCal;
+  /** Everything except the layoff, which rides last. */
+  const projOutsPreRest = roleCal ? Math.max(3, projOutsRole * bendMul) : projOutsCal;
+  /**
+   * The layoff, as a ONE-SIDED shrink toward `anchor`: a start already
+   * projected at or below the anchor is left exactly alone, never lifted. The
+   * evidence for the clamp is in docs/REST-FIX.md — a long-rest start the
+   * model already projects under four innings comes in 0.4 outs SHORT of that,
+   * not long, so pulling it up would be the wrong direction.
+   */
+  const projOutsAdj = restShrink > 0 && Number.isFinite(F.rest?.anchor) && projOutsPreRest > F.rest.anchor
+    ? Math.max(3, F.rest.anchor + (1 - restShrink) * (projOutsPreRest - F.rest.anchor))
+    : projOutsPreRest;
+  /**
+   * What the layoff did to projected depth, as a ratio. Exactly 1 whenever the
+   * term did not fire, which is what makes every counting stat below a no-op
+   * without `input.appearanceLog` or without a previous start to measure from.
+   */
+  const restMul = projOutsPreRest > 0 && Number.isFinite(projOutsAdj)
+    ? projOutsAdj / projOutsPreRest
+    : 1;
 
   /**
    * What the ROLE LINE did to projected depth, as a ratio — the bend is not in
@@ -1271,11 +1461,25 @@ export function projectPitcher(input) {
     const p = F.bend?.pass?.[market];
     return Number.isFinite(p) ? p : 0;
   };
+  /**
+   * How much of the REST shrink this market carries. Strikeouts and hits carry
+   * the whole of it because the long-rest start is a shorter assignment at an
+   * unchanged rate; walks and earned runs are absent from `F.rest.pass` and so
+   * carry nothing, because per out they get measurably worse over the same
+   * band and the two effects cancel. See `PITCHER_FIT.rest` and
+   * docs/REST-FIX.md, where both switches are measured.
+   */
+  const restPassFor = (market) => {
+    const p = F.rest?.pass?.[market];
+    return Number.isFinite(p) ? p : 0;
+  };
   const carry = (value, market) => {
     const pass = passFor(market);
     const withRole = pass ? value * roleShift ** pass : value;
     const bp = bendMul !== 1 ? bendPassFor(market) : 0;
-    return bp ? withRole * bendMul ** bp : withRole;
+    const withBend = bp ? withRole * bendMul ** bp : withRole;
+    const rp = restMul !== 1 ? restPassFor(market) : 0;
+    return rp ? withBend * restMul ** rp : withBend;
   };
 
   const projHAdj = carry(calibrated(projH, 0.2, 'hits', 4.88, 0.89, T.hLevel), 'hits');
