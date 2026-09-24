@@ -397,3 +397,136 @@ test('the outs distribution still integrates to the printed projection on the ro
   }
   assert.ok(Math.abs(mean - p.projOuts) < 0.02, `${mean} vs ${p.projOuts}`);
 });
+
+// ── v38.1: the repair (docs/PITCHER-REPAIR.md) ──────────────────────────────
+//
+// Two terms. `PITCHER_FIT.bend` puts a tent on the raw projection inside the
+// starter line, where the straight shrink under-projects; and `role.pass.hits`
+// becomes per-class, so hits allowed stops inheriting the starter line's
+// re-slope on top of its own calibration. Both are gated on the same input the
+// role term is, so a board without an appearance log is still exactly v37 —
+// pinned by 'without an appearance log the role term is inert' above, which
+// runs with `bend` shipped and live.
+
+/** A start the raw projection puts inside the bend window, on the starter line. */
+const inWindow = (over = {}) => base({
+  date: '2026-07-01',
+  gameLog: Array.from({ length: 5 }, (_, i) => {
+    const d = new Date(Date.parse('2026-07-01T00:00:00Z') - (5 - i) * 5 * 864e5);
+    return { date: d.toISOString().slice(0, 10), ip: 3.0, pitches: 55, bf: 14, k: 5 };
+  }),
+  appearanceLog: appearances('2026-07-01', 3, 15),
+  ...over,
+});
+const noBend = { ...PITCHER_FIT, bend: null };
+
+test('without `bend` the model is exactly v38, and `bend` needs the starter class', () => {
+  // A start inside the window is the only place the two can differ...
+  const inside = inWindow();
+  assert.notEqual(projectPitcher(inside).projOuts, projectPitcher({ ...inside, fit: noBend }).projOuts);
+  // ...and every way of switching the term off lands back on v38, to the bit.
+  for (const off of [
+    null,
+    { ...PITCHER_FIT.bend, amp: 0 },
+    { ...PITCHER_FIT.bend, amp: null },
+    { ...PITCHER_FIT.bend, lo: 14, peak: 11.5, hi: 10 },
+  ]) {
+    assert.deepEqual(
+      snapshot(projectPitcher({ ...inside, fit: { ...PITCHER_FIT, bend: off } })),
+      snapshot(projectPitcher({ ...inside, fit: noBend })),
+      `bend ${JSON.stringify(off)} must be inert`,
+    );
+  }
+  // No appearance log: no class, so no bend — and no role term either.
+  const { appearanceLog, ...blind } = inside;
+  assert.deepEqual(
+    snapshot(projectPitcher(blind)),
+    snapshot(projectPitcher({ ...blind, fit: { ...PITCHER_FIT, role: null, bend: null } })),
+  );
+  // An opener or a debut has its own fitted line and is not bent.
+  for (const log of [appearances('2026-07-01', 3, 3), []]) {
+    assert.deepEqual(
+      snapshot(projectPitcher({ ...inside, appearanceLog: log })),
+      snapshot(projectPitcher({ ...inside, appearanceLog: log, fit: noBend })),
+      'only the starter class is bent',
+    );
+  }
+});
+
+test('the bend is local: outside its window nothing moves, and it peaks where it is told', () => {
+  const at = (ip, pitches, fit) => projectPitcher({
+    ...inWindow({
+      gameLog: Array.from({ length: 5 }, (_, i) => {
+        const d = new Date(Date.parse('2026-07-01T00:00:00Z') - (5 - i) * 5 * 864e5);
+        return { date: d.toISOString().slice(0, 10), ip, pitches, bf: Math.round(pitches / 4), k: 5 };
+      }),
+    }),
+    ...(fit ? { fit } : {}),
+  });
+  // A deep start: raw well above `hi`, so the tent is zero and nothing moves.
+  assert.equal(at(5.2, 95).projOuts, at(5.2, 95, noBend).projOuts);
+  assert.equal(at(4.4, 78).projOuts, at(4.4, 78, noBend).projOuts);
+  // Inside it, the lift is there and it is the whole tent at the peak.
+  const lift = (ip, p) => at(ip, p).projOuts / at(ip, p, noBend).projOuts;
+  assert.ok(lift(3.0, 55) > 1.05, `${lift(3.0, 55)}`);
+  assert.ok(lift(3.0, 55) > lift(4.0, 70), 'the lift falls away toward the top of the window');
+  assert.ok(lift(4.0, 70) > 1, `${lift(4.0, 70)}`);
+});
+
+test('the bent map from raw depth to projected depth is still monotone', () => {
+  // Two starts cannot swap order: a longer raw projection must never come out
+  // shorter. Swept across and well beyond the window.
+  let prev = -Infinity;
+  for (let pitches = 30; pitches <= 120; pitches += 1) {
+    const p = projectPitcher(inWindow({
+      gameLog: Array.from({ length: 5 }, (_, i) => {
+        const d = new Date(Date.parse('2026-07-01T00:00:00Z') - (5 - i) * 5 * 864e5);
+        return { date: d.toISOString().slice(0, 10), ip: pitches / 18, pitches, bf: Math.round(pitches / 4), k: 5 };
+      }),
+    }));
+    assert.ok(p.projOuts >= prev - 1e-9, `projOuts fell at ${pitches} pitches: ${p.projOuts} < ${prev}`);
+    prev = p.projOuts;
+  }
+});
+
+test('`bend.pass` is a switch, and every market carries the whole of the bend', () => {
+  const inside = inWindow();
+  const off = projectPitcher({ ...inside, fit: noBend });
+  const outsOnly = projectPitcher({
+    ...inside,
+    fit: { ...PITCHER_FIT, bend: { ...PITCHER_FIT.bend, pass: {} } },
+  });
+  assert.notEqual(outsOnly.projOuts, off.projOuts);
+  for (const m of ['projK', 'projH', 'projBB', 'projER']) {
+    assert.equal(outsOnly[m], off[m], `${m} must not move with bend.pass empty`);
+  }
+  const on = projectPitcher(inside);
+  const ratio = on.projOuts / off.projOuts;
+  for (const m of ['projK', 'projH', 'projBB', 'projER']) {
+    assert.ok(Math.abs(on[m] / off[m] - ratio) < 1e-9, `${m}: ${on[m] / off[m]} vs ${ratio}`);
+  }
+});
+
+test('hits no longer inherit the starter line, and still inherit an opener one', () => {
+  const v37 = (input) => projectPitcher({ ...input, fit: { ...PITCHER_FIT, role: null, bend: null } });
+  // A starter outside the bend window: the role line moves outs, and hits stay
+  // exactly where v37's own calibration put them.
+  const starter = base({ date: '2026-07-01', appearanceLog: appearances('2026-07-01', 3, 15) });
+  const shipped = projectPitcher(starter);
+  assert.notEqual(shipped.projOuts, v37(starter).projOuts, 'outs must still move');
+  assert.equal(shipped.projH, v37(starter).projH, 'hits must not inherit the starter line');
+  // Strikeouts, walks and earned runs still do.
+  for (const m of ['projK', 'projBB', 'projER']) {
+    assert.notEqual(shipped[m], v37(starter)[m], `${m} still carries the starter line`);
+  }
+  // An opener's hits do inherit it: his own curve was never fitted for him.
+  const opener = base({ date: '2026-07-01', appearanceLog: appearances('2026-07-01', 6, 3, 2) });
+  const asOpener = projectPitcher(opener);
+  const ratio = asOpener.projOuts / v37(opener).projOuts;
+  assert.ok(ratio < 0.95, `an opener should be shortened: ${ratio}`);
+  assert.ok(Math.abs(asOpener.projH / v37(opener).projH - ratio) < 1e-9, 'an opener carries the whole of it');
+  // And `pass.hits: 1` puts the starter back on v38 exactly.
+  const v38Hits = { ...PITCHER_FIT, role: { ...PITCHER_FIT.role, pass: { ...PITCHER_FIT.role.pass, hits: 1 } } };
+  const back = projectPitcher({ ...starter, fit: v38Hits });
+  assert.ok(Math.abs(back.projH / v37(starter).projH - back.projOuts / v37(starter).projOuts) < 1e-9);
+});
