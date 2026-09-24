@@ -61,9 +61,22 @@ async function get(url) {
   if (wait) await new Promise((r) => setTimeout(r, wait));
   lastCall = Date.now();
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    const res = await fetch(url);
-    if (res.ok) return res.json();
-    if (res.status !== 429 && res.status < 500) return null;
+    try {
+      const res = await fetch(url);
+      if (res.ok) return res.json();
+      if (res.status !== 429 && res.status < 500) return null;
+    } catch (err) {
+      // A watcher that runs for eight hours WILL meet a transient network
+      // failure, and on 2026-09-23 one DNS miss on statsapi.mlb.com killed it
+      // outright four hours in. fetch rejects rather than returning a status,
+      // so retrying only on status codes did not cover it. Every attempt is
+      // now retried the same way and a run of failures returns null, which
+      // every caller already treats as "nothing to see this sweep".
+      if (attempt === 3) {
+        log(`network: ${String(err?.cause?.code || err?.message || err)} — skipping this sweep`);
+        return null;
+      }
+    }
     await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
   }
   return null;
@@ -197,7 +210,15 @@ log(`${ladder.size} pitchers on the Kalshi strikeout board`);
 
 let ticks = 0;
 for (;;) {
-  const { live, chances } = await sweep(ladder, date);
+  let live = 0;
+  let chances = 0;
+  try {
+    ({ live, chances } = await sweep(ladder, date));
+  } catch (err) {
+    // Same lesson one level up: losing a sweep is cheap, losing the night is
+    // not, and the chances this watches for last about sixty seconds.
+    log(`sweep failed: ${String(err?.message || err)} — continuing`);
+  }
   ticks += 1;
   if (ticks % 15 === 1 || chances)
     log(`${live} live starter(s), ${chances} new chance(s) this sweep, ${seen.size} today`);
