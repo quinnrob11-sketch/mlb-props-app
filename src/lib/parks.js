@@ -154,3 +154,65 @@ export function parkFactor(park, key, weight = 0.7) {
   const centred = factors[key] / (PARK_FACTOR_MEANS[key] || 100);
   return 1 + weight * (centred - 1);
 }
+
+/**
+ * How a park's own geometry answers the wind, over and above the league-wide
+ * wind coefficient the game model already applies.
+ *
+ * FITTED, not published. `tools/park-fit.mjs` gives every park with 20 or more
+ * games in a wind direction its own pair of multipliers, estimated from the
+ * game model's own residuals on 2025 plus 2026 through 08-09, and then pools
+ * them with a spike-and-slab prior: a park is neutral unless the evidence says
+ * otherwise, and the prior's own parameters (P(a park has a wind response of
+ * its own) = 0.15, slab sd 0.130 in log-runs) are fitted from the 22 parks
+ * rather than chosen. A park then has to clear one more bar before it is
+ * written here — fitted on 2025 alone it must improve 2026, and fitted on 2026
+ * alone it must improve 2025.
+ *
+ * ONE PARK CLEARS IT, and it is not close. At Wrigley, over the 140 games
+ * outside the holdout, the model reads **3.22 runs low** when MLB reports the
+ * wind blowing out and **1.01 runs high** when it reports it blowing in; the
+ * raw box scores say 13.58 runs in the 31 games listed "Out To CF" against
+ * 6.97 in the 38 listed "In From CF". Every other outdoor park is flat to
+ * within a tenth of a run in the same cut (out -0.04, across -0.05, in +0.13),
+ * which is why the league-wide `windCoef` is left exactly as it was. The
+ * effect replicates independently in both seasons (out +36.6% fitted on 2025,
+ * +33.0% on 2026) and its held-out log-likelihood gain is +8.0 and +8.6.
+ *
+ * The numbers here are the pooled posterior means, so they sit inside the raw
+ * ones: out x1.248 against a raw x1.318, in x0.912 against a raw x0.889.
+ *
+ * Reproduce with:
+ *   node tools/park-fit.mjs --acc .backtest-cache/acc_g_before.ndjson \
+ *     --features .backtest-cache/features_2025.json \
+ *     --features .backtest-cache/features_2026.json
+ *
+ * See docs/PARK-FIX.md. A park that is not in this table, and a game whose
+ * wind is calm, across the field, indoors or simply not reported, get exactly
+ * 1 and therefore exactly the behaviour this file had before the table existed.
+ *
+ * @type {Record<string, {out?: number, in?: number}>}
+ */
+export const PARK_WIND = {
+  'Wrigley Field': { out: 1.248, in: 0.912 },
+};
+
+/**
+ * The park-specific wind multiplier for one game.
+ *
+ * Takes the SIGN rather than the weather, so that this file and
+ * `windSign` in src/model/game.js cannot drift apart on how MLB's free-text
+ * wind string is read: +1 is out of the park, -1 is in from it, and 0 — calm,
+ * across the field, indoors, unknown, or a forecast that carries no direction
+ * at all — returns 1 and changes nothing.
+ *
+ * @param {string} park - Venue name, matched through `PARK_ALIASES`.
+ * @param {number} sign - +1 out, -1 in, 0 / null / undefined for neither.
+ * @returns {number} Multiplier to scale a run projection by (dimensionless).
+ */
+export function parkWindFactor(park, sign) {
+  if (!sign) return 1;
+  const w = PARK_WIND[park] ?? PARK_WIND[PARK_ALIASES[park]];
+  if (!w) return 1;
+  return (sign > 0 ? w.out : w.in) ?? 1;
+}

@@ -51,6 +51,13 @@ if (FIT) process.stderr.write(`fit override: ${JSON.stringify(FIT)}\n`);
  */
 const V1 = process.argv.includes('--v1');
 if (V1) process.stderr.write('replaying the FROZEN v36.1 model (tools/pitcher-model-v1.mjs)\n');
+/**
+ * `--game-inputs '{"parkExp":2.1}'` overrides `GAME_INPUTS` for a games
+ * extract, the same way `--tuning` overrides the batter and pitcher models —
+ * so "what would the park have been worth at a different exponent?" is a
+ * measurement rather than an argument. It changes nothing that ships.
+ */
+const GAME_INPUTS_OVERRIDE = arg('game-inputs', null) ? JSON.parse(arg('game-inputs')) : null;
 
 /** P(X > line) at every line in the ladder, rounded to five places. */
 const ladder = (dist, lines) => lines.map((l) => Math.round(1e5 * dist(l)) / 1e5);
@@ -182,6 +189,13 @@ export const TOTAL_LINES = [6.5, 7.5, 8.5, 9.5, 10.5];
 export const SPREAD_POINTS = [-1.5, 1.5];
 
 async function extractGames() {
+  if (GAME_INPUTS_OVERRIDE) {
+    // Mutated before the replay imports the model, so every projection below
+    // is priced at the overridden value.
+    const { GAME_INPUTS } = await import('../src/model/game.js');
+    Object.assign(GAME_INPUTS, GAME_INPUTS_OVERRIDE);
+    process.stderr.write(`GAME_INPUTS override: ${JSON.stringify(GAME_INPUTS_OVERRIDE)}\n`);
+  }
   const { buildGames } = await import('./backtest-games-v2.mjs');
   const { games, skip } = buildGames();
   process.stderr.write(`${games.length} games, skipped ${JSON.stringify(skip)}\n`);
