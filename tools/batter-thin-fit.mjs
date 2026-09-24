@@ -92,10 +92,23 @@ if (HOLD) {
 export const bookOf = (input, w25 = 0.6) =>
   (input.season26?.plateAppearances || 0) + w25 * (input.season25?.plateAppearances || 0);
 
-const GROUPS = {
-  'thin (<50 PA)': (r) => (r.input.season26?.plateAppearances || 0) < 50,
-  'regular (50+ PA)': (r) => (r.input.season26?.plateAppearances || 0) >= 50,
-};
+const pa26Of = (r) => r.input.season26?.plateAppearances || 0;
+
+// Default: the two groups docs/BATTER-CALIBRATION-FIX.md reported. `--bands`
+// switches to the three plate-appearance bands docs/ACCURACY.md slices on
+// (`sample` in tools/accuracy-report.mjs), which is what a two-sided
+// playing-time tilt has to be judged on — a fix that only moves error from one
+// band to another is visible as exactly that.
+const GROUPS = process.argv.includes('--bands')
+  ? {
+    'thin (<50 PA)': (r) => pa26Of(r) < 50,
+    'building (50-199)': (r) => pa26Of(r) >= 50 && pa26Of(r) < 200,
+    'established (200+)': (r) => pa26Of(r) >= 200,
+  }
+  : {
+    'thin (<50 PA)': (r) => pa26Of(r) < 50,
+    'regular (50+ PA)': (r) => pa26Of(r) >= 50,
+  };
 
 // ── scoring ─────────────────────────────────────────────────────────────────
 const mean = (xs) => xs.reduce((a, b) => a + b, 0) / (xs.length || 1);
@@ -140,6 +153,273 @@ function bookTable(subset) {
     }).join('');
     console.log(`  ${`${b.lo}-${b.hi === Infinity ? '' : b.hi}`.padEnd(12)} ${String(b.n).padStart(7)} ${(b.pa / b.n).toFixed(2).padStart(6)}  ${cells}`);
   }
+}
+
+/**
+ * THE PLAYING-TIME CURVE, AND WHICH AXIS CARRIES IT.
+ *
+ * Two candidate axes, both known before first pitch: how many plate
+ * appearances the hitter has this season, and how many he has PER GAME he has
+ * played. For each bucket this prints
+ *
+ *   PAratio    total actual plate appearances / total projected — is the model
+ *              putting him at the plate the right number of times;
+ *   per market the RATE ratio, actual per actual-PA over projected per
+ *              projected-PA — what is left once the plate appearances are
+ *              taken out.
+ *
+ * Splitting it this way is the whole point: a playing-time error that is
+ * entirely in PAratio is a different defect, with a different fix, from one
+ * that survives in the rates.
+ *
+ *   node tools/batter-thin-fit.mjs --rows .work/rows_2025.ndjson --duty-table
+ */
+function dutyTable(subset, projs) {
+  const SHOW = ['hits', 'tb', 'runs', 'rbi', 'hrr', 'singles', 'k'];
+  const AXES = [
+    ['PA this season', (r) => pa26Of(r), [0, 25, 50, 100, 150, 200, 250, 300, 375, 450, 525, Infinity]],
+    ['PA per game played', (r) => {
+      const g = r.input.season26?.gamesPlayed || 0;
+      return g >= 5 ? pa26Of(r) / g : NaN;
+    }, [0, 2, 2.6, 3, 3.3, 3.6, 3.85, 4.05, 4.25, 4.45, Infinity]],
+  ];
+  for (const [name, axis, edges] of AXES) {
+    const buckets = edges.slice(0, -1).map((lo, i) => ({ lo, hi: edges[i + 1], n: 0, aPa: 0, pPa: 0, m: {} }));
+    for (let i = 0; i < subset.length; i++) {
+      const v = axis(subset[i]);
+      const p = projs[i];
+      if (!Number.isFinite(v) || !Number.isFinite(p.projH)) continue;
+      const b = buckets.find((x) => v >= x.lo && v < x.hi);
+      if (!b) continue;
+      b.n++; b.aPa += subset[i].actual.pa; b.pPa += p.pa;
+      for (const m of SHOW) {
+        const s = (b.m[m] ||= { proj: 0, act: 0 });
+        s.proj += p[MARKETS[m].proj]; s.act += subset[i].actual[m];
+      }
+    }
+    console.log(`\n=== playing-time curve, axis = ${name} ===`);
+    console.log('    (PAratio > 1 means the model puts him at the plate too FEW times; rate ratios are net of that)');
+    console.log(`  ${'band'.padEnd(11)} ${'n'.padStart(6)} ${'PAratio'.padStart(8)}  ` + SHOW.map((m) => m.padStart(9)).join(''));
+    for (const b of buckets) {
+      if (!b.n) continue;
+      const cells = SHOW.map((m) => (((b.m[m].act / b.aPa) / (b.m[m].proj / b.pPa))).toFixed(3).padStart(9)).join('');
+      console.log(`  ${`${b.lo}-${b.hi === Infinity ? '' : b.hi}`.padEnd(11)} ${String(b.n).padStart(6)} ${(b.aPa / b.pPa).toFixed(4).padStart(8)}  ${cells}`);
+    }
+  }
+}
+
+/**
+ * FIT THE DUTY TILT, BY REGRESSION RATHER THAN BY GRID.
+ *
+ * The thing being fitted is one straight line, so gridding it is both slower
+ * and worse than solving it. With `z` the hitter's games-shrunk plate
+ * appearances per game (clamped), the term says
+ *
+ *     projected PA  ->  projected PA x (1 + s (z - pivot))
+ *
+ * where z is `w x clamp(PA/G, lo, hi)` and w is the games weight, so the whole
+ * term expands to
+ *
+ *     projected PA + s (projected PA x w x clamp) - s pivot (projected PA x w)
+ *
+ * Regressing the RESIDUAL (actual - projected PA) on those last two columns
+ * with no intercept therefore returns s directly as the first coefficient and
+ * -s x pivot as the second, so pivot is the ratio of the two. There is nothing
+ * left to choose: the level and the tilt come out of one solve, which is the
+ * point — fitted separately they trade against each other, and a grid over the
+ * two is degenerate for exactly that reason (a pooled plate-appearance gap of
+ * zero is reachable at every slope by moving the pivot).
+ *
+ * `lo`, `hi` and `priorGames` are NOT solved here; they say where the line
+ * stops being a line and how fast it fades in, so each candidate triple is
+ * fitted separately and judged on the residual: the biggest remaining
+ * |actual/projected - 1| over the duty buckets, and the n-weighted mean of it.
+ * Folds are by hitter, as everywhere else in this file.
+ */
+function dutyFit(subset, candidates, k = 5) {
+  const BUCKETS = [0, 2, 2.6, 3, 3.3, 3.6, 3.85, 4.05, 4.25, 4.45, Infinity];
+  const foldOf = new Map();
+  let next = 0;
+  const fold = subset.map((r) => {
+    const key = `${r.d.slice(0, 4)}:${r.id}`;
+    if (!foldOf.has(key)) foldOf.set(key, next++ % k);
+    return foldOf.get(key);
+  });
+  console.log('\n=== solving the duty tilt on the plate appearances (no outcome market is looked at here) ===');
+  console.log(`  ${'lo   hi   priorGames'.padEnd(22)} ${'slope'.padStart(8)} ${'pivot'.padStart(7)}  ${'worst bucket'.padStart(13)} ${'mean |err|'.padStart(11)}   ${'slope by fold'.padStart(13)}`);
+  for (const c of candidates) {
+    const base = subset.map((r) => projectBatter({ ...r.input, tuning: { duty: { pa: 0 } } }));
+    const z = subset.map((r) => {
+      const g = r.input.season26?.gamesPlayed || 0;
+      if (!g) return null;   // the term is inert here, so the row carries no information about it
+      const w = g / (g + c.priorGames);
+      return { w, wc: w * Math.min(c.hi, Math.max(c.lo, pa26Of(r) / g)) };
+    });
+    const solve = (idx) => {
+      let s11 = 0, s12 = 0, s22 = 0, y1 = 0, y2 = 0;
+      for (const i of idx) {
+        const p = base[i].pa;
+        if (!Number.isFinite(p) || !z[i]) continue;
+        const x1 = p * z[i].wc, x2 = p * z[i].w, y = subset[i].actual.pa - p;
+        s11 += x1 * x1; s12 += x1 * x2; s22 += x2 * x2; y1 += x1 * y; y2 += x2 * y;
+      }
+      const det = s11 * s22 - s12 * s12;
+      if (!det) return null;
+      const s = (s22 * y1 - s12 * y2) / det;
+      const b = (s11 * y2 - s12 * y1) / det;
+      return { s, pivot: -b / s };
+    };
+    const all = subset.map((_, i) => i);
+    const full = solve(all);
+    if (!full) continue;
+    const perFold = [];
+    for (let f = 0; f < k; f++) {
+      const fit = solve(all.filter((i) => fold[i] !== f));
+      if (fit) perFold.push(fit.s);
+    }
+    // Residual: apply the solved term and re-measure the buckets.
+    const tune = { duty: { pa: full.s, pivot: full.pivot, lo: c.lo, hi: c.hi, priorGames: c.priorGames } };
+    const buckets = BUCKETS.slice(0, -1).map((lo, i) => ({ lo, hi: BUCKETS[i + 1], n: 0, a: 0, p: 0 }));
+    for (let i = 0; i < subset.length; i++) {
+      const g = subset[i].input.season26?.gamesPlayed || 0;
+      if (g < 5) continue;
+      const v = pa26Of(subset[i]) / g;
+      const b = buckets.find((x) => v >= x.lo && v < x.hi);
+      const p = projectBatter({ ...subset[i].input, tuning: tune });
+      if (!b || !Number.isFinite(p.pa)) continue;
+      b.n++; b.a += subset[i].actual.pa; b.p += p.pa;
+    }
+    const errs = buckets.filter((b) => b.n).map((b) => ({ n: b.n, e: Math.abs(b.a / b.p - 1) }));
+    const worst = Math.max(...errs.map((x) => x.e));
+    const wmean = errs.reduce((s, x) => s + x.n * x.e, 0) / errs.reduce((s, x) => s + x.n, 0);
+    console.log(
+      `  ${`${c.lo}  ${c.hi}  ${c.priorGames}`.padEnd(22)} ${full.s.toFixed(4).padStart(8)} ${full.pivot.toFixed(3).padStart(7)}`
+      + `  ${(100 * worst).toFixed(2).padStart(12)}% ${(100 * wmean).toFixed(3).padStart(10)}%   ${perFold.map((x) => x.toFixed(3)).join(' ')}`,
+    );
+  }
+}
+
+/**
+ * IS THE LINEUP-SLOT TERM POINTING THE WRONG WAY?
+ *
+ * docs/BATTER-CALIBRATION-FIX.md section 3 regressed the outcome on three
+ * axes — the hitter, "lineup slot / side", and park + starter — and the middle
+ * one came out at -0.27 on hits. That middle axis is NOT the slot term. It is
+ * everything that moves within a hitter once park and the starter are neutral,
+ * which is the slot, the side, AND his season line updating underneath him
+ * game by game (and now the thin ramp and the duty tilt riding on it). Those
+ * are three different things and they have to be separated before the sign
+ * means anything.
+ *
+ * This re-projects each row three times to cut them apart exactly:
+ *
+ *   base    the row as it is;
+ *   refSlot the same row moved to slot 5 at home — the slot/side axis is
+ *           base minus this, and it is the only thing the model's lineup-slot
+ *           arithmetic controls;
+ *   drift   refSlot minus the hitter's own mean refSlot — what his own line
+ *           did over the season, which no slot term is responsible for.
+ *
+ * Then one least-squares fit of the outcome on [hitter mean, slot/side,
+ * drift, park+starter]. A coefficient of 1 means that axis is scaled right, 0
+ * that it is worth nothing, below 0 that it is worth less than nothing.
+ *
+ * AND A SYNTHETIC NULL, because a negative coefficient on the drift axis is
+ * exactly what a bad measurement would also produce. Controlling for a
+ * hitter's own season-average projection is close to controlling for his
+ * realised season mean, and conditioning on a total forces the stretches
+ * either side of it to offset — which would manufacture a negative drift
+ * coefficient out of a model that is perfectly right. So the same regression
+ * is run a second time with every outcome REPLACED by a draw from the model's
+ * own distribution for that row. The model is then correct by construction and
+ * every coefficient must come back at 1; whatever it actually returns is the
+ * measurement's own bias, and the real numbers can only be read against it.
+ */
+function slotStudy(subset, projs, tuning = {}) {
+  // The two re-projections must carry the SAME tuning as `projs`, or the
+  // "park + starter" column is the difference between two different models
+  // rather than the difference the park and the starter make.
+  const NOCTX = { ...tuning, parkStrength: 0, pitcherInfluence: 0 };
+  const plain = subset.map((r) => projectBatter({ ...r.input, tuning: NOCTX }));
+  const refSlot = subset.map((r) => projectBatter({ ...r.input, slot: 5, isAway: false, tuning: NOCTX }));
+  const byHitter = new Map();
+  for (let i = 0; i < subset.length; i++) {
+    const key = `${subset[i].d.slice(0, 4)}:${subset[i].id}`;
+    if (!byHitter.has(key)) byHitter.set(key, []);
+    byHitter.get(key).push(i);
+  }
+  console.log('\n=== the lineup-slot axis, separated from the season drift it was mixed with ===');
+  console.log('    (coefficient 1 = that axis is scaled right; sd = how much of the projection\'s spread it carries)');
+  console.log('    NULL = the same regression with the outcomes redrawn from the model, where 1 is the right answer');
+  console.log('  market        hitter         slot/side      season drift    park+starter');
+  // A reproducible uniform stream, so the null is identical on every run.
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const draw = (dist, max) => {
+    const u = rnd();
+    for (let k = 0; k <= max; k++) if (dist(k + 0.5) <= u) return k;
+    return max;
+  };
+  const out = {};
+  for (const [m, spec] of Object.entries(MARKETS)) {
+    if (m === 'pa') continue;
+    const X = [[], [], [], []]; const Y = []; const YN = [];
+    for (const idx of byHitter.values()) {
+      const use = idx.filter((i) => Number.isFinite(projs[i][spec.proj]) && Number.isFinite(refSlot[i][spec.proj]));
+      if (use.length < 20) continue;
+      const mh = mean(use.map((i) => refSlot[i][spec.proj]));
+      for (const i of use) {
+        X[0].push(mh);                                             // who he is
+        X[1].push(plain[i][spec.proj] - refSlot[i][spec.proj]);    // slot + side, exactly
+        X[2].push(refSlot[i][spec.proj] - mh);                     // his line drifting
+        X[3].push(projs[i][spec.proj] - plain[i][spec.proj]);      // park + starter
+        Y.push(subset[i].actual[m]);
+        YN.push(draw(projs[i].dist[m], spec.max));
+      }
+    }
+    if (Y.length < 1000) continue;
+    const sd = X.map((x) => Math.sqrt(mean(x.map((v) => (v - mean(x)) ** 2))));
+    // Stolen bases are per GAME, so the slot and context columns are all zero
+    // for them and the normal equations are singular. Say so instead of
+    // printing NaN.
+    if (sd.some((v) => !(v > 0))) { console.log(`  ${m.padEnd(9)} (no spread on one axis — not identified)`); continue; }
+    const beta = lstsq(X, Y);
+    const bnull = lstsq(X, YN);
+    out[m] = { beta, sd, bnull };
+    console.log(
+      `  ${m.padEnd(9)} ` + [0, 1, 2, 3].map((a) => `${beta[a].toFixed(2).padStart(7)} (sd ${sd[a].toFixed(3)})`).join(' '),
+    );
+    console.log(
+      `  ${'  null'.padEnd(9)} ` + [0, 1, 2, 3].map((a) => `${bnull[a].toFixed(2).padStart(7)}           `).join(' '),
+    );
+  }
+  return out;
+}
+
+/** Least squares of Y on the columns of X (each an array), with an intercept. */
+function lstsq(X, Y) {
+  const k = X.length;
+  const mu = X.map((x) => mean(x));
+  const my = mean(Y);
+  const M = [];
+  for (let a = 0; a < k; a++) {
+    const row = [];
+    for (let c = 0; c < k; c++) row.push(mean(X[a].map((x, i) => (x - mu[a]) * (X[c][i] - mu[c]))));
+    row.push(mean(X[a].map((x, i) => (x - mu[a]) * (Y[i] - my))));
+    M.push(row);
+  }
+  for (let c = 0; c < k; c++) {
+    let piv = c;
+    for (let r = c + 1; r < k; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    [M[c], M[piv]] = [M[piv], M[c]];
+    if (!M[c][c]) continue;
+    for (let r = 0; r < k; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      for (let j = c; j <= k; j++) M[r][j] -= f * M[c][j];
+    }
+  }
+  return M.map((row, i) => row[k] / row[i]);
 }
 
 /**
@@ -388,6 +668,66 @@ function oracleProjections(subset, projs) {
   });
 }
 
+/**
+ * K-FOLD CROSS-VALIDATION WITHIN THE FIT WINDOW, GROUPED BY HITTER.
+ *
+ * The September holdout is spent (docs/BATTER-CALIBRATION-FIX.md looked at
+ * it), so a number that is honest about out-of-sample behaviour has to come
+ * from somewhere else. This is the second of the two ways to get one: split
+ * the fit window K ways, pick the best setting on K-1 folds and score it on
+ * the one left out, K times, and report the average of the K held-out scores.
+ *
+ * THE FOLDS ARE BY HITTER, not by row or by date. The same hitter appears in
+ * 150 rows of a season; splitting rows at random would put his April in the
+ * training fold and his May in the test fold, and the thing being fitted is a
+ * property OF THE HITTER, so that would leak. Every row of a hitter-season
+ * lands in the same fold.
+ *
+ * What it reports per grid entry is the mean held-out score. The setting with
+ * the best cross-validated score is the one to take; the in-sample score of
+ * that same setting is printed beside it, and the gap between them is the
+ * optimism this exists to measure.
+ */
+function crossValidate(subset, grid, k, objective) {
+  const foldOf = new Map();
+  let next = 0;
+  const fold = subset.map((r) => {
+    const key = `${r.d.slice(0, 4)}:${r.id}`;
+    if (!foldOf.has(key)) foldOf.set(key, next++ % k);
+    return foldOf.get(key);
+  });
+  console.log(`\n=== ${k}-fold cross-validation inside the fit window, folds grouped by hitter (${foldOf.size} hitter-seasons) ===`);
+  console.log(`  objective: ${objective}`);
+  console.log(`  ${'setting'.padEnd(26)} ${'held out'.padStart(11)} ${'in sample'.padStart(11)} ${'optimism'.padStart(9)}   per-fold held out`);
+  const rank = [];
+  for (const cfg of grid) {
+    const { label = JSON.stringify(cfg), ...tuning } = cfg;
+    const projs = subset.map((r) => projectBatter(Object.keys(tuning).length ? { ...r.input, tuning } : r.input));
+    const score = (idx) => {
+      const s = scoreRows(idx.map((i) => subset[i]), idx.map((i) => projs[i]));
+      if (objective === 'paGap') return Math.abs(s.pa ? s.pa.gap : 0);
+      if (objective === 'logLoss') return Object.entries(s).reduce((a, [m, r]) => a + (m === 'pa' ? 0 : r.logLoss), 0);
+      // Default: the size of the calibration gap the defect is measured in,
+      // summed over the markets it lives in, so one cannot be bought with
+      // another.
+      return ['hits', 'tb', 'runs', 'rbi', 'hrr', 'singles', 'k']
+        .reduce((a, m) => a + (s[m] ? Math.abs(s[m].gap) : 0), 0);
+    };
+    const all = subset.map((_, i) => i);
+    const per = [];
+    for (let f = 0; f < k; f++) per.push(score(all.filter((i) => fold[i] === f)));
+    const held = mean(per);
+    const ins = score(all);
+    rank.push([held, label]);
+    console.log(
+      `  ${label.padEnd(26)} ${held.toFixed(5).padStart(11)} ${ins.toFixed(5).padStart(11)} `
+      + `${(held - ins).toFixed(5).padStart(9)}   ${per.map((x) => x.toFixed(4)).join(' ')}`,
+    );
+  }
+  rank.sort((a, b) => a[0] - b[0]);
+  console.log(`  BEST held out: ${rank[0][1]} (${rank[0][0].toFixed(5)})`);
+}
+
 // ── run ─────────────────────────────────────────────────────────────────────
 const GRID = JSON.parse(arg('grid', '[{"label":"shipped"}]'));
 const MARKETS_SHOWN = (arg('markets', 'hits,tb,singles,runs,hrr,rbi,hr,k') || '').split(',');
@@ -399,6 +739,16 @@ for (const [wname, inWindow] of WINDOWS) {
   if (!subset.length) continue;
   console.log(`\n########## ${wname} (${subset.length} batter-games) ##########`);
   if (has('book-table')) { bookTable(subset); continue; }
+  if (has('duty-fit')) {
+    if (wname === 'FIT') dutyFit(subset, JSON.parse(arg('duty-fit', 'null')) || [
+      { lo: 2, hi: 3.9, priorGames: 10 },
+    ]);
+    continue;
+  }
+  if (has('cv')) {
+    if (wname === 'FIT') crossValidate(subset, GRID, Number(arg('cv', '5')), arg('objective', 'gap'));
+    continue;
+  }
   for (const cfg of GRID) {
     const { label = JSON.stringify(cfg), ...tuning } = cfg;
     const projs = subset.map((r) => projectBatter(Object.keys(tuning).length ? { ...r.input, tuning } : r.input));
@@ -427,6 +777,8 @@ for (const [wname, inWindow] of WINDOWS) {
           + `  corr ${r.corr.toFixed(3)}  slope ${r.slope.toFixed(2)}  sd ${r.sdProj.toFixed(3)}`,
         );
       }
+      if (has('duty-table') && gname === 'all') dutyTable(gs, gp);
+      if (has('slot-study') && gname === 'all') slotStudy(gs, gp, tuning);
       if (has('rank-study') && gname === 'all') {
         rankStudy(gs, gp);
         contextStudy(gs, gp);

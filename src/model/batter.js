@@ -66,6 +66,17 @@
  *      them. The regression slopes of actual on projected go from 0.68-0.83 to
  *      ~1.0. The 0.6 weight on the prior season was searched and kept.
  *
+ * BATTER PLAYING TIME (2026-09-23) — docs/BATTER-PLAYTIME-FIX.md. One change:
+ *
+ *  T1  `BATTER_TUNING.duty`, the upper half of the playing-time curve `thin`
+ *      closed the bottom of. The model put an everyday regular at the plate
+ *      about 2% too FEW times and a part-timer up to 8% too many, because
+ *      `paLossRate` is a flat 10% for everybody. The axis is plate appearances
+ *      PER GAME, not plate appearances: on that axis the error spans fourteen
+ *      points and is monotone in both seasons. Fitted on 2025 alone and tested
+ *      once on 2026 through 09-01. Only plate appearances move; the run/RBI
+ *      RATE leg was measured and deliberately left at 0.
+ *
  * What this buys: on the untouched holdout the ported model forecasts better
  * than the model it replaces in every Kalshi series. What it does NOT buy: it
  * still loses to the exchange price in every series, so `MARKET_WEIGHT`, the
@@ -509,6 +520,124 @@ export const BATTER_TUNING = {
   thinPaCap: 70,
   thin: { pa: 0.03, offence: 0.085, scoring: 0.11, k: 0.04 },
   /**
+   * DUTY — THE UPPER HALF OF THE SAME PLAYING-TIME CURVE (2026-09-23,
+   * docs/BATTER-PLAYTIME-FIX.md).
+   *
+   * `thin` above closed the bottom of the playing-time curve and stops dead at
+   * 70 plate appearances. docs/BATTER-CALIBRATION-FIX.md section 4 measured
+   * what is left above it and declined to fix it: established hitters (200+ PA
+   * this season) read -1.0 points on runs and -1.1 on H+R+RBI, mirrored by
+   * +0.5 in the 50-199 cell. That is a TILT, not a level, and a level lift on
+   * `runLevel` was measured to take 200+ to zero by pushing 50-199 to +1.1.
+   *
+   * THE AXIS IS NOT PLATE APPEARANCES, IT IS PLATE APPEARANCES PER GAME. Both
+   * were measured against outcomes on the fit season. Bucketed by plate
+   * appearances so far, actual plate appearances over projected spans 0.99 to
+   * 1.03 — four points. Bucketed by this season's PA PER GAME PLAYED it spans
+   * 0.89 to 1.03 — fourteen points, monotone, and it replicates season by
+   * season with no rescaling (2025 / 2026 through 09-01):
+   *
+   *     PA per game      n (2025)   actual PA / projected PA
+   *      under 2.0          469       0.933  /  0.894
+   *      2.0-2.6          1,974       0.945  /  0.914
+   *      2.6-3.0          2,487       0.956  /  0.967
+   *      3.0-3.3          3,968       0.981  /  0.969
+   *      3.3-3.6          4,278       1.002  /  0.998
+   *      3.6-3.85         6,140       1.015  /  1.022
+   *      3.85-4.05        5,298       1.021  /  1.027
+   *      4.05-4.25        7,142       1.024  /  1.032
+   *      4.25-4.45        6,812       1.018  /  1.023
+   *      4.45+            2,679       1.024  /  1.026
+   *
+   * WHY THIS IS STRUCTURAL AND NOT A FITTED CONSTANT. `paLossRate` (section 9)
+   * is a flat 10% chance the starter is lifted, applied to everyone in a
+   * posted lineup. It is not flat in reality: the hitter who has averaged two
+   * plate appearances a game is the one who gets pinch-hit for, platooned out
+   * or lifted for defence, and the everyday regular is the one who is not.
+   * The model already knows this about him — it is in the line it reads — and
+   * was throwing it away. Note the section-9 bisection solves the trip mean to
+   * `pa` whatever `paLossRate` is, so the correction has to move `pa` itself.
+   *
+   * THE TERM. One straight line in plate appearances per game, clamped at both
+   * ends, crossing 1 at `pivot`:
+   *
+   *     rate  = shrink(PA this season / games this season) toward `pivot`,
+   *             weight games / (games + priorGames)
+   *     plate appearances x (1 + duty.pa * (clamp(rate, lo, hi) - pivot))
+   *
+   * A straight line, because the table above is one: the ratio climbs at a
+   * near-constant rate from 2.0 to about 3.7 plate appearances per game and is
+   * flat above it. The clamps are where the data stops being a line, not free
+   * parameters — above 3.7 PA/G the ratio plateaus at +2.4% and below 2.0 the
+   * cell is 500 batter-games a season.
+   *
+   * The games-weighted shrink toward `pivot` is what makes the term inert on
+   * an unknown hitter instead of discontinuous: at zero games played the
+   * multiplier is exactly 1, and it fades in over the first few weeks rather
+   * than switching on at a threshold. It is also why `thin` and `duty` do not
+   * double-count the April board: in the opening fortnight `duty` is still
+   * near 1 and `thin` is doing the work.
+   *
+   * HOW IT WAS CHOSEN, AND ON WHAT. Fitted on 2025 ALONE (43,776 batter-games)
+   * and tested once on 2026 through 09-01 (37,530), because the September
+   * holdout was spent by docs/BATTER-CALIBRATION-FIX.md and re-using it as a
+   * clean test of a curve fitted on the rest would be a lie.
+   *
+   * `pa` and `pivot` are SOLVED, not gridded, and solved on the plate
+   * appearances alone — no outcome market was looked at while choosing them.
+   * Regressing the actual plate-appearance count on `projected PA x games
+   * weight x clamped rate` and `projected PA x games weight`, with no
+   * intercept, returns the slope directly and the pivot as the ratio of the
+   * two coefficients (`--duty-fit` in tools/batter-thin-fit.mjs). A grid over
+   * the pair is degenerate — every slope reaches a pooled gap of zero at some
+   * pivot — which is why it is a solve. The slope is 0.083 to 0.086 across all
+   * five folds of a hitter-grouped 5-fold split. `lo`, `hi` and `priorGames`
+   * say where the line stops and how fast it fades in; each candidate triple
+   * was solved separately and judged on the worst remaining bucket error, and
+   * the good region is broad (every variant beats master out of sample by the
+   * same amount), so the choice among them was made on robustness: the term
+   * must not switch on off one game, and the bottom clamp must sit where the
+   * data thins out rather than where truncation is convenient.
+   *
+   * ONLY PLATE APPEARANCES MOVE, AND THAT IS THE MEASUREMENT, NOT MODESTY.
+   * Once the plate appearances are corrected, the leftover duty tilt the data
+   * wants on the RATES is 0.02 for hits and -0.01 for strikeouts — gone,
+   * because a plate-appearance shortfall is the only thing that can pull hits
+   * and strikeouts the SAME way, and it did. What survives is runs and RBI
+   * only, at about 0.13. `duty.scoring` exists so that can be re-measured; it
+   * ships at 0, and here is why. Fitted at its 2025 optimum it closes the
+   * established band's run gap and pays for it in the thin band (-0.18 to
+   * -0.51 on the test window), buys nothing in test-window log loss
+   * (9.14367 against 9.14363 without it), and has no interior optimum worth
+   * the name — the basin runs from 0.07 to 0.20. It is a lineup-context effect
+   * (who bats around him) reached through a playing-time proxy, and it is the
+   * same mistake as the flat `runLevel` lift docs/BATTER-CALIBRATION-FIX.md
+   * rejected, with a different index. The remainder is reported, not fitted.
+   *
+   * WHAT IT BOUGHT, on the untouched test season (2026 through 09-01), gap in
+   * points, + meaning the model quotes too high:
+   *
+   *                        runs        H+R+RBI      hits        strikeouts
+   *   established 200+   -0.78 -> -0.48  -0.93 -> -0.51  -0.68 -> -0.29  -0.23 -> +0.14
+   *   building 50-199    +0.32 -> +0.24  +0.34 -> +0.22  +0.24 -> +0.13  +0.71 -> +0.55
+   *   thin <50           +0.01 -> -0.18  -0.24 -> -0.52  -0.10 -> -0.36  +0.40 -> +0.08
+   *
+   * so the established under-read is roughly halved, the building cell moves
+   * the same way rather than absorbing it, and the thin cell pays about 0.25
+   * points. Log loss over the nine markets improves in every band of every
+   * window, and the per-game correlation rises on seven of nine markets and
+   * falls on none. The gap that remains at 200+ is the runs/RBI remainder
+   * above, and it is NOT fixed here.
+   *
+   * FALLBACK. Exactly 1 — bit-for-bit the pre-duty model — when the caller
+   * supplies no season line at all, when `gamesPlayed` is absent or zero, when
+   * the lineup slot is unknown (the unknown-slot branch already reads the
+   * hitter's own PA per game, and this was never measured there), and when
+   * `duty.pa` is 0. The replay that fitted it is posted lineups only, so the
+   * term is applied only where it was measured.
+   */
+  duty: { pa: 0.084, scoring: 0, pivot: 3.44, lo: 2, hi: 3.7, priorGames: 10 },
+  /**
    * Strength of the park term and of the opposing-starter term, as multipliers
    * on the shipped park weights (0.7 / 0.5) and on `PITCHER_INFLUENCE` (0.6).
    * 1 is the pre-2026-09-23 model.
@@ -793,6 +922,26 @@ export function projectBatter(input) {
   const scoringShort = 1 - (TH.scoring || 0) * short;
   const kShort = 1 + (TH.k || 0) * short;
 
+  // DUTY — the upper half of the same playing-time curve. See `duty` in
+  // BATTER_TUNING for the measurement and for why the axis is plate
+  // appearances PER GAME rather than plate appearances.
+  //
+  // `paDuty` is exactly 1 when the caller gives no season line, when no games
+  // have been played, or when `duty.pa` is 0, so the projection is then
+  // bit-for-bit the pre-duty one. It is applied to the posted-slot plate
+  // appearances only, which is the population it was measured on.
+  const D = T.duty || {};
+  const dutyGames = s26.gamesPlayed || 0;
+  let dutyTilt = 0;
+  if (hasBook && dutyGames > 0 && D.hi > D.lo) {
+    // Games-weighted shrink of his own PA per game toward the neutral pivot,
+    // so the term fades in over the first weeks instead of switching on.
+    const w = dutyGames / (dutyGames + (D.priorGames || 0));
+    dutyTilt = w * (clamp(pa26 / dutyGames, D.lo, D.hi) - D.pivot);
+  }
+  const paDuty = 1 + (D.pa || 0) * dutyTilt;
+  const scoringDuty = 1 + (D.scoring || 0) * dutyTilt;
+
   // ---------------------------------------------------------------------
   // 1. Plate appearances.
   //    Known slot -> table lookup + home/away tweak. Unknown slot -> the
@@ -814,7 +963,7 @@ export function projectBatter(input) {
     // appearances are the table value unchanged. The caller's own `paDist`
     // (above) is left alone — a caller that models the count itself has
     // already priced this.
-    pa = (PA_BY_LINEUP_SLOT[slot - 1] + (isAway ? 0.08 : -0.08)) * paShort;
+    pa = (PA_BY_LINEUP_SLOT[slot - 1] + (isAway ? 0.08 : -0.08)) * paShort * paDuty;
   } else {
     const games = s26.gamesPlayed || 0;
     pa = (games > 10 ? clamp(pa26 / games, 3.3, 4.7) : 4) * paShort;
@@ -853,8 +1002,8 @@ export function projectBatter(input) {
     double: shrink(s26.doubles,     pa26, s25.doubles,     pa25, 0.043, S.double) * offShort,
     triple: shrink(s26.triples,     pa26, s25.triples,     pa25, 0.004, S.triple) * offShort,
     hr:     shrink(s26.homeRuns,    pa26, s25.homeRuns,    pa25, 0.03,  T.hrPriorStrength) * offShort,
-    run:    shrink(s26.runs,        pa26, s25.runs,        pa25, 0.12,  S.run) * scoringShort,
-    rbi:    shrink(s26.rbi,         pa26, s25.rbi,         pa25, 0.115, S.rbi) * scoringShort,
+    run:    shrink(s26.runs,        pa26, s25.runs,        pa25, 0.12,  S.run) * scoringShort * scoringDuty,
+    rbi:    shrink(s26.rbi,         pa26, s25.rbi,         pa25, 0.115, S.rbi) * scoringShort * scoringDuty,
     k:      shrink(s26.strikeOuts,  pa26, s25.strikeOuts,  pa25, lg.kRate,  S.k) * kShort,
     // Walks are not discounted: they are not a market, they enter only through
     // the shape of section 11b, and the thin cell measured clean on them.
