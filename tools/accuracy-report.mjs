@@ -268,6 +268,11 @@ const TOTAL_LINES = [6.5, 7.5, 8.5, 9.5, 10.5];
 const SPREAD_THRESHOLDS = [1.5, -1.5];
 const SPREAD_NAMES = ['home -1.5', 'home +1.5'];
 
+/** The same two, over the first five innings. Negated points, as above. */
+const F5_TOTAL_LINES = [3.5, 4.5, 5.5, 6.5];
+const F5_SPREAD_THRESHOLDS = [0.5, -0.5, 1.5, -1.5];
+const F5_SPREAD_NAMES = ['F5 home -0.5', 'F5 home +0.5', 'F5 home -1.5', 'F5 home +1.5'];
+
 const LABEL = {
   'P k': 'pitcher strikeouts', 'P outs': 'pitcher outs recorded', 'P hits': 'pitcher hits allowed',
   'P bb': 'pitcher walks', 'P er': 'pitcher earned runs',
@@ -276,6 +281,8 @@ const LABEL = {
   'B k': 'batter strikeouts', 'B singles': 'batter singles', 'B sb': 'batter stolen bases',
   'G ml': 'moneyline (home win)', 'G tot': 'game total (over)', 'G mar': 'run line (home)',
   'G nrfi': 'first inning (NRFI)',
+  'F5 ml': 'F5 moneyline (home leads, ties out)', 'F5 tie': 'F5 level after five',
+  'F5 tot': 'F5 total (over)', 'F5 mar': 'F5 run line (home)',
 };
 
 /**
@@ -323,6 +330,20 @@ function collect(recs) {
         s.pairs.push(q);
         s.lines.set('no run', (s.lines.get('no run') || []).concat([q]));
       }
+      // First five innings. `f5ml` is null on a game that ended five level —
+      // the market pushes there and the model's number is conditional on no
+      // tie — so the tie is scored on its own line instead of being dropped.
+      for (const [market, field, name] of [['F5 ml', 'f5ml', 'home leads'], ['F5 tie', 'f5tie', 'level']]) {
+        if (!r[field]) continue;
+        const s = get(market);
+        s.n++;
+        const q = { p: r[field][0], y: r[field][1], g: r.g };
+        if (q.p == null) { s.missing++; continue; }
+        s.pairs.push(q);
+        s.lines.set(name, (s.lines.get(name) || []).concat([q]));
+      }
+      if (r.f5tot) add('F5 tot', F5_TOTAL_LINES, r.f5tot, r.g);
+      if (r.f5mar) add('F5 mar', F5_SPREAD_THRESHOLDS, r.f5mar, r.g, F5_SPREAD_NAMES);
     }
   }
   return out;
@@ -677,6 +698,96 @@ export function amplification(pts) {
   return { g: best.g, lo, hi };
 }
 
+// ── first five innings, against the full game ───────────────────────────────
+/**
+ * `--f5` answers the one question the F5 board exists for: is the model
+ * RELATIVELY better over five innings, where the starter decides, than over
+ * nine, where the bullpen the model carries no signal on decides the end?
+ *
+ * Like for like. Raw bias and MAE are not comparable — five innings is about
+ * 5.0 runs and nine is about 8.9 — so the comparison is on the three
+ * scale-free numbers: calibration error in points, Brier skill against the
+ * market's own base rate, and the correlation between the point projection
+ * and what happened. Every row is scored on the SAME games.
+ */
+function f5Report(recs, label) {
+  const g = recs.filter((r) => r.t === 'g' && r.f5tot);
+  if (!g.length) return null;
+  console.log(`\n=== FIRST FIVE INNINGS vs THE FULL GAME — ${label} (${g.length} games) ===`);
+  const rep = score(g);
+  const row = (name, m) => {
+    const r = rep[m];
+    if (!r) return;
+    const c = r.calibration;
+    const skill = 100 * (1 - r.brier / r.brierBase);
+    const corr = r.point ? r.point.corr.toFixed(3) : '   — ';
+    const bias = r.point ? `${r.point.bias >= 0 ? '+' : ''}${r.point.bias.toFixed(3)}` : '  —  ';
+    console.log(
+      `  ${name.padEnd(22)} ECE ${(100 * c.ece).toFixed(2).padStart(5)}pts`
+      + `  gap ${pct(c.gap).padStart(5)}pts`
+      + `  brier skill ${skill.toFixed(1).padStart(5)}%`
+      + `  corr ${corr}  bias ${bias} runs  n=${c.n}`,
+    );
+  };
+  console.log('  -- the whole game --');
+  row('moneyline', 'G ml');
+  row('run line', 'G mar');
+  row('total', 'G tot');
+  console.log('  -- the first five --');
+  row('F5 moneyline', 'F5 ml');
+  row('F5 run line', 'F5 mar');
+  row('F5 total', 'F5 tot');
+  row('F5 level after five', 'F5 tie');
+  console.log('\n  per line, model -> actual');
+  for (const m of ['F5 tot', 'F5 mar', 'F5 ml', 'F5 tie']) {
+    const r = rep[m];
+    if (r) console.log(`    ${m.padEnd(7)} ${r.perLine.map((l) => `${l.line}: ${(100 * l.pred).toFixed(1)}->${(100 * l.obs).toFixed(1)}${l.off ? '*' : ''}`).join('  ')}`);
+  }
+  // PAIRED, at the coin-flip line of each market. Brier skill above is pooled
+  // over ladders of different length against different base rates, so it is
+  // suggestive, not a comparison. This is one line per market per game, chosen
+  // as the line each market is actually hung at (over 8.5 and over 4.5 are both
+  // within a point of 50/50 league-wide; home -1.5 and home -0.5 are each
+  // market's standard run line), scored on the SAME games, with a cluster
+  // bootstrap over games on the DIFFERENCE.
+  const paired = [
+    ['total       over 8.5 / over 4.5', (r) => r.tot[2][2], (r) => (r.tot[1] > 8.5 ? 1 : 0), (r) => r.f5tot[2][1], (r) => (r.f5tot[1] > 4.5 ? 1 : 0), () => true],
+    ['run line    -1.5 / -0.5', (r) => r.mar[2][0], (r) => (r.mar[1] > 1.5 ? 1 : 0), (r) => r.f5mar[2][0], (r) => (r.f5mar[1] > 0.5 ? 1 : 0), () => true],
+    ['moneyline   home win / home leads', (r) => r.ml[0], (r) => r.ml[1], (r) => r.f5ml[0], (r) => r.f5ml[1], (r) => !!r.f5ml],
+  ];
+  console.log('\n  paired at the coin-flip line, same games   Brier skill, each against its own base rate');
+  for (const [name, pf, yf, p5, y5, keep] of paired) {
+    const list = g.filter((r) => r.tot && r.mar && keep(r));
+    if (!list.length) continue;
+    // Skill, not raw Brier: the two markets have different base rates (home
+    // -1.5 lands 36% of the time, F5 home -0.5 lands 45%), and Brier against a
+    // different base rate is a different scale. Skill against each market's
+    // OWN base rate is the like-for-like number, and positive means the model
+    // is doing relatively more over five innings than over nine.
+    const skill = (xs, pp, yy) => {
+      const b = mean(xs.map((r) => (pp(r) - yy(r)) ** 2));
+      const base = mean(xs.map(yy));
+      const b0 = base * (1 - base);
+      return b0 > 0 ? 1 - b / b0 : NaN;
+    };
+    const diff = (xs) => skill(xs, p5, y5) - skill(xs, pf, yf);
+    const ci = clusterBoot(list, (r) => r.g, diff, 600);
+    const f = (x) => `${(100 * x).toFixed(2)}%`;
+    console.log(
+      `    ${name.padEnd(34)} skill ${f(skill(list, pf, yf)).padStart(6)} -> ${f(skill(list, p5, y5)).padStart(6)}`
+      + `   F5 minus full ${diff(list) >= 0 ? '+' : ''}${(100 * diff(list)).toFixed(2)}pts`
+      + ` [${ci[0] >= 0 ? '+' : ''}${(100 * ci[0]).toFixed(2)}, ${ci[1] >= 0 ? '+' : ''}${(100 * ci[1]).toFixed(2)}]  n=${list.length}`,
+    );
+  }
+
+  // The share of the game the F5 markets actually cover, which is the reason
+  // to expect anything different at all.
+  const t5 = mean(g.map((r) => r.f5tot[1]));
+  const t9 = mean(g.filter((r) => r.tot).map((r) => r.tot[1]));
+  console.log(`\n  actual runs: first five ${t5.toFixed(3)}, whole game ${t9.toFixed(3)} (${(100 * t5 / t9).toFixed(1)}% of the game)`);
+  return rep;
+}
+
 // ── run ─────────────────────────────────────────────────────────────────────
 const inHoldout = (r) => r.d >= HOLDOUT_FROM && r.d <= HOLDOUT_TO;
 const main = rows.filter((r) => !inHoldout(r));
@@ -724,6 +835,14 @@ const reportMain = score(main);
 const reportHold = hold.length ? score(hold) : null;
 printMarkets(reportMain, `EVERYTHING EXCEPT THE HOLDOUT (through ${HOLDOUT_FROM} exclusive)`);
 if (reportHold) printMarkets(reportHold, `HOLDOUT ${HOLDOUT_FROM}..${HOLDOUT_TO}`);
+
+const f5 = {};
+if (has('f5')) {
+  f5.main = f5Report(main, `EVERYTHING EXCEPT THE HOLDOUT (through ${HOLDOUT_FROM} exclusive)`);
+  if (hold.length) f5.hold = f5Report(hold, `HOLDOUT ${HOLDOUT_FROM}..${HOLDOUT_TO}`);
+  const seasons = [...new Set(rows.filter((r) => r.t === 'g').map((r) => r.d.slice(0, 4)))].sort();
+  for (const s of seasons) f5[s] = f5Report(main.filter((r) => r.d.startsWith(s)), `season ${s}, excluding the holdout`);
+}
 
 const totals = {};
 if (has('totals')) {

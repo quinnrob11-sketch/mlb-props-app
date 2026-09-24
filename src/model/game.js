@@ -1,5 +1,6 @@
 /**
- * Game model: moneyline, run line and total.
+ * Game model: moneyline, run line and total, for the whole game and for the
+ * first five innings.
  *
  * WHAT IT PRODUCES
  *
@@ -9,6 +10,10 @@
  *   moneyline   P(home wins)
  *   run line    P(home margin > -spread)   e.g. home -1.5 covers on margin >= 2
  *   total       P(away + home > line), with pushes on whole-number lines
+ *
+ * The same convolution stopped after five innings gives the F5 markets — see
+ * `firstFiveGrid` and `firstFiveMarkets`, and docs/FIRST-FIVE.md for what they
+ * are worth against outcomes.
  *
  * WHY INNING BY INNING, AND NOT TWO INDEPENDENT RUN DISTRIBUTIONS
  *
@@ -276,6 +281,34 @@ export function finalScoreGrid({
 }
 
 /**
+ * Exact score distribution after FIVE innings — the first-five-innings (F5)
+ * markets.
+ *
+ * This is the same convolution as `finalScoreGrid`, stopped early, and it is
+ * SIMPLER than the full game because not one of the awkward parts applies:
+ * both teams always bat five times, so there is no skipped home half, no
+ * walk-off truncation and no ghost-runner extras. The only thing it keeps from
+ * the full game is the first inning's own measured shape for each side.
+ *
+ * Takes the same input object as `finalScoreGrid` and ignores the fields that
+ * only regulation's end needs, so the two are interchangeable inside
+ * `uncertainScoreGrid`.
+ *
+ * @returns {Float64Array} P(away = a, home = h) after five, at index a*31 + h
+ */
+export function firstFiveGrid({ awayHalfMeans, homeHalfMeans }) {
+  let grid = new Float64Array(SIZE * SIZE);
+  grid[0] = 1;
+  for (let inning = 0; inning < 5; inning++) {
+    const awayBase = inning === 0 ? FIRST_INNING_AWAY_PMF : HALF_INNING_PMF;
+    const homeBase = inning === 0 ? FIRST_INNING_HOME_PMF : HALF_INNING_PMF;
+    grid = scoreHalf(grid, tiltPmf(awayBase, awayHalfMeans[inning]), false);
+    grid = scoreHalf(grid, tiltPmf(homeBase, homeHalfMeans[inning]), true);
+  }
+  return grid;
+}
+
+/**
  * Scoring the model cannot see coming.
  *
  * Every input above is a season-level estimate, but a single game carries its
@@ -328,7 +361,15 @@ const GAUSS_HERMITE_3 = [
   [Math.sqrt(3), 1 / 6],
 ];
 
+/**
+ * @param {object} input     the scoring rates, as `finalScoreGrid` takes them
+ * @param {object} [options] `build` chooses which grid is integrated —
+ *   `finalScoreGrid` (the default, the whole game) or `firstFiveGrid`. Both
+ *   take the same input, so the same game-level uncertainty is applied to
+ *   both and the F5 numbers can never contradict the full-game ones.
+ */
 export function uncertainScoreGrid(input, options = {}) {
+  const build = options.build ?? finalScoreGrid;
   const sigmaShared = options.sigmaShared ?? SIGMA_SHARED;
   const sigmaTeam = options.sigmaTeam ?? SIGMA_TEAM;
   const nodes = (sigma) => (sigma > 0 ? GAUSS_HERMITE_3 : [[0, 1]]);
@@ -342,7 +383,7 @@ export function uncertainScoreGrid(input, options = {}) {
         const w = wg * wa * wh;
         const mAway = factor(sigmaShared, zg) * factor(sigmaTeam, za);
         const mHome = factor(sigmaShared, zg) * factor(sigmaTeam, zh);
-        const grid = finalScoreGrid({
+        const grid = build({
           ...input,
           awayHalfMeans: input.awayHalfMeans.map((m) => m * mAway),
           homeHalfMeans: input.homeHalfMeans.map((m) => m * mHome),
@@ -446,6 +487,54 @@ export const noPush = ({ over, under, home, away }) => {
   const b = under ?? away;
   return a + b > 0 ? a / (a + b) : null;
 };
+
+/**
+ * The three first-five-innings markets, read off a five-inning grid.
+ *
+ * THE TIE IS A REAL OUTCOME, NOT A PUSH. The first five innings end level in
+ * 15.5% of games (4,761 nine-inning games, 2025 and 2026 through 09-22; the
+ * model says 15.3% for two average teams), and where a book prices F5
+ * three-way — home / away / draw, which is how DraftKings, FanDuel and
+ * Pinnacle post it — a tie LOSES both sides rather than refunding them. So
+ * `pTie` is returned explicitly beside `pHome` and `pAway`, and the three sum
+ * to one.
+ *
+ * BOOK CONVENTION IMPLEMENTED. `moneyline` is handed to the board as
+ * `{ home, away, push: tie }`, which the pricing path reads through `noPush`
+ * as **P(home wins the first five | the first five are not level)**. That is
+ * the right comparison against either convention a book uses:
+ *
+ *   three-way   the two team prices de-vig against each other to exactly
+ *               p_home / (p_home + p_away) — the draw price drops out of the
+ *               ratio — so market and model are both conditional on no tie.
+ *   draw-no-bet (some books, and every exchange ladder) a tie refunds, which
+ *               IS a push, and the same two-sided de-vig is already correct.
+ *
+ * What the conditional comparison does NOT do is settle a three-way ticket:
+ * on those, a tie is a loss, so the EV the edge engine computes off a
+ * three-way price is optimistic by the tie probability. That is recorded on
+ * the row as `push` and is why these rows are information only, like every
+ * other game line (`PLAY_RULES.gameLinesInformationOnly`).
+ */
+export function firstFiveMarkets(summary) {
+  const tie = summary.margin.get(0) || 0;
+  const away = 1 - summary.pHome - tie;
+  return {
+    pHome: summary.pHome,
+    pAway: away,
+    pTie: tie,
+    projAway: summary.meanAway,
+    projHome: summary.meanHome,
+    projTotal: summary.meanAway + summary.meanHome,
+    fairHomeOdds: probToAmerican(summary.pHome),
+    fairAwayOdds: probToAmerican(away),
+    fairTieOdds: probToAmerican(tie),
+    moneyline: { home: summary.pHome, away, push: tie },
+    total: (line) => totalProbs(summary, line),
+    spread: (homeSpread) => spreadProbs(summary, homeSpread),
+    fairTotal: medianLine(summary, 0.5, 12.5),
+  };
+}
 
 // ── team strength inputs ────────────────────────────────────────────────────
 
@@ -846,6 +935,7 @@ export function projectGame({ away, home, league, park, wx }) {
   const grid = uncertainScoreGrid(scoring);
   const summary = summarizeGrid(grid);
   const nrfiProb = firstInningScoreless(scoring);
+  const f5 = summarizeGrid(uncertainScoreGrid(scoring, { build: firstFiveGrid }));
 
   const flags = [];
   if (!away.starter || !home.starter) flags.push('NO PROBABLE');
@@ -863,6 +953,9 @@ export function projectGame({ away, home, league, park, wx }) {
     spread: (homeSpread) => spreadProbs(summary, homeSpread),
     // The number where the model's over and under are closest to 50/50.
     fairTotal: medianLine(summary),
+    // First five innings. Same rates, same uncertainty, five innings instead
+    // of nine — see `firstFiveGrid` and `firstFiveMarkets`.
+    f5: firstFiveMarkets(f5),
     // First inning, from the same inning-one scoring rates and the same
     // uncertainty as the full game, so NRFI can never contradict the total.
     nrfi: {
@@ -881,10 +974,10 @@ export function projectGame({ away, home, league, park, wx }) {
 }
 
 /** Half-point line nearest an even-money total. */
-function medianLine(summary) {
+function medianLine(summary, lo = 4.5, hi = 16.5) {
   let best = 8.5;
   let bestGap = Infinity;
-  for (let line = 4.5; line <= 16.5; line += 1) {
+  for (let line = lo; line <= hi; line += 1) {
     const gap = Math.abs(totalProbs(summary, line).over - 0.5);
     if (gap < bestGap) {
       best = line;

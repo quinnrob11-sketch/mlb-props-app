@@ -1,5 +1,6 @@
 // Load a real slate in Node through this branch's own API handlers and print
-// the game-line board: model vs market for every moneyline, run line and total.
+// the game-line board: model vs market for every moneyline, run line and total,
+// full game and first five innings.
 //
 //   node tools/run-slate.mjs [YYYY-MM-DD] [--json out.json] [--live]
 //
@@ -13,6 +14,7 @@ import { installFetch } from './local-api.mjs';
 
 installFetch(process.argv.includes('--live') ? 'https://mlb-props-app.vercel.app' : undefined);
 const { loadSlate } = await import('../src/data/loadSlate.js');
+const { TEAM_MARKETS } = await import('../src/data/teamMarkets.js');
 
 const date = process.argv.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a)) ||
   new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
@@ -24,7 +26,9 @@ console.log(`${date}: ${slate.games.length} games in ${((Date.now() - t0) / 1000
 console.log(`prop odds: ${slate.oddsError || 'ok'} | book game lines: ${slate.gameLinesError || 'ok'} | kalshi: ${slate.kalshiGameError || 'ok'}`);
 
 const pct = (p) => (p == null ? '  -  ' : `${(100 * p).toFixed(1)}%`.padStart(6));
-const gaps = { game_ml: [], game_spread: [], game_total: [] };
+// Keyed off TEAM_MARKETS so a new market (the F5 three) cannot crash the loop
+// below on an undefined bucket.
+const gaps = Object.fromEntries(Object.keys(TEAM_MARKETS).map((k) => [k, []]));
 for (const g of slate.games) {
   const m = g.game;
   const sp = g.pitchers.map((p) => p.name.split(' ').pop()).join(' v ');
