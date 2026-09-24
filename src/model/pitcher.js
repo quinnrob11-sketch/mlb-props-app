@@ -437,6 +437,24 @@ export const PITCHER_FIT = {
    * should be projected 15% more of each, which is `pass: 1`. Each is a
    * switch measured per market in docs/OPENER-FIX.md, not a free coefficient.
    *
+   * REVISED (v38.1, docs/PITCHER-REPAIR.md). A market's `pass` may be an OBJECT
+   * keyed by class, and hits now is. The reason is measured: the `starter` line
+   * is not new information about a start, it is a re-slope of the population
+   * that hits' OWN calibration curve was fitted on — 91% of the fit split is
+   * `starter`, so whatever that population needed is already inside
+   * `[4.88, 0.89]`. Passing the re-slope through on top counted it twice and
+   * cost hits allowed 0.23 points of calibration on full-length starts. The
+   * `opener` and `debut` classes are 3.5% and 5.4% of the split, so their
+   * curves carry nothing for them and the pass-through is the whole of their
+   * correction — hits on an opener goes from 0.55 over-projected to 0.01.
+   *
+   * Strikeouts, walks and earned runs keep `pass: 1` for every class, because
+   * measured on the fit split each of them is better with it and only hits is
+   * worse — switching walks off costs 0.05 pooled and 0.39 on the mid slice,
+   * and switching earned runs off costs 0.16 pooled and 1.09 on the short
+   * slice. Hits is the one market where the double count shows, and it is a
+   * switch per market and per class, not a fitted coefficient.
+   *
    * ALL OF THIS NEEDS `input.appearanceLog`, the pitcher's every appearance
    * this season with relief outings left in. `src/data/loadSlate.js` already
    * fetches exactly that log and throws the relief rows away to build
@@ -474,7 +492,65 @@ export const PITCHER_FIT = {
      * Set to null to put debuts back on the starter line.
      */
     debut: [15.5, 0.1852, 0.9469],
-    /** Pass-through of the depth change to the counting stats. */
+    /**
+     * Pass-through of the ROLE line's depth change to the counting stats. A
+     * number is every class; an object is per class, and a class missing from
+     * it carries nothing. Setting `hits: 1` restores v38 exactly.
+     */
+    pass: { k: 1, hits: { opener: 1, debut: 1 }, bb: 1, er: 1 },
+  },
+  /**
+   * BEND (v38.1). The residual non-linearity inside the starter line, which
+   * docs/OPENER-FIX.md reported and did not chase. The whole argument is in
+   * docs/PITCHER-REPAIR.md; in one paragraph:
+   *
+   * The starter line is straight. The relation it approximates is not. Mean
+   * actual outs, by the RAW (pre-calibration) projection, over the 7,652
+   * `starter` starts on the FIT split:
+   *
+   *     raw     7.5   9.7  10.6  11.5  12.5  13.6  14.6  15.5  16.5  17.4  18.4
+   *     line   10.0  11.6  12.1  12.9  13.5  14.2  14.9  15.6  16.3  16.9  17.6
+   *     actual  9.2  11.2  12.8  14.2  14.2  14.4  14.8  15.5  16.2  16.9  17.9
+   *
+   * Between about 10 and 14 raw outs the actual is FLAT at 14.2-14.4 — the
+   * projection carries almost no information about depth there, the same thing
+   * `role.debut`'s slope of 0.19 says about a pitcher with no log — and a
+   * straight shrink through it under-projects the middle of that stretch by
+   * about 1.2 outs. Below raw 10 the actual falls away again, so the
+   * correction has to come back to zero rather than keep growing: this is a
+   * bend in the curve, not a change of slope.
+   *
+   * `lo` / `peak` / `hi` are a tent on the raw projection — zero at and
+   * outside `lo` and `hi`, one at `peak` — and every market multiplies by
+   * `1 + amp * tent`. The resulting map from raw to projected outs is still
+   * monotone (its slope is 1.51 on the rising side and 0.19 on the falling
+   * side, both positive), which is the property that matters: two starts
+   * cannot swap order.
+   *
+   * `amp` is fitted by least squares of actual outs on the bent line over the
+   * `starter` class of the FIT split, which is the same recipe and the same
+   * split as the three role lines. It is 0.0939 +- 0.0233 — four standard
+   * errors from zero — and it is the same number in both seasons fitted
+   * separately: **0.0938 in 2025 and 0.0941 in 2026**, on 713 starts inside
+   * the window. That replication is the reason to believe it; the geometry was
+   * swept (lo 8-10.5, peak 11-12, hi 13.5-15) and every setting gives the same
+   * story, with (10, 11.5, 14) the most stable across seasons.
+   *
+   * `pass` is 1 per market and exists to be switched off. Unlike the role
+   * line, the bend is NOT a re-slope of a population a market's own curve was
+   * fitted on: inside the window every market reads low (v37 ladder gaps of
+   * -7.95 outs, -5.21 strikeouts, -3.54 walks, -3.29 earned runs and -2.10
+   * hits), so it is information none of their curves carries and all of them
+   * take the whole of it.
+   *
+   * Gated on the `starter` class, so like `role` it is inert without
+   * `input.appearanceLog` and the model is v37 to the last bit.
+   */
+  bend: {
+    lo: 10,
+    peak: 11.5,
+    hi: 14,
+    amp: 0.0939,
     pass: { k: 1, hits: 1, bb: 1, er: 1 },
   },
   progress: {
@@ -1081,7 +1157,7 @@ export function projectPitcher(input) {
   // bullpen game from a rookie on a short leash BEFORE first pitch.
   //
   // Everything here is gated on `input.appearanceLog`. Without it `role` is
-  // null, `depthShift` is exactly 1, and every projection below is the v37
+  // null, the depth shift is exactly 1, and every projection below is the v37
   // number to the last bit.
   // ---------------------------------------------------------------------
   const role = (() => {
@@ -1114,25 +1190,92 @@ export function projectPitcher(input) {
   })();
 
   const roleCal = role ? F.role[role] : null;
-  const projOutsAdj = roleCal
+
+  // ---------------------------------------------------------------------
+  // 5a-ii. BEND (v38.1) — the residual non-linearity inside the starter line.
+  //
+  // `PITCHER_FIT.bend` carries the argument. In one line: the starter line is
+  // straight, and between about 10 and 14 raw outs the relation it is
+  // approximating is not — actual depth is flat at ~14.2 outs across that
+  // whole stretch, so a straight shrink under-projects the middle of it by
+  // about 1.2 outs. `bendWeight` is a tent on the RAW projection, zero
+  // outside the window, and each market multiplies by `1 + amplitude * tent`.
+  //
+  // Gated on `role === 'starter'`, so without `input.appearanceLog` — where
+  // `role` is null — this is inert and the model is v37 to the last bit, the
+  // same guarantee `role` itself carries.
+  // ---------------------------------------------------------------------
+  const bendWeight = (() => {
+    const B = F.bend;
+    if (!B || role !== 'starter' || !Number.isFinite(projOuts)) return 0;
+    const lo = B.lo;
+    const peak = B.peak;
+    const hi = B.hi;
+    if (!(Number.isFinite(lo) && Number.isFinite(peak) && Number.isFinite(hi))) return 0;
+    if (!(lo < peak && peak < hi)) return 0;
+    if (projOuts <= lo || projOuts >= hi) return 0;
+    return projOuts < peak ? (projOuts - lo) / (peak - lo) : (hi - projOuts) / (hi - peak);
+  })();
+  /**
+   * The bend's multiplier for one market. Exactly 1 whenever the tent is zero
+   * or the market has no fitted amplitude, which is what keeps every market
+   * this is not fitted for — and every start outside the window — untouched.
+   */
+  const bendMul = bendWeight > 0 && Number.isFinite(F.bend?.amp)
+    ? 1 + F.bend.amp * bendWeight
+    : 1;
+
+  /** The role line on its own, before the bend. */
+  const projOutsRole = roleCal
     ? Math.max(3, shrinkToMean(projOuts, roleCal[0], roleCal[1]) * (roleCal[2] ?? 1) * driftFor('outs'))
     : projOutsCal;
+  const projOutsAdj = roleCal ? Math.max(3, projOutsRole * bendMul) : projOutsCal;
 
   /**
-   * What the role read did to projected depth, as a ratio. Exactly 1 whenever
-   * the role read did not fire, which is what makes every line below a no-op
-   * without `input.appearanceLog`.
+   * What the ROLE LINE did to projected depth, as a ratio — the bend is not in
+   * it, and rides separately below. Exactly 1 whenever the role read did not
+   * fire, which is what makes every line below a no-op without
+   * `input.appearanceLog`.
    *
-   * Batters faced ride depth, and every counting stat is `projBF x a rate`.
-   * The role read moved the depth, not the rate, so the counting stats move
-   * with it: `pass` is 1 per market and is a switch, not a fitted coefficient.
+   * Batters faced ride depth, and every counting stat is `projBF x a rate`, so
+   * a market that believes the new depth should carry the change. `pass` is
+   * how much of it each market carries, per class — see `PITCHER_FIT.role`.
    */
-  const depthShift = projOutsCal > 0 && Number.isFinite(projOutsAdj)
-    ? projOutsAdj / projOutsCal
+  const roleShift = projOutsCal > 0 && Number.isFinite(projOutsRole)
+    ? projOutsRole / projOutsCal
     : 1;
+  /**
+   * How much of the ROLE line's depth change this market carries, for THIS
+   * start's class. A number applies to every class (v38's shipped form); an
+   * object keyed by class lets each population carry its own, which is what
+   * v38.1 needs — see `PITCHER_FIT.role.pass` and docs/PITCHER-REPAIR.md. A
+   * missing entry is zero, i.e. the market does not move at all.
+   */
+  const passFor = (market) => {
+    const p = F.role?.pass?.[market];
+    if (p == null) return 0;
+    if (typeof p === 'object') {
+      const v = role ? p[role] : null;
+      return Number.isFinite(v) ? v : 0;
+    }
+    return Number.isFinite(p) ? p : 0;
+  };
+  /**
+   * How much of the BEND this market carries. The bend is a change in believed
+   * depth in a band where every market reads low, not a recalibration of a
+   * population, so all four carry the whole of it — `F.bend.pass` is 1 per
+   * market, and a market missing from it carries nothing, so `pass: {}`
+   * switches the term down to the outs market alone.
+   */
+  const bendPassFor = (market) => {
+    const p = F.bend?.pass?.[market];
+    return Number.isFinite(p) ? p : 0;
+  };
   const carry = (value, market) => {
-    const pass = F.role?.pass?.[market];
-    return pass ? value * depthShift ** pass : value;
+    const pass = passFor(market);
+    const withRole = pass ? value * roleShift ** pass : value;
+    const bp = bendMul !== 1 ? bendPassFor(market) : 0;
+    return bp ? withRole * bendMul ** bp : withRole;
   };
 
   const projHAdj = carry(calibrated(projH, 0.2, 'hits', 4.88, 0.89, T.hLevel), 'hits');

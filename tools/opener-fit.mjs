@@ -3,9 +3,14 @@
 //
 //   node tools/opener-fit.mjs --from 2025-03-20 --to 2025-10-01 --out .work/orf_25.ndjson
 //
-// Writes one row per start: the RAW (pre-calibration) outs projection, the
-// shipped one, the model's own PMF spread, the actual, and the role features
-// derived from the pitcher's full appearance log.
+//   node tools/opener-fit.mjs --report .work/orf_25.ndjson .work/orf_26.ndjson
+//   node tools/opener-fit.mjs --bend   .work/orf_25.ndjson .work/orf_26.ndjson
+//
+// Writes one row per start: the RAW (pre-calibration) projection in every
+// market, the v37 one, the one this working tree ships, the model's own PMF
+// spread, the actual, and the role features derived from the pitcher's full
+// appearance log. `--report` is docs/OPENER-FIX.md's diagnosis; `--bend` is
+// docs/PITCHER-REPAIR.md's.
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildStarts, pitcherLogs } from './backtest-pitchers.mjs';
@@ -20,7 +25,18 @@ const OUT = arg('out', null);
  * supersedes `cal.outs`, so leaving it on would make "raw" the calibrated
  * number and every line fitted from it an identity.
  */
-const RAW_FIT = { ...PITCHER_FIT, cal: { ...PITCHER_FIT.cal, outs: [0, 1, 1] }, role: null, progress: null };
+const RAW_FIT = {
+  ...PITCHER_FIT,
+  cal: { ...PITCHER_FIT.cal, outs: [0, 1, 1], hits: [0, 1, 1], bb: [0, 1, 1], k: [0, 1, 1], er: [0, 1, 1] },
+  role: null,
+  progress: null,
+};
+/**
+ * The SHIPPED model, every term on, as it stands on this branch.
+ * `--ship '{"bend":null}'` writes the rows a tree WITHOUT that term would
+ * write, which is how the bend's own fit is reproduced after it has shipped.
+ */
+const SHIP_FIT = { ...PITCHER_FIT, ...(arg('ship', null) ? JSON.parse(arg('ship')) : {}) };
 /** The v37 control: the shipped model with the role term switched off. */
 const CTL_FIT = { ...PITCHER_FIT, role: null };
 /** The outs ladder `tools/accuracy-report.mjs` scores. */
@@ -36,13 +52,15 @@ function appearancesBefore(logs, date) {
   return out;
 }
 
-const REPORT = process.argv.includes('--report');
+const REPORT = process.argv.includes('--report') || process.argv.includes('--bend');
 const starts = REPORT ? [] : buildStarts();
 if (!REPORT) process.stderr.write(`${starts.length} starts\n`);
 const rows = [];
 for (const s of starts) {
   const ship = projectPitcher({ ...s.input, fit: CTL_FIT });
   const raw = projectPitcher({ ...s.input, fit: RAW_FIT });
+  // The model as it currently stands on this branch.
+  const now = projectPitcher({ ...s.input, fit: SHIP_FIT });
   const app = appearancesBefore(pitcherLogs.get(s.id) || [], s.date);
   const s26 = s.input.season26 || {};
   const s25 = s.input.season25 || {};
@@ -61,6 +79,16 @@ for (const s of starts) {
     ip: Math.round(1e3 * ship.projIP) / 1e3,
     a: s.actual.outs, ak: s.actual.k,
     kraw: Math.round(1e4 * raw.projK) / 1e4, kship: Math.round(1e4 * ship.projK) / 1e4,
+    // The shipped model, and the other three counting markets, so the repair
+    // in docs/PITCHER-REPAIR.md can be fitted on the same rows. The `*raw`
+    // fields are the projection before ANY calibration, `*ctl` is v37 (role
+    // off) and `now`/`*now` is whatever this working tree ships.
+    now: Math.round(1e4 * now.projOuts) / 1e4,
+    know: Math.round(1e4 * now.projK) / 1e4,
+    hraw: Math.round(1e4 * raw.projH) / 1e4, hctl: Math.round(1e4 * ship.projH) / 1e4, hnow: Math.round(1e4 * now.projH) / 1e4,
+    braw: Math.round(1e4 * raw.projBB) / 1e4, bctl: Math.round(1e4 * ship.projBB) / 1e4, bnow: Math.round(1e4 * now.projBB) / 1e4,
+    eraw: Math.round(1e4 * raw.projER) / 1e4, ectl: Math.round(1e4 * ship.projER) / 1e4, enow: Math.round(1e4 * now.projER) / 1e4,
+    ah: s.actual.hits, ab: s.actual.bb, ae: s.actual.er,
     // v37's own outs ladder, so --report can print the calibration gap of a
     // slice without re-projecting it.
     lad: OUTS_LINES.map((l) => Math.round(1e5 * ship.dist.outs(l)) / 1e5),
@@ -162,6 +190,94 @@ export function report(rows, until = '2026-08-10') {
     }
     console.log(`  w=${w}  ${out.join('  ')}`);
   }
+}
+
+// ── the bend, fitted and checked season by season ───────────────────────────
+//
+//   node tools/opener-fit.mjs --bend .work/orf_25.ndjson .work/orf_26.ndjson
+//
+// Everything docs/PITCHER-REPAIR.md claims about the residual non-linearity
+// inside the starter line comes out of here, on the FIT split only. Run it
+// against rows written BEFORE the bend shipped to reproduce the fit; run it
+// against rows written after to see what is left.
+export function bendReport(rows, until = '2026-08-10') {
+  const cls = (r) => (r.l3max == null ? 'debut' : r.l3max <= 6 ? 'opener' : 'starter');
+  const S = rows.filter((r) => Number.isFinite(r.now) && cls(r) === 'starter');
+  const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const win = {
+    both: (r) => r.d < until,
+    2025: (r) => r.d < '2026-01-01',
+    2026: (r) => r.d >= '2026-01-01' && r.d < until,
+    validate: (r) => r.d >= until && r.d <= '2026-09-01',
+  };
+  const tent = (x, lo, pk, hi) => (x <= lo || x >= hi ? 0 : x < pk ? (x - lo) / (pk - lo) : (hi - x) / (hi - pk));
+
+  console.log('\nthe starter line against what happened, by the RAW projection it starts from:');
+  console.log('  raw bucket      n     raw   line  actual   2025    2026');
+  for (const [lo, hi] of [[0, 9], [9, 10], [10, 11], [11, 12], [12, 13], [13, 14], [14, 15], [15, 16], [16, 17], [17, 18], [18, 19], [19, 30]]) {
+    const g = S.filter((r) => win.both(r) && r.raw >= lo && r.raw < hi);
+    if (g.length < 10) { console.log(`  ${lo}-${hi}: n=${g.length} (thin)`); continue; }
+    const a = g.filter(win[2025]);
+    const b = g.filter(win[2026]);
+    console.log(
+      `  ${`${lo}-${hi}`.padEnd(10)} ${String(g.length).padStart(5)}  ${mean(g.map((r) => r.raw)).toFixed(2)}  ` +
+      `${mean(g.map((r) => r.now)).toFixed(2)}  ${mean(g.map((r) => r.a)).toFixed(2)}   ` +
+      `${a.length ? mean(a.map((r) => r.a)).toFixed(2) : '   -'}   ${b.length ? mean(b.map((r) => r.a)).toFixed(2) : '   -'}`,
+    );
+  }
+
+  /** The tent's amplitude by least squares of actual on `line * (1 + A * tent)`. */
+  const fitAmp = (rs, lo, pk, hi) => {
+    let num = 0;
+    let den = 0;
+    let n = 0;
+    let ss = 0;
+    for (const r of rs) {
+      const p = tent(r.raw, lo, pk, hi) * r.now;
+      if (p > 0) n++;
+      num += p * (r.a - r.now);
+      den += p * p;
+    }
+    const A = den ? num / den : 0;
+    for (const r of rs) ss += (r.a - r.now * (1 + A * tent(r.raw, lo, pk, hi))) ** 2;
+    return { A, n, se: den ? Math.sqrt((ss / Math.max(1, rs.length - 1)) / den) : 0 };
+  };
+
+  console.log('\nthe tent it wants, fitted by least squares on the starter class (actual ~ line * (1 + A*tent)):');
+  console.log('  lo  peak  hi  |   A      se      n  |  2025     2026   | validate');
+  for (const geo of [[9.5, 11.5, 14], [10, 11.5, 14], [10, 11.5, 13.5], [10, 12, 14], [9, 11, 14], [10, 11, 14], [10.5, 12, 14], [10, 11.5, 14.5], [8, 11.5, 14], [10, 11.5, 15]]) {
+    const b = fitAmp(S.filter(win.both), ...geo);
+    const a = fitAmp(S.filter(win[2025]), ...geo);
+    const c = fitAmp(S.filter(win[2026]), ...geo);
+    const v = fitAmp(S.filter(win.validate), ...geo);
+    console.log(
+      `  ${geo[0]}  ${geo[1]}  ${geo[2]}  |  ${b.A.toFixed(4)}  ${b.se.toFixed(4)}  ${String(b.n).padStart(4)} | ` +
+      ` ${a.A.toFixed(4)}  ${c.A.toFixed(4)}  |  ${v.A.toFixed(4)} (n=${v.n})`,
+    );
+  }
+
+  console.log('\nthe two cells docs/OPENER-FIX.md left open, by the projection this tree makes:');
+  for (const [lab, f] of [
+    ['projected under 11 outs', (r) => r.now < 11],
+    ['projected 12.5-13.5 outs', (r) => r.now >= 12.5 && r.now < 13.5],
+    ['projected 11-14 outs', (r) => r.now >= 11 && r.now < 14],
+  ]) {
+    for (const w of ['both', '2025', '2026']) {
+      const g = S.filter((r) => win[w](r) && f(r));
+      if (!g.length) continue;
+      const d = g.map((r) => r.a - r.now);
+      const m = mean(d);
+      const se = Math.sqrt(d.reduce((a, b) => a + (b - m) ** 2, 0) / d.length / d.length);
+      console.log(`  ${lab.padEnd(26)} ${w.padEnd(5)} n=${String(g.length).padStart(4)}  ${m >= 0 ? '+' : ''}${m.toFixed(2)} +- ${se.toFixed(2)}`);
+    }
+  }
+}
+
+if (process.argv.includes('--bend')) {
+  const files = process.argv.filter((a) => a.endsWith('.ndjson'));
+  const loaded = [];
+  for (const f of files) for (const l of fs.readFileSync(f, 'utf8').split('\n')) if (l.trim()) loaded.push(JSON.parse(l));
+  bendReport(loaded);
 }
 
 if (process.argv.includes('--report')) {
