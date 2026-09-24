@@ -38,7 +38,7 @@
  */
 
 import { clamp } from '../lib/probability.js';
-import { parkFactor } from '../lib/parks.js';
+import { parkFactor, parkWindFactor } from '../lib/parks.js';
 import { probToAmerican } from '../lib/odds.js';
 
 /** Largest run count tracked per team; mass beyond it is lumped at the cap. */
@@ -696,7 +696,9 @@ function starterComponentRa9(starter, league, park) {
  *        ERA/FIP regression, `runsAllowedTalent`.
  *   `starter.restDays` missing                        -> no rest term.
  *   `wx.windDir` missing or across the field          -> no wind term, which
- *        is the v36 behaviour exactly.
+ *        is the v36 behaviour exactly, and no park-specific wind term either.
+ *   a venue with no row in `PARK_WIND`                -> no park-specific wind
+ *        term. Only Wrigley has one; see src/lib/parks.js.
  *   `wx.tempF` missing                                -> no temperature term.
  *
  * @param {object} input
@@ -718,7 +720,13 @@ function starterComponentRa9(starter, league, park) {
  */
 export function projectGame({ away, home, league, park, wx }) {
   const P = GAME_INPUTS;
-  const env = parkFactor(park, 'runs', P.parkExp) * weatherFactor(wx);
+  // Park, weather, and — for the one park that has earned one — the park's own
+  // answer to the wind. `parkWindFactor` is 1 for every other venue and for
+  // every game whose wind is calm, across the field, indoors or unreported, so
+  // this line is the v37 line unchanged except at Wrigley with a reading.
+  const env = parkFactor(park, 'runs', P.parkExp)
+    * weatherFactor(wx)
+    * parkWindFactor(park, wx && !wx.indoor ? windSign(wx.windDir) : 0);
 
   // Half of a team's games are in its own park, and its season lines carry that
   // park in both directions: Rockies hitters look better and Rockies pitchers

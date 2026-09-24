@@ -50,6 +50,21 @@ They need Playwright, which is deliberately NOT a dependency (it would add
   `fit` and `ablate` never touch a price. `holdout` requires the weight already
   chosen on `validate`, and is meant to be run once.
 
+- `park-fit.mjs` — fits the ballpark out of the game model's own residuals and
+  says whether a fitted park factor beats the table that is already in
+  `src/lib/parks.js`. Reads the records `accuracy-extract.mjs --kind games`
+  writes, joins the feature table back on for the venue and first-pitch
+  weather, and reports the per-park bias against a series-block permutation
+  floor, a partially-pooled park x wind interaction, a partially-pooled park
+  level, whether either PERSISTS from one season to the next, and the classic
+  box-score park factor against the published table. Method and verdict:
+  `docs/PARK-FIX.md`. It fits nothing outside its FIT window and reads no price.
+
+      node tools/park-fit.mjs --acc .backtest-cache/acc_g_before.ndjson \
+        --features .backtest-cache/features_2025.json \
+        --features .backtest-cache/features_2026.json \
+        --out .backtest-cache/park-fit.json
+
 - `venue-gap.mjs` — sportsbook consensus vs Kalshi cost (fee included) for the
   same contract, right now. Measures whether the two venues disagree enough to
   trade without needing the model to be right. First run (2026-09-17, 235

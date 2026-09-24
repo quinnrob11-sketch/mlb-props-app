@@ -582,6 +582,56 @@ test('wind only counts once it is signed, and it is symmetric', () => {
   close(out - across, across - inward, 0.02, 'symmetric about calm');
 });
 
+// ── v38: the park's own answer to the wind (docs/PARK-FIX.md) ──────────────
+
+import { PARK_WIND, parkWindFactor } from '../src/lib/parks.js';
+
+test('the park wind term is exactly neutral without a park, a sign, or a reading', () => {
+  // Every way the input can be missing, and every one of them returns 1 — the
+  // behaviour this model had before PARK_WIND existed.
+  assert.equal(parkWindFactor('Wrigley Field', 0), 1);
+  assert.equal(parkWindFactor('Wrigley Field', null), 1);
+  assert.equal(parkWindFactor('Wrigley Field', undefined), 1);
+  assert.equal(parkWindFactor('Target Field', 1), 1);
+  assert.equal(parkWindFactor('Target Field', -1), 1);
+  assert.equal(parkWindFactor('a park that does not exist', 1), 1);
+  assert.equal(parkWindFactor(undefined, 1), 1);
+  // And the same at the projection: at a park with no row, a signed wind moves
+  // the total by the league term alone.
+  const at = (park, windDir) => projectGame({
+    away: portSide(), home: portSide(), league: PORT_LEAGUE, park,
+    wx: { indoor: false, tempF: 72, windMph: 15, windDir },
+  }).projTotal;
+  // Not exactly 1 + windCoef*mph: the skipped ninth and the walk-off make the
+  // projected total a little less than proportional to the scoring rate.
+  close(at('Target Field', 'Out To CF') / at('Target Field', 'R To L'), 1 + GAME_INPUTS.windCoef * 15, 0.01,
+    'a park with no row gets the league wind term and nothing else');
+});
+
+test('Wrigley carries a wind term the other parks do not, and only when the wind is signed', () => {
+  assert.ok(PARK_WIND['Wrigley Field'].out > 1.1 && PARK_WIND['Wrigley Field'].in < 0.95);
+  const at = (park, wx) => projectGame({
+    away: portSide(), home: portSide(), league: PORT_LEAGUE, park, wx,
+  }).projTotal;
+  const calm = { indoor: false, tempF: 72, windMph: 15, windDir: 'R To L' };
+  const out = { ...calm, windDir: 'Out To CF' };
+  const inward = { ...calm, windDir: 'In From CF' };
+  // Across the field, Wrigley and a neutral park differ only by the published
+  // park factor — the new term is not in the answer at all.
+  close(at('Wrigley Field', calm) / at('Target Field', calm),
+    at('Wrigley Field', { indoor: false, tempF: 72 }) / at('Target Field', { indoor: false, tempF: 72 }),
+    1e-9, 'an unsigned wind leaves Wrigley exactly where it was');
+  // With a sign, Wrigley moves far more than the league term alone.
+  const wrigleySwing = at('Wrigley Field', out) / at('Wrigley Field', inward);
+  const otherSwing = at('Target Field', out) / at('Target Field', inward);
+  assert.ok(wrigleySwing > 1.3 * otherSwing, `${wrigleySwing} vs ${otherSwing}`);
+  assert.ok(at('Wrigley Field', out) > at('Wrigley Field', calm));
+  assert.ok(at('Wrigley Field', inward) < at('Wrigley Field', calm));
+  // A dome cannot acquire one, even if a feed puts a direction on it.
+  close(at('Wrigley Field', { indoor: true, tempF: 72, windMph: 15, windDir: 'Out To CF' }),
+    at('Wrigley Field', { indoor: true }), 1e-12, 'indoor is indoor');
+});
+
 test('a missing prior season is league average, not a free pass out of the shrink', () => {
   const great = portGame({ offensePrior: { runs: 900, gamesPlayed: 162 } });
   const poor = portGame({ offensePrior: { runs: 550, gamesPlayed: 162 } });
