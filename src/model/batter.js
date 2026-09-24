@@ -409,6 +409,59 @@ export const BATTER_TUNING = {
   rbiLevel: 1.0,
   sbScale: SB_SCALE,
   /**
+   * WHICH SIDE OF THE BALLPARK HE IS BATTING ON. ADDED(2026-09-23,
+   * docs/HOMEFIELD.md).
+   *
+   * `isAway` reached this model in exactly one place before today — the
+   * plate-appearance table, where it is worth +-0.08 trips because the away
+   * team bats a guaranteed nine innings. That is a SCHEDULING fact. It says
+   * nothing about how well he hits, and the box score says the side of the
+   * ballpark is worth a good deal more than nothing. Over 9,400 team-games
+   * across 2025 and 2026, with no model involved (`tools/homefield-probe.mjs`),
+   * a team batting at home against the same team batting away:
+   *
+   *                       2025     2026
+   *       K per PA        -4.6%    -5.1%
+   *       BB per PA       +5.9%    +4.9%
+   *       batting average +2.6%    +2.8%
+   *       hits per PA     +1.8%    +2.2%
+   *       RUNS per PA     +6.5%    +6.0%
+   *
+   * Runs move three times as far as hits do, which is the part a per-PA rate
+   * model cannot get for free: the same baserunners are worth more when the
+   * whole lineup is hitting better, and the home team's last at-bat is played
+   * only when it is close. So scoring carries its own coefficient rather than
+   * inheriting the contact one.
+   *
+   * SIGN CONVENTION, matching `PITCHER_TUNING`: `1 + side * coefficient`, side
+   * +1 at home and -1 away. Positive means more of it at home, so `homeK` is
+   * negative and the other three are not. Every one is exactly neutral when
+   * `input.isAway` is not a boolean, and 0 restores the pre-2026-09-23 model
+   * bit for bit. Note this is a stricter fallback than the plate-appearance
+   * tweak above it, which has always read a missing `isAway` as "home"; that
+   * behaviour is left alone.
+   *
+   * `homeHit` scales the NON-HR hit rate, so hits, total bases and singles all
+   * inherit it; `homeRun` scales `runContext`, so runs, RBIs and H+R+RBI do.
+   * Fitted on 2025 entire + 2026 through 2026-08-09 by log loss over the
+   * standard ladder, validated on 2026-08-10..09-01.
+   */
+  homeHit: 0.01,
+  /**
+   * ZERO, AND MEASURED TO BE. The box score does say a team hits 1.2% (2025)
+   * and 3.9% (2026) more home runs per plate appearance at home, but the
+   * home-run market is the one batter market with NO side asymmetry to
+   * correct:
+   * its calibration gap already reads -0.20 home against -0.13 away over
+   * 86,220 batter-games, and every value tried made the validation window
+   * worse (log loss 0.18703 at 0, 0.18705 at 0.01, 0.18710 at 0.03). The
+   * power leg is left alone; `homeHit` carries the contact leg, which is
+   * where the effect that IS there lives.
+   */
+  homeHr: 0,
+  homeK: -0.025,
+  homeRun: 0.03,
+  /**
    * Shrinkage strength (PA) of the home-run rate toward its 0.03 prior. Was
    * 100: projected-HR slope on actual was 0.81 (fit) / 0.87 (holdout), i.e.
    * the model believed hitters' HR differences more than they held up. 300 was
@@ -1163,7 +1216,14 @@ export function projectBatter(input) {
   // starter's rates are themselves clamped.
   const parkRuns = parkFactor(park, 'runs', 0.7 * pk);
   const runWeather = 1 + RUN_CONTEXT_PASSTHROUGH * (weatherHrFactor(wx) - 1);
-  const runContext = spRunEnv * parkRuns * runWeather;
+
+  // WHICH SIDE OF THE BALLPARK (see `homeHit` in BATTER_TUNING). `side` is +1
+  // at home, -1 away and 0 when the caller does not say, which makes all four
+  // coefficients exactly neutral without a boolean `isAway`.
+  const side = typeof isAway === 'boolean' ? (isAway ? -1 : 1) : 0;
+  const sideFactor = (coef) => 1 + side * (coef || 0);
+
+  const runContext = spRunEnv * parkRuns * runWeather * sideFactor(T.homeRun);
 
   // ---------------------------------------------------------------------
   // 6. Adjusted per-PA probabilities.
@@ -1193,7 +1253,7 @@ export function projectBatter(input) {
   const slotContactMult = T.slotContact ? Math.exp(-T.slotContact * slotCentre) : 1;
 
   const hrPARaw = clamp(
-    rates.hr * spHr * parkHrWeather * slotPowerMult * T.powerShare * T.hrLevel,
+    rates.hr * spHr * parkHrWeather * slotPowerMult * T.powerShare * T.hrLevel * sideFactor(T.homeHr),
     0.002, 0.1,
   );
 
@@ -1220,7 +1280,7 @@ export function projectBatter(input) {
   // measured answer is neither 0.975 nor 1.0.
   const nonHrHitPARaw = Math.max(
     0,
-    (rates.hit - rates.hr) * spHit * parkHits * slotContactMult * T.contactShare,
+    (rates.hit - rates.hr) * spHit * parkHits * slotContactMult * T.contactShare * sideFactor(T.homeHit),
   );
 
   // The [0.05, 0.42] clamp still applies to the TOTAL hit rate, as before. When
@@ -1234,7 +1294,7 @@ export function projectBatter(input) {
 
   // K rate. The platoon term used to invert here (`2 - platoon`, so a batter
   // with the advantage struck out less); section 3 says why it is gone.
-  const kPA = clamp(rates.k * spK * parkSo, 0.05, 0.45);
+  const kPA = clamp(rates.k * spK * parkSo * sideFactor(T.homeK), 0.05, 0.45);
 
   // ---------------------------------------------------------------------
   // 7. Hit-type decomposition.

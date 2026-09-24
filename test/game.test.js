@@ -524,11 +524,23 @@ test('a reliever handed a start gets a reliever-sized leash, not 82 pitches', ()
 test('home/away terms are neutral unless the caller says which side', () => {
   const s26 = { gamesStarted: 20, gamesPlayed: 20, numberOfPitches: 1800, battersFaced: 480, strikeOuts: 110, baseOnBalls: 35, hits: 105, homeRuns: 12, inningsPitched: '115.0', era: '3.90' };
   const gameLog = [1, 2, 3].map((i) => ({ ip: 6, pitches: 92, bf: 24, k: 6, date: `2026-08-0${i}` }));
-  const run = (isHome) => projectPitcher({ season26: s26, season25: null, gameLog, park: 'Target Field', isHome });
+  const run = (isHome, tuning) => projectPitcher({ season26: s26, season25: null, gameLog, park: 'Target Field', isHome, tuning });
   const neutral = run(undefined), home = run(true), away = run(false);
+  // Every market the side of the ballpark is priced in, in the direction the
+  // box score says (docs/HOMEFIELD.md): a home starter strikes out more, goes
+  // longer, and allows fewer hits, walks and earned runs.
   assert.ok(home.projK > neutral.projK && neutral.projK > away.projK);
   assert.ok(home.projOuts > neutral.projOuts && neutral.projOuts > away.projOuts);
-  assert.equal(projectPitcher({ season26: s26, season25: null, gameLog, park: 'Target Field', isHome: true, tuning: { homeK: 0, homeBudget: 0 } }).projK, neutral.projK);
+  assert.ok(home.rates.adjH < neutral.rates.adjH && neutral.rates.adjH < away.rates.adjH);
+  assert.ok(home.rates.adjBB < neutral.rates.adjBB && neutral.rates.adjBB < away.rates.adjBB);
+  assert.ok(home.projER < neutral.projER && neutral.projER < away.projER);
+  // With every coefficient switched off, the side of the ballpark is not read
+  // at all and a home start is bit-for-bit the side-blind projection.
+  const OFF = { homeK: 0, homeBudget: 0, homeH: 0, homeBB: 0, homeHR: 0, homeER: 0 };
+  for (const m of ['projK', 'projOuts', 'projH', 'projBB', 'projER']) {
+    assert.equal(run(true, OFF)[m], neutral[m], m);
+    assert.equal(run(false, OFF)[m], neutral[m], m);
+  }
 });
 
 // ── v37: the ported per-game inputs (docs/GAME-PORT.md) ────────────────────

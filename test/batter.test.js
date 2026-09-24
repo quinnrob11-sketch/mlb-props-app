@@ -280,3 +280,35 @@ test('the duty tilt still leaves every distribution mean equal to its projection
     assert.ok(Math.abs(p.paDist.reduce((a, [n, w]) => a + n * w, 0) - p.pa) < 1e-6, 'pa');
   }
 });
+
+// ── 2026-09-23: which side of the ballpark he is batting on (docs/HOMEFIELD.md)
+
+test('the side of the ballpark moves the markets the box score says it moves', () => {
+  const at = (isAway, tuning) => projectBatter({ season26, season25, slot: 3, isAway, spRates: null, park: 'Target Field', tuning });
+  const home = at(false), away = at(true);
+  // Contact, scoring and strikeouts, each in the measured direction.
+  assert.ok(home.projH / home.pa > away.projH / away.pa, 'hit rate');
+  assert.ok(home.projTB / home.pa > away.projTB / away.pa, 'total bases per PA');
+  assert.ok(home.projR / home.pa > away.projR / away.pa, 'runs per PA');
+  assert.ok(home.projRBI / home.pa > away.projRBI / away.pa, 'RBI per PA');
+  assert.ok(home.projK / home.pa < away.projK / away.pa, 'strikeouts per PA');
+  // The power leg carries no side term: `homeHr` is 0 and measured to be.
+  assert.equal(BATTER_TUNING.homeHr, 0);
+  assert.equal(home.projHR / home.pa, away.projHR / away.pa);
+});
+
+test('the side terms are exactly inert without a boolean isAway, and at zero', () => {
+  const OFF = { homeHit: 0, homeHr: 0, homeK: 0, homeRun: 0 };
+  const base = { season26, season25, slot: 3, spRates: null, park: 'Target Field' };
+  // No `isAway` at all: the four rate terms do not fire. (The plate-appearance
+  // tweak beside them has always read a missing `isAway` as "home", so the
+  // comparison is against a home card.)
+  const silent = projectBatter(base);
+  const homeOff = projectBatter({ ...base, isAway: false, tuning: OFF });
+  const awayOff = projectBatter({ ...base, isAway: true, tuning: OFF });
+  for (const m of ['projH', 'projTB', 'projHR', 'projR', 'projRBI', 'projK', 'proj1B', 'projHRR']) {
+    assert.equal(silent[m], homeOff[m], `${m} with no isAway`);
+    // Away still differs, but only through the +-0.08 plate appearances.
+    assert.ok(Math.abs(awayOff[m] / awayOff.pa - homeOff[m] / homeOff.pa) < 1e-12, `${m} per PA`);
+  }
+});
