@@ -432,3 +432,170 @@ Both are recorded rather than quietly fixed.
 **No rule reaches condition 2 of the pass/fail bar, so nothing is eligible to be
 confirmed on the holdout.** The holdout is used below only for what it can still
 answer: does the collapse in movement continue, and does the sign stay negative.
+
+---
+
+# Confirmation (2026-09-02 .. 2026-09-16, read once)
+
+No rule was eligible under condition 2 — not one of the 26 had a positive
+discovery ROI with an interval excluding zero — so nothing was carried forward
+to be confirmed. The holdout is used for the two questions it can still answer:
+**does the collapse in movement continue, and does the sign stay negative?**
+
+## The collapse continues, and it decides the fast arms on its own
+
+| | discovery (51 dates) | confirmation (15 dates) |
+|---|---|---|
+| fast \|Δ\| ≥ 5c, all classes | 727 (**14 a day**) | **20 (1.3 a day)** |
+| slow \|Δ\| ≥ 5c, all classes | 1,152 (23 a day) | 127 (8.5 a day) |
+| fast \|Δ\| ≥ 5c on a game line | 34 | **0** |
+| mean spread where a fast ≥5c move happened | 6.21c | **12.00c** |
+
+Condition 4 of the bar asks for 30 trades in the confirmation window. **Fifteen
+of the twenty-six tests fire fewer than 30 times; four fire zero times** (C1, C4,
+L1, L3). The fast rule is not merely unprofitable in September — it is
+essentially not a rule any more, and the handful of markets that do jump ten
+cents in ten minutes are quoting twelve cents wide when they do it.
+
+## The sign stays negative
+
+| id | arm | n | ROI [95%] | verdict |
+|---|---|---|---|---|
+| H1 | HOLD, fast, 3–4c | 66 | +0.50% [−16.90, 21.07] | zero |
+| H5 | HOLD, slow, 3–4c | 238 | −2.86% [−16.22, 10.94] | zero |
+| H6 | HOLD, slow, 5–7c | 88 | +5.76% [−22.41, 38.07] | zero |
+| C6 | HOLD, slow, ≥5c, BAT | 111 | −0.28% [−43.56, 57.74] | zero |
+| **F1** | FLIP, fast, 3–4c | 66 | **−15.70% [−17.97, −13.06]** | replicates |
+| **F5** | FLIP, slow, 3–4c | 238 | **−12.70% [−14.41, −11.11]** | replicates |
+| **F6** | FLIP, slow, 5–7c | 88 | **−20.61% [−24.71, −16.34]** | replicates |
+| R0f | noise arm, fast | 3,218 | −6.79% [−9.80, −3.68] | the toll |
+| R0s | noise arm, slow | 9,467 | −3.53% [−5.38, −1.71] | the toll |
+| RTFADEf | tradeable fade, fast | 20 | −18.62% [−57.03, 7.73] | still negative |
+| RTFADEs | tradeable fade, slow | 127 | −18.51% [−38.25, 0.85] | still negative |
+
+Those are the only arms with enough trades to mean anything, and they say the
+same three things the discovery pass said. **Holding the tail is worth zero.
+Flipping it out loses a round trip, every cell, p = 0.0002 in all eight.
+Crossing the spread with no view at all costs 1.8c to 3.4c a contract, and both
+directions lose after that.**
+
+**Two positive-looking cells are worth naming precisely because they are not
+findings.** H4 returns +16.51% with a bootstrap p of 0.0002 — on **three trades
+across two games**, all three of which won. A cluster bootstrap over two
+clusters cannot produce a meaningful interval and the p-value here is an
+artefact of resampling two things; it is reported unedited because the
+pre-registration said every cell would be. H7 returns +77% on 22 trades in 8
+games. Neither was eligible, neither fires 30 times, and neither survives a
+glance. This is exactly the shape of result the four-condition bar exists to
+throw away.
+
+# Verdict
+
+**Following a price move does not pay. The blocker is not one thing, it is
+three, in this order: there is no signal, the cost is larger than the small
+anti-signal that does exist, and at the clock where a tail would have to fire
+the price has almost stopped moving at all.**
+
+Answering the brief's questions one at a time.
+
+**1. Does a move predict continuation?** No, in both senses, and they come apart
+in an informative way.
+
+- *Does the price keep moving?* No. The mean forward mid change from the
+  decision clock to first pitch is within 0.6c of zero in seven of the eight
+  pre-registered cells, and negative in five. Trading that — the FLIP arms —
+  loses 14.6% to 21.8% on discovery and 12.7% to 58.6% on confirmation, at
+  p = 0.0002 in all sixteen cells. There is nothing there to capture and the
+  round trip costs a spread plus two fees.
+- *Does the contract settle that way?* No — worse than no. Tailing a ≥5c
+  ten-minute move and holding to settlement loses **7.34c a contract** where a
+  coin flip at the same clock loses 2.26c. Roughly 1.9c of that gap is the wider
+  spread in the cells where moves happen; the rest, about **3.2c, is the move
+  pointing the wrong way.** The other side of those same trades, at their own
+  price, returns **+8.84% [1.71, 15.97]**.
+
+**2. Where does continuation beat the 2.66c round trip?** Nowhere. Not in any
+size bucket, either speed, either exit. The closest any cell comes to positive
+with a real sample is H6 (slow, 5–7c) at −0.06% on discovery and +5.76% on
+confirmation, both intervals straddling zero by more than 20 points. The
+measured toll in this study is **2.26c–3.38c for the one-legged hold** and
+5.9c–13.9c a contract for the round trip, and the largest directional signal
+found anywhere is the 4.6c reversal in RFADEf — which is worth less than the
+6.21c spread you would pay to take it. **The reversal is real and it is not
+tradeable**, which is the same sentence `docs/MARKET-EDGE-SEARCH.md` Family C
+wrote about the longshot bias.
+
+**3. Which contracts?** Liquidity is *not* the binding constraint, which was the
+surprise. Conditioned on a live two-sided quote 30 minutes before first pitch,
+batter props have a 1c median spread and 81% trade; pitcher and game markets are
+essentially all live. The constraint is that **game lines and pitcher props,
+the two classes where a move is most likely to be somebody's opinion rather than
+a quote flicker, are the two that never move**: 54 fast ≥5c observations between
+them over 65 days, and zero on a game line in the whole confirmation window.
+Almost the entire sample is batter props, where a five-cent mid move on a
+44-contract median volume is not obviously money at all.
+
+**4. The trap.** It was avoided structurally, not statistically. Every quote in
+this study is from before the scheduled first pitch, because that is where all
+three candle archives stop — so the box-score lag `docs/MARKET-EDGE-SEARCH.md`
+Family B found is not filtered out of this sample, it is absent from it. Both
+windows sit after the median lineup posting (184 minutes before first pitch,
+p10 118, per `docs/SCRATCH-SETTLEMENT-STUDY.md`), cancelled-player markets are
+dropped, and the late reference arm ending five minutes before first pitch
+agrees with the two that were tested. The reassuring evidence that this worked
+is the sign itself: if resolved news were driving these moves, tailing them
+would have *won*. It lost.
+
+## What would change this answer
+
+- **A different clock.** Everything here is anchored 30 minutes before first
+  pitch, because that is where all three archives have 1-minute resolution.
+  Pitcher strikeout props have 1-minute candles from listing, and the money in a
+  pregame market may well move six or twelve hours out, on the lineup or the
+  weather, not in the last half hour. That window is fetchable for KXMLBKS
+  today and was not tested here.
+- **Trades, not quotes.** A mid move is not a trade. Kalshi serves per-minute
+  volume in the candle payload, which this archive discarded; a move with 200
+  contracts behind it is a different object from a move with none, and this
+  study cannot tell them apart.
+- **In-game.** All of the price action in a baseball contract is after first
+  pitch, and none of it is in this archive. That is also where the box-score lag
+  lives, so any in-game momentum study has to do real work to separate the two —
+  work this study got for free by never looking.
+
+## Caveats
+
+- **68 days, one season, and a regime change inside it.** The fast rule fires
+  fourteen times a day in July and 1.3 times a day in September. Whatever
+  changed in how these markets are quoted between July and August, this study
+  straddles it, and the discovery window is disproportionately the old regime.
+- **The fast anti-signal rests on one month.** 630 of the 727 fast ≥5c discovery
+  trades are July. August alone (n = 96) cannot resolve −5% from zero.
+- **A mid is not a price and a move in a wide book may be one side flickering.**
+  The L1 cut (spread ≤ 2c, still −19.4%) is the defence against this, on 197
+  trades.
+- **Depth is one contract and is assumed, never observed.** Candles show no
+  resting size.
+- **Taker prices throughout.** `docs/KALSHI-MAKER-STUDY.md` priced the resting
+  alternative at 2.66c a contract, filling disproportionately when the market is
+  moving against you — which is precisely the adverse selection a momentum rule
+  would walk into.
+- **Scheduled first pitch, not actual.** T comes from the ET time in the event
+  ticker. A rain delay moves the real first pitch and not this clock; the
+  archive stops at T either way, so nothing in-game leaks in, but a delayed
+  game's "T−30" is not thirty minutes before anything in particular.
+- **The confirmation window is 15 dates**, not the 21 the earlier studies had,
+  because the candle archive was built through 16 September. Extending it means
+  refetching, and nothing in the result is close enough to zero for six more
+  days to matter.
+
+## What this does not say
+
+- It does not say the market is efficient. It says that at this clock, in this
+  window, at these sizes, the price mostly does not move, and when it does, the
+  information in the move is smaller than the spread.
+- It does not touch the model. `docs/AUDIT.md` stands unchanged; no model was
+  imported here.
+- It does not test sportsbook line movement, which is what "steam" usually
+  means. That needs a multi-book historical archive this repo does not have,
+  and `docs/AUDIT.md` still names it as the open question.
