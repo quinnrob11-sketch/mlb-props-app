@@ -153,6 +153,53 @@ export function mulberry32(seed) {
   };
 }
 
+/**
+ * ROI with a 95% cluster bootstrap over games, and the two-sided bootstrap
+ * p-value a multiplicity correction consumes. Trades carry `{cluster, cost, pnl}`
+ * in cents. Shared by tools/edge-scan.mjs, tools/scratch-scan.mjs and
+ * tools/steam-scan.mjs, which are analyses rather than modules (each runs at
+ * import), so the statistics live here instead of in any one of them.
+ */
+export function roiStats(trades, { boot = 5000, seed = 20260923 } = {}) {
+  const n = trades.length;
+  if (!n) return { n: 0 };
+  const byCluster = new Map();
+  for (const t of trades) {
+    if (!byCluster.has(t.cluster)) byCluster.set(t.cluster, [0, 0]);
+    const c = byCluster.get(t.cluster);
+    c[0] += t.pnl; c[1] += t.cost;
+  }
+  const cl = [...byCluster.values()];
+  const pnl = trades.reduce((s, t) => s + t.pnl, 0);
+  const cost = trades.reduce((s, t) => s + t.cost, 0);
+  const rand = mulberry32(seed);
+  const rois = new Float64Array(boot);
+  for (let b = 0; b < boot; b++) {
+    let p = 0, c = 0;
+    for (let i = 0; i < cl.length; i++) { const k = cl[(rand() * cl.length) | 0]; p += k[0]; c += k[1]; }
+    rois[b] = c ? p / c : 0;
+  }
+  const sorted = Array.from(rois).sort((a, b) => a - b);
+  let le = 0, ge = 0;
+  for (const r of sorted) { if (r <= 0) le++; if (r >= 0) ge++; }
+  return {
+    n, games: cl.length,
+    pnlPerContract: pnl / n,
+    totalPnlCents: pnl,
+    roiPct: (100 * pnl) / cost,
+    ci95: [100 * sorted[Math.floor(0.025 * boot)], 100 * sorted[Math.floor(0.975 * boot)]],
+    p: Math.max(1 / boot, 2 * Math.min(le / boot, ge / boot)),
+  };
+}
+
+/** Benjamini-Hochberg at q; returns the set of indices that survive. */
+export function benjaminiHochberg(ps, q = 0.10) {
+  const order = ps.map((p, i) => [p, i]).sort((a, b) => a[0] - b[0]);
+  let kMax = -1;
+  for (let k = 0; k < order.length; k++) if (order[k][0] <= ((k + 1) / order.length) * q) kMax = k;
+  return new Set(order.slice(0, kMax + 1).map((x) => x[1]));
+}
+
 /** ROI and mean P&L with a cluster bootstrap over `t.cluster` (rungs of one player-game are not independent). */
 export function summarize(trades, { boot = 5000 } = {}) {
   const n = trades.length;
