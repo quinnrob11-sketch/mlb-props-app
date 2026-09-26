@@ -27,7 +27,9 @@ const pct = (v, digits = 1) =>
 const signedPct = (v, digits = 1) =>
   v == null || !isFinite(v) ? "—" : (v >= 0 ? "+" : "") + (v * 100).toFixed(digits) + "%";
 
-const cents = (v) => (v == null || !isFinite(v) ? "—" : signed(v, 1) + "¢");
+// Probability POINTS, not cents: see clvProbPts in src/analysis/profitability.js
+// for why American-odds points cannot be averaged across prices.
+const cents = (v) => (v == null || !isFinite(v) ? "—" : signed(v, 1) + "pts");
 
 const sign = (v) => (v == null || !isFinite(v) ? "" : v >= 0 ? "pos" : "neg");
 
@@ -107,7 +109,7 @@ export default function ProfitBreakdown({ version = 0 }) {
           <div className={`v ${sign(data.overall.avgClvCents)}`}>
             {cents(data.overall.avgClvCents)}
           </div>
-          <div className="l">Avg CLV vs close</div>
+          <div className="l">Avg CLV vs close (pts)</div>
         </div>
         <div className="tile">
           <div className="v">{data.nGraded}</div>

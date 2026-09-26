@@ -21,6 +21,7 @@ import {
   buildExport,
   centsLine,
   clvCents,
+  clvProbPts,
   compareCells,
   edgeBucket,
   evBucket,
@@ -192,8 +193,27 @@ test('CLV is measured in cents on the continuous American line', () => {
     row({ playerId: 2, odds: -110, closeOdds: -100 }),
     row({ playerId: 3, odds: -110 }), // no close: excluded from the average
   ];
+  // The AGGREGATE is in probability points, not American points, because
+  // American points cannot be averaged: a longshot moving +500 to +130 is 370
+  // of them and a favourite moving -110 to -150 is 40, and the second is the
+  // bigger move. Averaging the first form produced a paper record reading
+  // "CLV 39.5c" off one stolen-base row.
   const cell = aggregateBy(list, 'market', { minN: 1 }).cells[0];
-  near(cell.avgClvCents, (10 + -10) / 2, 1e-12, 'avg clv cents');
+  const expect = (clvProbPts(-110, -120) + clvProbPts(-110, -100)) / 2;
+  near(cell.avgClvCents, expect, 1e-12, 'avg clv in probability points');
+  assert.ok(Math.abs(cell.avgClvCents) < 3, 'a two-row average cannot be tens of points');
+});
+
+test('CLV in probability points is signed toward the bettor and vig-symmetric', () => {
+  // Taking -110 into a -120 close: the market moved to your side.
+  assert.ok(clvProbPts(-110, -120) > 0);
+  assert.ok(clvProbPts(-110, -100) < 0);
+  // An even-money pair is exactly zero, and the longshot that broke the old
+  // unit is now a sane size rather than 370.
+  near(clvProbPts(100, 100), 0, 1e-12, 'no move');
+  assert.ok(clvProbPts(500, 130) > 20 && clvProbPts(500, 130) < 30, 'longshot move in points');
+  assert.equal(clvProbPts(-110, null), null);
+  assert.equal(clvProbPts(0, -110), null, 'zero is not a price');
 });
 
 // ── Wilson ─────────────────────────────────────────────────────────────────

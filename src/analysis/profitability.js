@@ -150,6 +150,38 @@ export function centsLine(american) {
 }
 
 /** CLV in cents: how many cents better than the close the taken price was. */
+/**
+ * Closing-line value in PROBABILITY POINTS, which is the only unit in which it
+ * can be averaged.
+ *
+ * `clvCents` below measures the move in American-odds points, and those are
+ * not comparable across prices: a longshot drifting +500 to +130 is 370
+ * "points" while a favourite going -110 to -150 is 40, yet the second is a
+ * bigger move in anything that matters. Averaging the two produced a paper
+ * record reading "CLV 39.5c" off a single stolen-base row, which is how this
+ * was noticed.
+ *
+ * Positive means the price shortened after you took it — the market came to
+ * your side. Both prices are raw one-sided implied probabilities from the same
+ * book, so their vig largely cancels in the difference.
+ */
+export function clvProbPts(oddsTaken, closeOdds) {
+  const taken = impliedProbability(oddsTaken);
+  const close = impliedProbability(closeOdds);
+  return taken == null || close == null ? null : 100 * (close - taken);
+}
+
+/** One side's American price as a raw implied probability, vig included. */
+export function impliedProbability(american) {
+  const a = num(american);
+  if (a == null || a === 0) return null;
+  return a > 0 ? 100 / (a + 100) : -a / (-a + 100);
+}
+
+/**
+ * The same move in American-odds points. Kept because it is what the older
+ * graded files were scored with, but do not average it — see clvProbPts.
+ */
 export function clvCents(oddsTaken, closeOdds) {
   const taken = centsLine(oddsTaken);
   const close = centsLine(closeOdds);
@@ -440,7 +472,7 @@ function accumulate(acc, row) {
     }
   }
 
-  const cents = clvCents(row.odds, row.closeOdds);
+  const cents = clvProbPts(row.odds, row.closeOdds);
   if (cents != null) {
     acc.clvCentsSum += cents;
     acc.clvCentsSq += cents * cents;
