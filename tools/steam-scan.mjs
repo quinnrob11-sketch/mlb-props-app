@@ -53,10 +53,14 @@ const WINDOWS = {
   L: { look: 15, decide: 5, label: '10-minute move, T-15 -> T-5 (reference)' },
 };
 
-/** 1-2c is the noise arm and is not one of the 26 tests. */
+/**
+ * `Z` (under a cent: the mid did not move) is kept so it counts in the
+ * denominator of the activity census, and is picked by no test. 1-2c is the
+ * noise arm, reported but not one of the 26.
+ */
 const bucketOf = (d) => {
   const a = Math.abs(d);
-  if (a < 1) return null;
+  if (a < 1) return 'Z';
   if (a < 3) return 'R0';
   if (a < 5) return 'B1';
   if (a < 8) return 'B2';
@@ -115,7 +119,6 @@ function observations(markets) {
           if (!a || !b) continue;
           const d = b.mid - a.mid;
           const bucket = bucketOf(d);
-          if (!bucket) continue;
           const side = d > 0 ? 'yes' : 'no';
           const price = side === 'yes' ? b.ask : 100 - b.bid;
           const out = side === 'yes' ? close.bid : 100 - close.ask;
@@ -146,10 +149,39 @@ function observations(markets) {
 // ── trades ──────────────────────────────────────────────────────────────────
 const pay = (r, side) => (side === 'yes' ? r.payYes : 100 - r.payYes);
 
-/** Hold to settlement: one fee, one leg. `flip` inverts the side (fade arm). */
-function holdTrade(r, flip = false) {
-  const side = flip ? (r.side === 'yes' ? 'no' : 'yes') : r.side;
-  const price = flip ? 100 - r.price : r.price;
+// Every trade builder takes exactly one argument. They are invoked through an
+// explicit arrow below rather than handed to `Array.map`, which would pass the
+// index as a second argument — that mistake silently faded 726 of 727 trades
+// in the first draft, and `selfCheck` below is the assertion that caught it.
+
+/** Hold to settlement, on the side the price moved toward. One fee, one leg. */
+function holdTrade(r) {
+  const fee = feeCents(r.price);
+  return { cluster: r.cluster, cost: r.price + fee, pnl: pay(r, r.side) - r.price - fee, price: r.price };
+}
+
+/**
+ * The reference arm: the other side of the same contract at the same price.
+ * Not a tradeable rule — a real fade pays the other half of the spread too —
+ * but it makes the arithmetic identity `tail + fade = -(both fees)` visible,
+ * which is the cheapest possible check that the P&L is wired up correctly.
+ */
+function fadeTrade(r) {
+  const side = r.side === 'yes' ? 'no' : 'yes';
+  const price = 100 - r.price;
+  const fee = feeCents(price);
+  return { cluster: r.cluster, cost: price + fee, pnl: pay(r, side) - price - fee, price };
+}
+
+/**
+ * The fade a person could actually place: the opposite side at ITS own taker
+ * price, which is the tail's price plus the whole spread. If the tail bought
+ * YES at the ask, this buys NO at `100 - bid`; either way that is
+ * `100 - price + spread`.
+ */
+function fadeTakerTrade(r) {
+  const side = r.side === 'yes' ? 'no' : 'yes';
+  const price = 100 - r.price + r.spread;
   const fee = feeCents(price);
   return { cluster: r.cluster, cost: price + fee, pnl: pay(r, side) - price - fee, price };
 }
@@ -214,8 +246,12 @@ for (const [mk, nm] of [[holdTrade, 'HOLD'], [flipTrade, 'FLIP']]) {
 const REFS = [
   { id: 'R0f', label: `HOLD, ${WINDOWS.F.label}, |move| 1-2c (noise arm)`, pick: (r) => r.w === 'F' && r.bucket === 'R0', make: holdTrade },
   { id: 'R0s', label: `HOLD, ${WINDOWS.S.label}, |move| 1-2c (noise arm)`, pick: (r) => r.w === 'S' && r.bucket === 'R0', make: holdTrade },
-  { id: 'RFADEf', label: `HOLD the OPPOSITE side, ${WINDOWS.F.label}, |move| >= 5c`, pick: (r) => r.w === 'F' && Math.abs(r.move) >= 5, make: (r) => holdTrade(r, true) },
-  { id: 'RFADEs', label: `HOLD the OPPOSITE side, ${WINDOWS.S.label}, |move| >= 5c`, pick: (r) => r.w === 'S' && Math.abs(r.move) >= 5, make: (r) => holdTrade(r, true) },
+  { id: 'RFADEf', label: `HOLD the OPPOSITE side, ${WINDOWS.F.label}, |move| >= 5c`, pick: (r) => r.w === 'F' && Math.abs(r.move) >= 5, make: fadeTrade },
+  { id: 'RFADEs', label: `HOLD the OPPOSITE side, ${WINDOWS.S.label}, |move| >= 5c`, pick: (r) => r.w === 'S' && Math.abs(r.move) >= 5, make: fadeTrade },
+  { id: 'RTFADEf', label: `HOLD the opposite side at ITS taker price, ${WINDOWS.F.label}, |move| >= 5c`, pick: (r) => r.w === 'F' && Math.abs(r.move) >= 5, make: fadeTakerTrade },
+  { id: 'RTFADEs', label: `HOLD the opposite side at ITS taker price, ${WINDOWS.S.label}, |move| >= 5c`, pick: (r) => r.w === 'S' && Math.abs(r.move) >= 5, make: fadeTakerTrade },
+  { id: 'RPOOLf', label: `HOLD, ${WINDOWS.F.label}, |move| >= 5c, all classes pooled`, pick: (r) => r.w === 'F' && Math.abs(r.move) >= 5, make: holdTrade },
+  { id: 'RPOOLs', label: `HOLD, ${WINDOWS.S.label}, |move| >= 5c, all classes pooled`, pick: (r) => r.w === 'S' && Math.abs(r.move) >= 5, make: holdTrade },
   { id: 'RLATEh', label: `HOLD, ${WINDOWS.L.label}, |move| >= 5c`, pick: (r) => r.w === 'L' && Math.abs(r.move) >= 5, make: holdTrade },
   { id: 'RLATEf', label: `FLIP, ${WINDOWS.L.label}, |move| >= 5c`, pick: (r) => r.w === 'L' && Math.abs(r.move) >= 5, make: flipTrade },
 ];
@@ -226,12 +262,32 @@ process.stderr.write(`${markets.size} settled markets indexed\n`);
 const { rows, cov } = observations(markets);
 process.stderr.write(`${rows.length} observations\n`);
 
+/**
+ * One runnable check, on the real rows: tailing and fading the same contract at
+ * the same price must sum to exactly minus the two fees, holding must cost what
+ * it pays for, and a flip out at the same quote it entered must lose exactly two
+ * fees. If the P&L is mis-wired, this throws before any number is printed.
+ */
+function selfCheck(sample) {
+  for (const r of sample) {
+    const h = holdTrade(r);
+    const f = fadeTrade(r);
+    const sum = h.pnl + f.pnl;
+    const fees = feeCents(r.price) + feeCents(100 - r.price);
+    if (Math.abs(sum + fees) > 1e-9) throw new Error(`tail+fade=${sum}, expected ${-fees} (${r.cluster})`);
+    if (Math.abs(h.cost - (r.price + feeCents(r.price))) > 1e-9) throw new Error('hold cost');
+    const flat = flipTrade({ ...r, exit: r.price });
+    if (Math.abs(flat.pnl + 2 * feeCents(r.price)) > 1e-9) throw new Error('flip at a flat price should cost two fees');
+  }
+}
+selfCheck(rows.slice(0, 500));
+
 const inDiscovery = (r) => r.date <= SPLIT;
 const score = (t) => {
   const d = rows.filter((r) => inDiscovery(r) && t.pick(r));
   const c = rows.filter((r) => !inDiscovery(r) && t.pick(r));
   const stat = (set) => {
-    const s = roiStats(set.map(t.make));
+    const s = roiStats(set.map((r) => t.make(r)));
     if (!s.n) return s;
     s.avgMove = set.reduce((x, r) => x + Math.abs(r.move), 0) / set.length;
     s.avgSpread = set.reduce((x, r) => x + r.spread, 0) / set.length;
@@ -267,7 +323,42 @@ results.liquidity = Object.fromEntries(Object.keys(CLASSES).map((cls) => {
 results.census = {};
 for (const w of Object.keys(WINDOWS)) {
   const set = rows.filter((r) => r.w === w);
-  results.census[w] = Object.fromEntries(['R0', ...BUCKETS].map((b) => [b, set.filter((r) => r.bucket === b).length]));
+  results.census[w] = Object.fromEntries(['Z', 'R0', ...BUCKETS].map((b) => [b, set.filter((r) => r.bucket === b).length]));
+}
+
+// How often a move of any size happens at all, by month. This is the study's
+// most important descriptive: the raw material for a tail either exists or it
+// does not, and whether it exists changed sharply inside the window.
+results.activity = {};
+for (const w of Object.keys(WINDOWS)) {
+  const byMonth = {};
+  for (const r of rows) {
+    if (r.w !== w) continue;
+    const k = `${r.date.slice(0, 7)} ${r.cls}`;
+    const a = byMonth[k] ||= { quoted: 0, ge3: 0, ge5: 0, ge8: 0 };
+    a.quoted++;
+    const d = Math.abs(r.move);
+    if (d >= 3) a.ge3++;
+    if (d >= 5) a.ge5++;
+    if (d >= 8) a.ge8++;
+  }
+  results.activity[w] = byMonth;
+}
+for (const [cls, c] of Object.entries(cov)) for (const w of Object.keys(WINDOWS)) c.quoted[w] ||= 0;
+
+// Post-hoc, added AFTER the discovery pass was scored, because the activity
+// census above makes it necessary to ask: the fast rule fires almost entirely
+// in July, so is its sign a July artefact? Not corrected, not a test, and it
+// cannot become a finding. Discovery rows only unless --confirm.
+results.postHoc = {};
+for (const w of ['F', 'S']) {
+  for (const mo of ['2026-07', '2026-08', '2026-09']) {
+    const set = rows.filter((r) => r.w === w && Math.abs(r.move) >= 5 && r.date.startsWith(mo)
+      && (SHOW_CONFIRM || inDiscovery(r)));
+    if (!set.length) continue;
+    const st = roiStats(set.map((r) => holdTrade(r)));
+    results.postHoc[`HOLD ${w} >=5c ${mo}`] = `n=${st.n} g=${st.games} roi=${st.roiPct.toFixed(2)}% [${st.ci95[0].toFixed(2)}, ${st.ci95[1].toFixed(2)}] pnl/c=${st.pnlPerContract.toFixed(2)}c`;
+  }
 }
 
 const K = TESTS.length;
@@ -299,6 +390,8 @@ console.log(JSON.stringify({
   coverage: results.coverage,
   census: results.census,
   liquidity: results.liquidity,
+  activity: results.activity,
+  postHoc: results.postHoc,
   tests: results.tests.map(line),
   refs: results.refs.map(line),
   multiplicity: results.multiplicity,

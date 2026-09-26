@@ -206,3 +206,229 @@ node tools/steam-scan.mjs --kcache <kalshi-cache> --split 2026-09-01 [--confirm]
 
 No network access is required or attempted; the scanner reads the candle
 archive and nothing else. Without `--confirm` it refuses to print the holdout.
+
+---
+
+# Discovery results (run 2026-09-25, game dates through 2026-09-01)
+
+**Short answer: no. Following a move loses, every way it was cut. Seventeen of
+the twenty-six tests survive the multiplicity correction and all seventeen are
+negative. And the deeper problem is upstream of the P&L — at this clock the
+price almost never moves at all.**
+
+Coverage: **705,153 observations** (one per market per window) over 2,544 event
+files. 64 markets settled `scalar` and were dropped. Market-observations with a
+two-sided quote at both ends of a window: **244,449 fast, 212,173 slow.**
+
+| class | events | markets | quoted at both ends of the fast window |
+|---|---|---|---|
+| GAME | 837 | 19,908 | 16,706 |
+| PITCH | 844 | 13,182 | 13,074 |
+| BAT | 863 | 240,571 | 214,669 |
+
+## First: there is almost nothing to tail
+
+Before any rule can pay, a move has to happen. It mostly does not.
+
+| window | quoted | \|Δ\| ≥ 3c | \|Δ\| ≥ 5c |
+|---|---|---|---|
+| **fast** (10 min, ending T−30) | 244,449 | 1,313 (**0.54%**) | 747 (**0.31%**) |
+| **slow** (60 min, ending T−30) | 212,173 | 2,826 (**1.33%**) | 1,279 (**0.60%**) |
+
+And the rate collapses across the window. Fast window, moves of 5c or more:
+
+| | July | August | September |
+|---|---|---|---|
+| GAME | 29 / 4,072 (0.71%) | 5 / 8,330 (0.06%) | **0 / 4,304** |
+| PITCH | 15 / 3,640 (0.41%) | 5 / 6,430 (0.08%) | 3 / 3,004 (0.10%) |
+| BAT | 586 / 57,629 (1.02%) | 86 / 107,324 (0.08%) | 18 / 49,716 (0.04%) |
+
+**84% of every fast 5-cent move in the whole archive happened in July.** In
+September, across 4,304 quoted game-line observations, the mid did not move five
+cents in ten minutes **even once**. This is not a property of the rule; it is a
+property of the book. Something about how these markets are quoted changed
+between July and August, and after it changed the raw material for a tail
+mostly stopped being produced.
+
+The consequence is structural and it is fatal to the fast arms on its own: a
+rule that fires 0.04% of the time on the most recent data cannot clear
+condition 4 of the bar, whatever its sign.
+
+## Where there is liquidity
+
+Restricted to markets with a two-sided quote 30 minutes before first pitch:
+
+| class | median spread | spread ≤ 2c | never traded | median volume |
+|---|---|---|---|---|
+| GAME | 1c | 99.9% | — (Kalshi does not serve volume on these series) | — |
+| PITCH | 1c | 93.3% | 0.04% | 3,409 |
+| BAT | 1c | 81.0% | 18.7% | 44 |
+
+`docs/SCRATCH-SETTLEMENT-STUDY.md` found 51–54% of settled markets never trade.
+That is over *all* markets, including the deep rungs nobody quotes. Conditioned
+on having a live two-sided quote half an hour before first pitch — which is what
+a tail needs — the dead fraction falls to 19% on batter props and to nothing on
+the pitcher and game markets. **Liquidity is not the binding constraint. The
+absence of movement is.**
+
+## The 26 tests
+
+`px` is the mean taker price paid, `sprd` the mean quoted spread at the decision
+clock, `fwd` the mean signed mid change from the decision clock to first pitch
+(positive = the price kept going), and `win` how often the tailed side settled
+outright.
+
+### HOLD to settlement — the tail
+
+| id | window, bucket | n | games | ROI [95%] | p | c/contract | px | sprd | fwd | win |
+|---|---|---|---|---|---|---|---|---|---|---|
+| H1 | fast, 3–4c | 500 | 203 | −5.71% [−16.19, 4.68] | 0.2684 | −2.21c | 37.6 | 4.82 | −0.00c | 36.6% |
+| **H2** | fast, 5–7c | 345 | 124 | **−16.77% [−29.26, −3.90]** | 0.0108 | −6.42c | 36.9 | 4.50 | −0.55c | 31.9% |
+| **H3** | fast, 8–12c | 206 | 75 | **−25.92% [−41.12, −12.05]** | 0.0002 | −13.25c | 49.7 | 5.98 | −0.63c | 37.9% |
+| H4 | fast, 13c+ | 176 | 56 | −3.02% [−13.67, 7.85] | 0.5764 | −2.23c | 72.6 | 9.85 | −0.19c | 71.6% |
+| **H5** | slow, 3–4c | 1,309 | 544 | **−9.22% [−15.79, −2.28]** | 0.0040 | −3.76c | 39.5 | 2.58 | +0.02c | 37.0% |
+| H6 | slow, 5–7c | 576 | 175 | −0.06% [−12.66, 12.07] | 0.9784 | −0.02c | 35.0 | 3.02 | +0.35c | 36.3% |
+| H7 | slow, 8–12c | 304 | 91 | −3.92% [−17.52, 9.14] | 0.5192 | −1.84c | 45.5 | 4.31 | +0.58c | 45.1% |
+| **H8** | slow, 13c+ | 272 | 76 | −10.03% [−20.42, 0.07] | 0.0524 | −6.97c | 68.1 | 7.79 | −2.82c | 62.5% |
+
+### FLIP out at first pitch — the tradeable momentum bet
+
+| id | window, bucket | n | games | ROI [95%] | p | c/contract |
+|---|---|---|---|---|---|---|
+| **F1** | fast, 3–4c | 500 | 203 | **−20.67% [−22.78, −18.69]** | 0.0002 | −8.02c |
+| **F2** | fast, 5–7c | 345 | 124 | **−21.78% [−24.99, −18.86]** | 0.0002 | −8.34c |
+| **F3** | fast, 8–12c | 206 | 75 | **−19.82% [−24.32, −16.16]** | 0.0002 | −10.13c |
+| **F4** | fast, 13c+ | 176 | 56 | **−17.38% [−22.99, −13.34]** | 0.0002 | −12.83c |
+| **F5** | slow, 3–4c | 1,309 | 544 | **−14.55% [−15.61, −13.49]** | 0.0002 | −5.93c |
+| **F6** | slow, 5–7c | 576 | 175 | **−17.05% [−19.64, −14.55]** | 0.0002 | −6.19c |
+| **F7** | slow, 8–12c | 304 | 91 | **−15.81% [−19.01, −13.00]** | 0.0002 | −7.42c |
+| **F8** | slow, 13c+ | 272 | 76 | **−19.96% [−25.15, −15.61]** | 0.0002 | −13.87c |
+
+All eight FLIP arms lose, all eight at p = 0.0002, all eight surviving
+Bonferroni. This is the answer to the first half of the brief's question one and
+it is unambiguous: **the price does not keep moving.** `fwd` is within 0.6c of
+zero in seven of the eight cells, so there is nothing for a round trip to
+capture, and the round trip itself costs a spread and two fees.
+
+### By class and by liquidity
+
+| id | arm | n | games | ROI [95%] | p |
+|---|---|---|---|---|---|
+| C1 | HOLD, fast, ≥5c, GAME | 34 | 7 | −35.38% [−85.71, 14.25] | 0.1660 |
+| C2 | HOLD, fast, ≥5c, PITCH | 20 | 13 | +0.76% [−42.53, 33.52] | 0.9620 |
+| **C3** | HOLD, fast, ≥5c, BAT | 673 | 132 | **−13.78% [−21.86, −6.06]** | 0.0004 |
+| C4 | HOLD, slow, ≥5c, GAME | 44 | 8 | +8.16% [−22.36, 50.12] | 0.6272 |
+| C5 | HOLD, slow, ≥5c, PITCH | 45 | 38 | −14.91% [−40.09, 10.73] | 0.2500 |
+| C6 | HOLD, slow, ≥5c, BAT | 1,063 | 171 | −4.74% [−14.61, 5.06] | 0.3128 |
+| **L1** | HOLD, fast, ≥5c, spread ≤ 2c | 197 | 74 | **−19.44% [−37.07, −1.69]** | 0.0304 |
+| **L2** | HOLD, fast, ≥5c, spread ≥ 3c | 530 | 125 | **−13.01% [−21.21, −5.08]** | 0.0008 |
+| **L3** | FLIP, fast, ≥5c, spread ≤ 2c | 197 | 74 | **−13.42% [−19.50, −8.31]** | 0.0002 |
+| **L4** | FLIP, fast, ≥5c, spread ≥ 3c | 530 | 125 | **−21.60% [−25.54, −18.36]** | 0.0002 |
+
+Only two of the twenty-six have a positive point estimate — C2 (n = 20) and C4
+(n = 44) — and both have intervals four times wider than the estimate. The two
+classes where a "move" is most likely to be a genuine repricing rather than a
+quote flicker, GAME and PITCH, are exactly the two that almost never move: 54
+fast ≥5c observations between them across 65 days.
+
+**L1 is the cut that kills the cheapest excuse.** Restricted to markets quoting
+two cents wide or tighter — where the mid is a real mid and a 5c move is a real
+move — tailing still loses 19.4%, and the interval excludes zero.
+
+## Reference arms (not corrected, not findings)
+
+| id | arm | n | ROI [95%] | c/contract |
+|---|---|---|---|---|
+| R0f | HOLD, fast, \|Δ\| 1–2c (noise) | 8,250 | −4.38% [−6.43, −2.37] | −2.26c |
+| R0s | HOLD, slow, \|Δ\| 1–2c (noise) | 25,711 | −5.16% [−6.35, −3.98] | −2.64c |
+| RPOOLf | HOLD, fast, ≥5c, pooled | 727 | −14.53% [−22.35, −6.99] | −7.34c |
+| RPOOLs | HOLD, slow, ≥5c, pooled | 1,152 | −4.57% [−14.01, 4.44] | −2.14c |
+| RFADEf | the other side at the *same* price, fast, ≥5c | 727 | +8.84% [1.71, 15.97] | +4.62c |
+| RFADEs | the other side at the *same* price, slow, ≥5c | 1,152 | −0.95% [−8.64, 6.93] | −0.53c |
+| RTFADEf | the other side at **its own taker price**, fast, ≥5c | 727 | −2.75% [−9.58, 3.85] | −1.61c |
+| RTFADEs | the other side at **its own taker price**, slow, ≥5c | 1,152 | −8.34% [−15.36, −1.04] | −5.02c |
+| RLATEh | HOLD, T−15 → T−5, ≥5c | 461 | −16.95% [−24.10, −10.41] | −11.60c |
+| RLATEf | FLIP, T−15 → T−5, ≥5c | 461 | −27.07% [−31.41, −23.55] | −18.52c |
+
+These rows are the whole interpretation, so read them together.
+
+**R0f/R0s set the toll.** Crossing the spread at T−30 with no view at all and
+holding to settlement costs **2.26c to 2.64c a contract.** That is the number
+any signal has to beat, and it sits below the 3.66c `docs/MARKET-EDGE-SEARCH.md`
+D1 measured for a six-hour *round* trip, as a one-legged version of the same
+toll should.
+
+**RPOOLf says the fast move is worse than no view at all.** Tailing a ≥5c
+ten-minute move loses 7.34c against the 2.26c a coin flip loses. About 1.9c of
+the 5.1c gap is the wider spread in the cells where moves happen; the remaining
+~3.2c is direction. The move predicts **against itself.**
+
+**RFADEf makes that explicit and RTFADEf takes it away again.** At the tail's
+own price, the other side of these trades returns +8.84% with an interval
+excluding zero — the reversal is real. At the price you would actually have to
+pay for it, 6.21c of spread further away, it returns **−2.75% [−9.58, 3.85]**.
+This is `docs/MARKET-EDGE-SEARCH.md` Family C exactly: both sides of a spread
+can lose, and here both sides do. There is a signal in the fast move and it is
+smaller than the cost of acting on it, in either direction.
+
+**RLATEh/RLATEf, the third window, agree with the two that were tested** —
+−17.0% held and −27.1% flipped. Five minutes before first pitch the mean spread
+on a market that just moved is 14.6c, and nothing survives paying half of that.
+No arm anywhere in the study points the other way, so the choice of clock is not
+what produced the answer.
+
+## Post-hoc (added after scoring, corrected for nothing)
+
+The activity census forces one question the pre-registration did not ask: the
+fast rule fires overwhelmingly in July, so is its sign a July artefact?
+
+| | n | ROI [95%] | c/contract |
+|---|---|---|---|
+| HOLD fast ≥5c, July | 630 | −15.83% [−23.95, −8.35] | −7.97c |
+| HOLD fast ≥5c, August | 96 | −4.98% [−34.34, 19.15] | −2.57c |
+| HOLD slow ≥5c, July | 1,029 | −2.69% [−12.61, 6.94] | −1.25c |
+| HOLD slow ≥5c, August | 122 | −18.73% [−37.04, −0.49] | −9.26c |
+
+Partly, yes. The fast arm's loss is mostly a July number, because the fast arm
+is mostly a July sample; August alone cannot resolve −5% from zero on 96 trades.
+Nothing here is positive and nothing here is a finding, but the honest reading
+is that the *strength* of the fast anti-signal rests on one month.
+
+**One disclosure.** This post-hoc table was first computed without the holdout
+gate, so its September rows (n = 21, −11.9%; n = 128, −0.5%) were seen before
+the formal confirmation read below. The gate was then added and the table above
+is discovery-only. It changed no decision: no rule was eligible for confirmation
+under condition 2 either before or after, and both leaked numbers were negative,
+like everything else.
+
+## Two corrections to the pre-registration
+
+Both are recorded rather than quietly fixed.
+
+1. **The coverage counts in Data are slightly high.** They were taken from a
+   probe that required a two-sided quote at the two ends of the fast window;
+   the scanner also requires one at first pitch (the FLIP arm needs an exit) and
+   drops `scalar` settlements. The real figures are 16,706 / 13,074 / 214,669,
+   against 16,710 / 13,101 / 217,370 as written. Nothing depends on the
+   difference.
+2. **Four reference arms were added after the discovery pass was scored**, and
+   are marked as such above: RPOOLf and RPOOLs, which only pool cells already
+   reported, and RTFADEf and RTFADEs, the fade at its own taker price. RTFADE
+   exists because RFADE came back positive and a reader would immediately and
+   correctly ask whether the reversal is tradeable. It is not. None of the four
+   is among the 26, none is corrected, and none can be a finding.
+
+## Multiplicity
+
+26 pre-registered tests, all scored, all with bootstrap p-values.
+
+- **Benjamini–Hochberg at q = 0.10 survivors (17):** H2, H3, H5, H8, F1–F8, C3,
+  L1, L2, L3, L4.
+- **Bonferroni at 0.05/26 = 0.0019 survivors (12):** H3, F1–F8, C3, L2, L3, L4.
+- **Survivors with a positive ROI: none.**
+- **Tests with a positive point estimate at all: two** (C2, n = 20; C4, n = 44),
+  neither within a factor of four of significance.
+
+**No rule reaches condition 2 of the pass/fail bar, so nothing is eligible to be
+confirmed on the holdout.** The holdout is used below only for what it can still
+answer: does the collapse in movement continue, and does the sign stay negative.
