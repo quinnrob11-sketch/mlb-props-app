@@ -15,7 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseEventTicker, startMsOf, mulberry32, readJson } from './kalshi-common.mjs';
+import { parseEventTicker, startMsOf, readJson, roiStats, benjaminiHochberg } from './kalshi-common.mjs';
 import { arg } from './market-edge.mjs';
 
 // Only act as a CLI when this file is the process entry point: the diagnostics
@@ -31,7 +31,8 @@ const SHOW_CONFIRM = process.argv.includes('--confirm');
 export const PLAYER_SERIES = ['KXMLBKS', 'KXMLBOUTS', 'KXMLBHIT', 'KXMLBTB', 'KXMLBHR', 'KXMLBRBI', 'KXMLBHRR'];
 
 // ── money (identical to tools/edge-scan.mjs; copied rather than imported
-// because that file runs its whole analysis at import time) ─────────────────
+// because that file runs its whole analysis at import time). The statistics
+// it used to copy too now live in kalshi-common.mjs. ───────────────────────
 export const feeCents = (priceCents, rate = FEE_RATE) => (rate * priceCents * (100 - priceCents)) / 100;
 const settleValue = (m) => Number(m.settlement_value_dollars);
 const payoutCents = (m, side) => (side === 'yes' ? 100 * settleValue(m) : 100 * (1 - settleValue(m)));
@@ -41,44 +42,7 @@ function trade(m, side, priceCents, cluster, extra = {}) {
   return { cluster, cost: priceCents + fee, pnl: payoutCents(m, side) - priceCents - fee, priceCents, ...extra };
 }
 
-export function roiStats(trades, { boot = 5000, seed = 20260923 } = {}) {
-  const n = trades.length;
-  if (!n) return { n: 0 };
-  const byCluster = new Map();
-  for (const t of trades) {
-    if (!byCluster.has(t.cluster)) byCluster.set(t.cluster, [0, 0]);
-    const c = byCluster.get(t.cluster);
-    c[0] += t.pnl; c[1] += t.cost;
-  }
-  const cl = [...byCluster.values()];
-  const pnl = trades.reduce((s, t) => s + t.pnl, 0);
-  const cost = trades.reduce((s, t) => s + t.cost, 0);
-  const rand = mulberry32(seed);
-  const rois = new Float64Array(boot);
-  for (let b = 0; b < boot; b++) {
-    let p = 0, c = 0;
-    for (let i = 0; i < cl.length; i++) { const k = cl[(rand() * cl.length) | 0]; p += k[0]; c += k[1]; }
-    rois[b] = c ? p / c : 0;
-  }
-  const sorted = Array.from(rois).sort((a, b) => a - b);
-  let le = 0, ge = 0;
-  for (const r of sorted) { if (r <= 0) le++; if (r >= 0) ge++; }
-  return {
-    n, games: cl.length,
-    pnlPerContract: pnl / n,
-    totalPnlCents: pnl,
-    roiPct: (100 * pnl) / cost,
-    ci95: [100 * sorted[Math.floor(0.025 * boot)], 100 * sorted[Math.floor(0.975 * boot)]],
-    p: Math.max(1 / boot, 2 * Math.min(le / boot, ge / boot)),
-  };
-}
-
-export function benjaminiHochberg(ps, q = 0.10) {
-  const order = ps.map((p, i) => [p, i]).sort((a, b) => a[0] - b[0]);
-  let kMax = -1;
-  for (let k = 0; k < order.length; k++) if (order[k][0] <= ((k + 1) / order.length) * q) kMax = k;
-  return new Set(order.slice(0, kMax + 1).map((x) => x[1]));
-}
+export { roiStats, benjaminiHochberg };
 
 // ── names ───────────────────────────────────────────────────────────────────
 export const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
