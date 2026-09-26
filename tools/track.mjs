@@ -5,6 +5,7 @@
 //   node tools/track.mjs close    [date]  overwrite the closing prices
 //   node tools/track.mjs grade    [date]  settle against the box scores
 //   node tools/track.mjs report [--all]   every category, with its interval
+//   node tools/track.mjs replay [--rule=shop|sharp|both]   score a rule on the archive
 //
 // Why this exists. The Kalshi bot paper-trades one venue, and since the market
 // weights dropped to their measured values (v36.2) it plans zero orders — so
@@ -26,6 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { installFetch } from './local-api.mjs';
+import { attachBooks, gameLineBooks } from './sharp.mjs';
 
 const DIR = 'bot/state/track';
 const args = process.argv.slice(2);
@@ -63,7 +65,12 @@ const round = (v, places) =>
 async function rowsFor(date) {
   const slate = await loadSlate({ date, onStatus: () => {}, projectLineups: true });
   const out = [];
-  for (const r of flattenRows(slate)) {
+  // Per-book two-sided prices. Without these the archive records only the BEST
+  // price and a book count, so no Pinnacle-versus-a-soft-book rule could ever
+  // be replayed over it — the same gap `nBooksTwoSided` had, closed the same
+  // way: before the history accumulates rather than after.
+  const gameBooks = await gameLineBooks(slate.games);
+  for (const r of attachBooks(flattenRows(slate), gameBooks)) {
     const e = r.edge;
     if (!e || e.modelOver == null) continue;
     out.push({
@@ -89,6 +96,10 @@ async function rowsFor(date) {
       nBooksTwoSided: r.nBooksTwoSided ?? null,
       overBook: r.overBook ?? null,
       underBook: r.underBook ?? null,
+      // Every book's two-sided price, `{ DK: [over, under] }`, Pinnacle
+      // included when it quotes. Compact on purpose: a pair of integers per
+      // book, no labels repeated, no one-sided quotes, no DFS multipliers.
+      books: r.books ?? null,
       sharp: e.sharp || false,
       // What the board said at the time.
       side: e.side ?? null,
@@ -142,6 +153,7 @@ async function close(date) {
     row.closeOver = fresh.over;
     row.closeUnder = fresh.under;
     row.closeFairOver = fresh.fairOver;
+    row.closeBooks = fresh.books ?? null;
     // CLV is measured on the side the board called, against the price it quoted.
     row.closeOdds = row.side === 'under' ? fresh.under : fresh.over;
     updated += 1;
@@ -176,30 +188,89 @@ async function grade(date) {
 /**
  * Replay a rule over the whole archive and grade it.
  *
- * The archive stores INPUTS — both sides' best prices, the de-vigged
- * consensus, the book counts — not just what the board decided, so a rule
- * invented later can be scored on history that was recorded before it existed.
- * That is the point of keeping every priced row rather than only the plays.
+ * The archive stores INPUTS — both sides' best prices, EVERY book's two-sided
+ * price, the de-vigged consensus, the book counts — not just what the board
+ * decided, so a rule invented later can be scored on history that was recorded
+ * before it existed. That is the point of keeping every priced row rather than
+ * only the plays.
  *
- * Today it replays the price-shopping rule (src/analysis/shop.js), which is the
- * one idea five studies did not kill and the one with no measured track record
- * yet. Any row with a graded `actual` can be scored on either side, because
- * over wins exactly when the actual clears the line.
+ *   node tools/track.mjs replay                 the shop rule (default)
+ *   node tools/track.mjs replay --rule=sharp    lagging Pinnacle
+ *   node tools/track.mjs replay --rule=both     both, side by side
+ *
+ * Both rules are cousins and the honest question is which is better: "out of
+ * line with the consensus of three books" (shop) or "out of line with Pinnacle
+ * alone" (sharp). `--rule=both` is that comparison, in one command, on exactly
+ * the same graded rows. It needs graded rows to mean anything — see
+ * docs/SHARP.md for what counts as enough.
+ *
+ * Any row with a graded `actual` can be scored on either side, because over
+ * wins exactly when the actual clears the line.
  */
 async function replay() {
-  const { priceGaps } = await import('../src/analysis/shop.js');
   const minBooks = Number((args.find((a) => a.startsWith('--books=')) || '').split('=')[1] || 3);
   const minEv = Number((args.find((a) => a.startsWith('--min=')) || '').split('=')[1] || 1);
+  const rule = (args.find((a) => a.startsWith('--rule=')) || '').split('=')[1] || 'shop';
 
   const rows = allRows().filter((r) => r.actual != null && r.line != null);
-  // Shape the stored row the way the shared module expects, so the replay and
+  const nDays = new Set(rows.map((r) => r.date)).size;
+
+  // Shape the stored row the way the shared modules expect, so the replay and
   // the live board run the same code rather than two versions of it.
   const shaped = rows.map((r) => ({ ...r, edge: { fairOver: r.fairOver, nBooks: r.nBooks } }));
-  const gaps = priceGaps(shaped, { minBooks, minEvPct: minEv });
 
-  if (!gaps.length)
+  const rules = {
+    async shop() {
+      const { priceGaps } = await import('../src/analysis/shop.js');
+      return {
+        label: `SHOP RULE (${minBooks}+ books, EV >= ${minEv}%)`,
+        bets: priceGaps(shaped, { minBooks, minEvPct: minEv }),
+      };
+    },
+    async sharp() {
+      const { sharpGaps } = await import('../src/analysis/sharp.js');
+      return {
+        // Held to the SAME EV threshold as the shop rule above, so
+        // `--rule=both` compares two rules and not two thresholds. The gap
+        // floor stays at its own default and only rejects rounding noise.
+        label: `SHARP RULE (lagging Pinnacle, EV >= ${minEv}%)`,
+        bets: sharpGaps(shaped, { minEvPct: minEv }),
+      };
+    },
+  };
+  const wanted = rule === 'both' ? ['shop', 'sharp'] : [rule];
+  for (const name of wanted)
+    if (!rules[name]) return console.log(`unknown rule "${name}" — try shop, sharp or both`);
+
+  for (const name of wanted) {
+    const { label, bets } = await rules[name]();
+    score(label, bets, rows, nDays);
+  }
+  console.log(
+    'At this sample size the numbers above are not evidence of anything; they are a\n' +
+      'record. Run "report" for the interval that says whether they mean anything.',
+  );
+}
+
+/**
+ * The number `actual` is compared against for "over".
+ *
+ * Must match `settleLine` in src/data/gradeSlate.js exactly. A game moneyline
+ * or run line settles on the HOME MARGIN against `-line`, not against `line`:
+ * the home side covers when margin > -line, and line is 0 for a moneyline. The
+ * replay used `row.line` for every row, which graded every game-line bet
+ * backwards whenever the line was not zero — invisible while the rule being
+ * replayed fired only on player props, and not invisible at all now that the
+ * Pinnacle rule fires almost exclusively on game lines.
+ */
+const settleLine = (row) =>
+  row.kind === 'game' && !String(row.market).endsWith('_total') ? -(row.line ?? 0) : row.line;
+
+/** Settle a list of {row, side, odds} against the archive's graded results. */
+function score(label, bets, rows, nDays) {
+  if (!bets.length)
     return console.log(
-      `no graded rows match the rule yet (${rows.length} graded rows in the archive)`,
+      `\n${label}\n  no graded rows match this rule yet (${rows.length} graded rows, ${nDays} day(s))\n`,
     );
 
   let units = 0;
@@ -207,9 +278,10 @@ async function replay() {
   let losses = 0;
   let pushes = 0;
   const byMarket = {};
-  for (const g of gaps) {
+  for (const g of bets) {
     const actual = Number(g.row.actual);
-    const over = actual > g.row.line ? 'over' : actual < g.row.line ? 'under' : 'push';
+    const against = settleLine(g.row);
+    const over = actual > against ? 'over' : actual < against ? 'under' : 'push';
     const dec = 1 + (g.odds > 0 ? g.odds / 100 : 100 / -g.odds);
     const u = over === 'push' ? 0 : over === g.side ? dec - 1 : -1;
     units += u;
@@ -221,27 +293,16 @@ async function replay() {
     m.units += u;
   }
   const decided = wins + losses;
-  console.log(
-    `
-SHOP RULE REPLAYED — ${gaps.length} bet(s) over ${new Set(rows.map((r) => r.date)).size} day(s)` +
-      `, ${minBooks}+ books, EV >= ${minEv}%
-`,
-  );
+  console.log(`\n${label} — ${bets.length} bet(s) over ${nDays} day(s)\n`);
   console.log(
     `  ${wins}-${losses}${pushes ? '-' + pushes : ''}  ${units >= 0 ? '+' : ''}${units.toFixed(2)} units  ` +
-      `ROI ${decided ? ((100 * units) / decided).toFixed(1) : '-'}%
-`,
+      `ROI ${decided ? ((100 * units) / decided).toFixed(1) : '-'}%\n`,
   );
   for (const [market, m] of Object.entries(byMarket).sort((a, b) => b[1].n - a[1].n))
     console.log(
       `  ${market.padEnd(24)} n=${String(m.n).padStart(4)}  ${m.units >= 0 ? '+' : ''}${m.units.toFixed(2)} units`,
     );
-  console.log(
-    `
-At this sample size the number above is not evidence of anything; it is a
-` +
-      `record. Run "report" for the interval that says whether it means anything.`,
-  );
+  console.log('');
 }
 
 /** Every stored day, oldest first. */
@@ -419,6 +480,7 @@ switch (cmd) {
     break;
   default:
     console.log(
-      'usage: node tools/track.mjs [daily|snapshot|close|grade|report|replay|export|selftest] [YYYY-MM-DD]',
+      'usage: node tools/track.mjs [daily|snapshot|close|grade|report|replay|export|selftest] [YYYY-MM-DD]\n' +
+        '       replay [--rule=shop|sharp|both] [--books=3] [--min=1]',
     );
 }
